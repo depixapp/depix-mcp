@@ -1,0 +1,45 @@
+{
+  "name": "@depixapp/mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "DePix App MCP server — agent-facing interface for the DePix App payment gateway. Pure client of the public DePix API (api.depixapp.com): receive Pix payments (checkouts/products) and read transaction status. Non-custodial, holds zero critical credentials.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/depixapp/depix-mcp"
+  },
+  "homepage": "https://depixapp.com",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "depix-mcp": "dist/stdio.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "@vercel/node": "^5.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.1.0"
+  }
+}

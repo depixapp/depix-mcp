@@ -1,0 +1,132 @@
+{
+  "_note": "Pinned facts from the DePix OpenAPI 0.6.0 contract (post-PR#68; 0.6.0 removed POST /api/checkouts/{id}/cancel). Refresh from api/_lib/openapi.js on the backend when the contract bumps. The contract test (test/contract.test.ts) fails CI if src/schemas.ts or src/requestMap.ts drift from this.",
+  "info_version": "0.6.0",
+  "scopes": ["merchant_read", "merchant_write", "wallet_read", "wallet_write"],
+  "statusEnums": {
+    "checkout": ["pending", "processing", "approved", "completed", "expired", "cancelled"],
+    "deposit": [
+      "pending",
+      "under_review",
+      "pending_pix2fa",
+      "approved",
+      "delayed",
+      "will_refund",
+      "depix_sent",
+      "refunded",
+      "canceled",
+      "error",
+      "expired"
+    ],
+    "withdrawal": ["unsent", "sending", "sent", "refunded", "cancelled", "error", "expired"]
+  },
+  "terminal": {
+    "checkout": ["completed", "expired", "cancelled"],
+    "deposit": ["depix_sent", "refunded", "canceled", "error", "expired"],
+    "withdrawal": ["sent", "refunded", "cancelled", "error", "expired"]
+  },
+  "sandboxStatus": {
+    "deposit": "depix_sent",
+    "withdrawal": "confirmed"
+  },
+  "requestBodies": {
+    "POST /api/checkouts": {
+      "required": ["amount", "payer_tax_number"],
+      "properties": [
+        "amount",
+        "description",
+        "image_url",
+        "callback_url",
+        "redirect_url",
+        "metadata",
+        "expires_in",
+        "payer_tax_number"
+      ]
+    },
+    "POST /api/products": {
+      "required": ["name", "amount"],
+      "properties": [
+        "name",
+        "slug",
+        "amount",
+        "description",
+        "image_url",
+        "callback_url",
+        "redirect_url",
+        "metadata",
+        "expires_in"
+      ]
+    },
+    "PATCH /api/products/{id}": {
+      "required": [],
+      "properties": [
+        "name",
+        "slug",
+        "amount",
+        "description",
+        "image_url",
+        "callback_url",
+        "redirect_url",
+        "metadata",
+        "expires_in"
+      ]
+    },
+    "POST /api/products/featured": {
+      "required": ["productIds"],
+      "properties": ["productIds"]
+    }
+  },
+  "responseFields": {
+    "CheckoutCreateResponse": [
+      "id",
+      "status",
+      "amount",
+      "description",
+      "image_url",
+      "expires_at",
+      "is_live",
+      "payment_url",
+      "pix"
+    ],
+    "CheckoutDetail": [
+      "id",
+      "status",
+      "amount",
+      "description",
+      "image_url",
+      "pix_payload",
+      "rejection_reasons",
+      "callback_url",
+      "redirect_url",
+      "metadata",
+      "expires_at",
+      "is_live",
+      "created_at",
+      "processing_at",
+      "approved_at",
+      "completed_at",
+      "cancelled_at",
+      "blockchain_tx_id"
+    ],
+    "MeResponse": ["merchant_id", "name", "username", "merchant_slug", "is_live", "created_at"],
+    "DepositStatusResponse": [
+      "id",
+      "type",
+      "amount_cents",
+      "status",
+      "created_at",
+      "updated_at",
+      "rejection_reasons",
+      "sandbox"
+    ],
+    "WithdrawalStatusResponse": [
+      "id",
+      "type",
+      "amount_cents",
+      "status",
+      "created_at",
+      "updated_at",
+      "liquid_txid",
+      "sandbox"
+    ]
+  }
+}

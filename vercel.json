@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "",
+  "functions": {
+    "api/mcp.ts": {
+      "maxDuration": 800
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/mcp",
+      "destination": "/api/mcp"
+    },
+    {
+      "source": "/.well-known/mcp.json",
+      "destination": "/api/well-known-mcp"
+    },
+    {
+      "source": "/",
+      "destination": "/api/health"
+    }
+  ]
+}
