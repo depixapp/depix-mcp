@@ -48,6 +48,10 @@ export interface ApiClientOptions {
   maxAttempts?: number;
   /** If a retry would sleep longer than this, surface a retryable error instead. */
   maxRetrySleepMs?: number;
+  /** "oauth" when the CONNECTION authenticated via OAuth (no sk_): the
+   * missing-key error then explains the OAuth situation instead of telling
+   * the user to reconnect with a header they already sent. */
+  authMode?: "oauth";
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -81,6 +85,7 @@ function buildQueryString(query: Record<string, QueryValue> | undefined): string
 
 export class ApiClient {
   private readonly apiKey: string | undefined;
+  private readonly authMode?: "oauth";
   private readonly apiBase: string;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -94,6 +99,7 @@ export class ApiClient {
     this.sleep = opts.sleep ?? defaultSleep;
     this.maxAttempts = opts.maxAttempts ?? 3;
     this.maxRetrySleepMs = opts.maxRetrySleepMs ?? 10_000;
+    this.authMode = opts.authMode;
   }
 
   /** Build + validate the target URL against the strict origin allowlist. */
@@ -115,7 +121,7 @@ export class ApiClient {
   async request<T = unknown>(req: ApiRequest): Promise<ApiResult<T>> {
     // Key presence first (clear, actionable error — spec §3.3).
     if (!this.apiKey || !this.apiKey.startsWith("sk_")) {
-      throw missingApiKeyError();
+      throw missingApiKeyError(this.authMode);
     }
     // Origin allowlist BEFORE the Authorization header is ever attached (§3.2).
     const url = this.resolveUrl(req.path, req.query);

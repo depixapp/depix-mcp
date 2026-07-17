@@ -50,6 +50,32 @@ export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): stri
   return env.MCP_SERVER_VERSION?.trim() || "1.0.0";
 }
 
+// ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────
+
+// Canonical MCP resource URL: must byte-match the Resource Indicator in the
+// WorkOS dashboard AND the URL users type into claude.ai/ChatGPT.
+export const DEFAULT_RESOURCE_URL = "https://mcp.depixapp.com/mcp";
+
+/**
+ * The AuthKit domain (issuer + JWKS host), e.g. https://acme-123.authkit.app.
+ * This is the FEATURE FLAG for the whole OAuth surface: null (unset) means
+ * OAuth is off and every behavior is byte-identical to before — no 401
+ * challenge, no discovery documents.
+ */
+export function resolveAuthkitDomain(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.AUTHKIT_DOMAIN?.trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\/+$/, "");
+  if (!/^https:\/\/[^/]+$/.test(normalized)) return null; // https origin only
+  return normalized;
+}
+
+/** Canonical resource URL (aud check + PRM `resource` field). */
+export function resolveResourceUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.MCP_RESOURCE_URL?.trim();
+  return (raw || DEFAULT_RESOURCE_URL).replace(/\/+$/, "");
+}
+
 // DNS-rebinding protection (official MCP guidance): the Streamable HTTP
 // transport rejects requests whose Host header is not on this list. Default is
 // the production host; MCP_ALLOWED_HOSTS (comma-separated) lets Vercel preview

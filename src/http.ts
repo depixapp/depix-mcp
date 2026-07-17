@@ -10,9 +10,13 @@ import { createServer } from "./server.js";
 import {
   resolveAllowedHosts,
   resolveApiBase,
+  resolveAuthkitDomain,
   resolveMaxWaitSeconds,
+  resolveResourceUrl,
   resolveServerVersion,
 } from "./config.js";
+import { OAuthTokenError, buildWwwAuthenticate, verifyWorkosAccessToken } from "./oauth.js";
+import { logger } from "./log.js";
 
 /** Extract the raw token from an `Authorization: Bearer <token>` header. */
 export function extractBearer(header?: string | string[]): string | undefined {
@@ -44,10 +48,52 @@ export async function handleMcpHttp(
     return;
   }
 
-  const apiKey = extractBearer(req.headers.authorization);
+  const token = extractBearer(req.headers.authorization);
+
+  // ── Auth chain (F4 §2.9). With AUTHKIT_DOMAIN unset the OAuth surface is
+  // OFF and behavior is byte-identical to before: any token (or none) flows
+  // through as the apiKey and tools fail per-call with typed errors. With it
+  // set, this becomes a proper OAuth 2.1 Resource Server:
+  //   Bearer sk_…          → legacy path, untouched (terminal clients);
+  //   Bearer <workos JWT>  → verified against the AuthKit JWKS;
+  //   missing/invalid      → REAL 401 + WWW-Authenticate (the challenge that
+  //                          triggers claude.ai/ChatGPT OAuth discovery —
+  //                          a 200 with the header is ignored by clients).
+  const authkitDomain = resolveAuthkitDomain();
+  let apiKey = token;
+  let authMode: "oauth" | undefined;
+
+  if (authkitDomain && !token?.startsWith("sk_")) {
+    const resourceUrl = resolveResourceUrl();
+    const challenge = (error?: "invalid_token") => {
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": buildWwwAuthenticate(resourceUrl, error),
+      });
+      res.end(JSON.stringify({ error: error ?? "unauthorized" }));
+    };
+    if (!token) {
+      challenge();
+      return;
+    }
+    try {
+      const identity = await verifyWorkosAccessToken(token, { authkitDomain, resourceUrl });
+      logger.info("oauth session", { sub: identity.sub, orgId: identity.orgId });
+      apiKey = undefined; // OAuth carries no sk_; tools answer with the typed OAuth guidance
+      authMode = "oauth";
+    } catch (err) {
+      if (err instanceof OAuthTokenError) {
+        logger.info("oauth token rejected", { reason: err.message });
+        challenge("invalid_token");
+        return;
+      }
+      throw err;
+    }
+  }
 
   const server = createServer({
     apiKey,
+    authMode,
     apiBase: resolveApiBase(),
     maxWaitSeconds: resolveMaxWaitSeconds(),
     version: resolveServerVersion(),

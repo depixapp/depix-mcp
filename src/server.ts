@@ -80,6 +80,8 @@ async function run(fn: () => Promise<unknown>): Promise<CallToolResult> {
 
 export interface CreateServerOptions {
   apiKey?: string;
+  /** "oauth" when the connection authenticated via a WorkOS token (no sk_). */
+  authMode?: "oauth";
   apiBase: string;
   maxWaitSeconds: number;
   version?: string;
@@ -88,7 +90,7 @@ export interface CreateServerOptions {
 }
 
 export function createServer(opts: CreateServerOptions): McpServer {
-  const client = opts.apiClient ?? new ApiClient({ apiKey: opts.apiKey, apiBase: opts.apiBase });
+  const client = opts.apiClient ?? new ApiClient({ apiKey: opts.apiKey, apiBase: opts.apiBase, authMode: opts.authMode });
   const version = opts.version ?? resolveServerVersion();
 
   const server = new McpServer(
