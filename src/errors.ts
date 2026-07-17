@@ -40,7 +40,13 @@ export class ToolError extends Error {
 }
 
 /** Clear error when the caller provided no usable API key (spec §3.3). */
-export function missingApiKeyError(): ToolError {
+export function missingApiKeyError(authMode?: "oauth"): ToolError {
+  if (authMode === "oauth") {
+    return new ToolError(
+      "This connection is authenticated via OAuth (operator identity), but DePix tools call the API with an sk_ key and no key is linked to OAuth sessions yet. Use a terminal client with `Authorization: Bearer sk_…` (or local stdio with DEPIX_API_KEY) to operate; keys are created in the DePix dashboard. See https://depixapp.com/docs/en/",
+      "missing_api_key",
+    );
+  }
   return new ToolError(
     "No DePix API key on this connection. Over HTTP, connect with the header `Authorization: Bearer sk_…`; in local stdio mode set the DEPIX_API_KEY environment variable. Ask the user to reconnect with their key (sk_test_ for sandbox, sk_live_ for production) — tools cannot set it. See https://depixapp.com/docs/en/",
     "missing_api_key",
