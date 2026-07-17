@@ -137,6 +137,38 @@ describe("anti-injection discipline (spec §4.6)", () => {
   });
 });
 
+describe("OAuth session errors (F4 §2.9 — the typed dead-ends)", () => {
+  it("oauth_account_not_linked → the beco-com-placa: valid login, no linked account", () => {
+    const e = mapApiError(403, errorEnvelope("oauth_account_not_linked") as never);
+    expect(e.code).toBe("oauth_account_not_linked");
+    expect(e.message).toContain("isn't linked to a DePix account");
+    expect(e.message).toContain("dashboard");
+    expect(e.retryable).toBe(false);
+  });
+
+  it("insufficient_scope in authMode=oauth is a hard money wall, not a widen-your-key hint", () => {
+    const e = mapApiError(
+      403,
+      errorEnvelope("insufficient_scope", { details: { required_scope: "wallet_write" } }) as never,
+      undefined,
+      "oauth",
+    );
+    expect(e.message).toContain("wallet_write");
+    expect(e.message).toContain("sk_");
+    // Must NOT tell an OAuth user to create a key "with that scope in the
+    // dashboard" — an OAuth session can never hold wallet_write.
+    expect(e.message).not.toContain("Create a key with that scope in the dashboard");
+  });
+
+  it("insufficient_scope WITHOUT oauth keeps the legacy dashboard hint (regression)", () => {
+    const e = mapApiError(
+      403,
+      errorEnvelope("insufficient_scope", { details: { required_scope: "wallet_write" } }) as never,
+    );
+    expect(e.message).toContain("Create a key with that scope in the dashboard");
+  });
+});
+
 describe("missingApiKeyError", () => {
   it("is a clear, non-retryable, transport-neutral ToolError with no key leakage", () => {
     const e = missingApiKeyError();
@@ -146,5 +178,11 @@ describe("missingApiKeyError", () => {
     expect(e.message).toContain("Authorization: Bearer sk_");
     expect(e.message).toContain("DEPIX_API_KEY");
     expect(e.message).toContain("reconnect");
+  });
+
+  it("the OAuth variant points at reconnecting the connector (defensive fallback)", () => {
+    const e = missingApiKeyError("oauth");
+    expect(e.code).toBe("missing_api_key");
+    expect(e.message).toContain("Reconnect the OAuth connector");
   });
 });

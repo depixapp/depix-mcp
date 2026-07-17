@@ -42,8 +42,11 @@ export class ToolError extends Error {
 /** Clear error when the caller provided no usable API key (spec §3.3). */
 export function missingApiKeyError(authMode?: "oauth"): ToolError {
   if (authMode === "oauth") {
+    // Defensive: an OAuth session normally forwards its verified WorkOS JWT as
+    // the bearer, so this only fires if that token went missing after the edge
+    // check. Tell the operator to re-establish the connection.
     return new ToolError(
-      "This connection is authenticated via OAuth (operator identity), but DePix tools call the API with an sk_ key and no key is linked to OAuth sessions yet. Use a terminal client with `Authorization: Bearer sk_…` (or local stdio with DEPIX_API_KEY) to operate; keys are created in the DePix dashboard. See https://depixapp.com/docs/en/",
+      "This OAuth session has no bearer credential to call the API with. Reconnect the OAuth connector, or use a terminal client with `Authorization: Bearer sk_…` (local stdio: DEPIX_API_KEY). See https://depixapp.com/docs/en/",
       "missing_api_key",
     );
   }
@@ -116,6 +119,7 @@ export function mapApiError(
   status: number,
   body: ApiErrorEnvelope | null | undefined,
   requestIdHeader?: string,
+  authMode?: "oauth",
 ): ToolError {
   const err = body?.error ?? {};
   // The code is interpolated into the canned message (default branch) and into
@@ -154,9 +158,24 @@ export function mapApiError(
       message = "Invalid token. This MCP authenticates with `sk_` keys only.";
       break;
     case "insufficient_scope":
-      message = requiredScope
-        ? `Your key lacks the \`${requiredScope}\` scope for this tool. Create a key with that scope in the dashboard.`
-        : "Your key lacks the scope required by this tool. Create a key with the required scope in the dashboard.";
+      if (authMode === "oauth") {
+        // OAuth (web connector) sessions carry a fixed, read + merchant scope
+        // set and can NEVER move money (wallet_write) — so this is a hard wall,
+        // not a "widen your key" hint. Point at an sk_ key for money actions.
+        message = requiredScope
+          ? `This OAuth session cannot perform \`${requiredScope}\` actions. Web-connector sessions are limited to reads and merchant operations and can never move money (wallet_write); use an sk_ API key with that scope for this action.`
+          : "This OAuth session lacks the scope this tool requires. Web-connector sessions can never move money; use an sk_ API key for that action.";
+      } else {
+        message = requiredScope
+          ? `Your key lacks the \`${requiredScope}\` scope for this tool. Create a key with that scope in the dashboard.`
+          : "Your key lacks the scope required by this tool. Create a key with the required scope in the dashboard.";
+      }
+      break;
+    case "oauth_account_not_linked":
+      // The typed dead-end (beco-com-placa): the WorkOS identity is valid but no
+      // DePix account is linked to it, so there is nothing to act on behalf of.
+      message =
+        "This OAuth login isn't linked to a DePix account yet. Sign in to the DePix dashboard, link this login (Google/GitHub) under your connector settings, then reconnect. See https://depixapp.com/docs/en/";
       break;
     case "account_blocked":
       message = "This account is blocked. Contact support.";

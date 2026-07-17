@@ -61,9 +61,15 @@ node -e 'const cfg={url:"https://mcp.depixapp.com/mcp",headers:{Authorization:"B
 cursor://anysphere.cursor-deeplink/mcp/install?name=depix&config=<base64 from the command above>
 ```
 
-> The claude.ai web UI custom-connector only supports OAuth (no custom header),
-> so the web UI cannot connect in this MVP. Claude **Desktop** is covered by the
-> local stdio mode below; the OAuth shim is planned for a later phase.
+> The claude.ai web UI custom-connector only supports OAuth (no custom header).
+> This server is an OAuth 2.1 Resource Server (WorkOS AuthKit): the web connector
+> signs you in, and the session forwards your verified login to the API as the
+> bearer. To operate you must first **link that login to your DePix account**
+> (dashboard → connector settings); until then the tools return a typed
+> "not linked yet" message. OAuth sessions are read + merchant only and can never
+> move money (`wallet_write`) — use an `sk_` key for withdrawals. The whole OAuth
+> surface is feature-flagged (`AUTHKIT_DOMAIN`): with it unset, only the `sk_`
+> header/stdio paths above are active. Terminal clients keep using `sk_` keys.
 
 ## Quickstart 2 — Local stdio (Claude Desktop)
 

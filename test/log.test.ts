@@ -28,4 +28,23 @@ describe("redact (acceptance ⊆ redaction)", () => {
   it("leaves unrelated text untouched", () => {
     expect(redact("no keys here, just a skate sk8er")).toBe("no keys here, just a skate sk8er");
   });
+
+  // OAuth connector sessions forward a WorkOS JWT as the bearer — it must be
+  // redacted too, so a forwarded access token can never survive in a log line.
+  it("strips a WorkOS JWT (eyJ… three-segment) from log lines", () => {
+    const jwt = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJ1c2VyXzAxWCJ9.aVeryLong-Signature_segment123";
+    const out = redact(`oauth session bearer ${jwt} done`);
+    expect(out).not.toContain(jwt);
+    expect(out).toContain("eyJ***");
+  });
+
+  it("redacts a JWT embedded in JSON", () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJTRUNSRVQifQ.SIGSIGSIG_secret";
+    const out = redact(JSON.stringify({ auth: `Bearer ${jwt}` }));
+    expect(out).not.toContain("SIGSIGSIG_secret");
+  });
+
+  it("does not touch ordinary dotted paths (JWT redaction is anchored on eyJ)", () => {
+    expect(redact("GET /api/checkouts/chk_1.foo.bar ok")).toBe("GET /api/checkouts/chk_1.foo.bar ok");
+  });
 });

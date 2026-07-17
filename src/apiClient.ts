@@ -40,7 +40,9 @@ export interface ApiRequest {
 }
 
 export interface ApiClientOptions {
-  /** Caller's sk_ key (verbatim). Undefined ⇒ every request errors clearly. */
+  /** Caller's bearer credential, forwarded verbatim: an `sk_` API key, or the
+   * verified WorkOS JWT when authMode==="oauth". Undefined ⇒ every request
+   * errors clearly. */
   apiKey: string | undefined;
   apiBase: string;
   fetchImpl?: typeof fetch;
@@ -119,8 +121,12 @@ export class ApiClient {
   }
 
   async request<T = unknown>(req: ApiRequest): Promise<ApiResult<T>> {
-    // Key presence first (clear, actionable error — spec §3.3).
-    if (!this.apiKey || !this.apiKey.startsWith("sk_")) {
+    // Credential presence first (clear, actionable error — spec §3.3). An OAuth
+    // session forwards the WorkOS JWT already verified at the HTTP edge (no sk_
+    // prefix) as the bearer; every other mode still requires an sk_ key. The
+    // strict origin allowlist below gates where the header may be sent, for
+    // both token types.
+    if (!this.apiKey || (this.authMode !== "oauth" && !this.apiKey.startsWith("sk_"))) {
       throw missingApiKeyError(this.authMode);
     }
     // Origin allowlist BEFORE the Authorization header is ever attached (§3.2).
@@ -195,7 +201,7 @@ export class ApiClient {
         return { data: parsed as T, status: res.status, requestId, replayed };
       }
 
-      const toolError = mapApiError(res.status, parsed as ApiErrorEnvelope, requestId);
+      const toolError = mapApiError(res.status, parsed as ApiErrorEnvelope, requestId, this.authMode);
       logger.warn("api_error", {
         tool: req.tool,
         method: req.method,

@@ -33,6 +33,38 @@ describe("auth passthrough (spec §3.1, §3.2)", () => {
     ).rejects.toMatchObject({ code: "missing_api_key" });
     expect(requests.length).toBe(0); // never called the API
   });
+
+  // OAuth connector sessions forward the verified WorkOS JWT (no sk_ prefix) as
+  // the bearer — the backend accepts it as a third auth method.
+  const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEifQ.c2lnbmF0dXJl";
+
+  it("forwards the WorkOS JWT VERBATIM as a Bearer header in authMode=oauth", async () => {
+    const { fetchImpl, requests } = makeFetch([{ status: 200, json: { ok: true } }]);
+    await client(fetchImpl, { apiKey: JWT, authMode: "oauth" }).request({
+      method: "GET",
+      path: "/api/me",
+      tool: "get_account",
+    });
+    expect(requests[0].headers.Authorization).toBe(`Bearer ${JWT}`);
+  });
+
+  it("a non-sk_ token is STILL rejected without authMode=oauth (guard unchanged for legacy)", async () => {
+    const { fetchImpl, requests } = makeFetch([{ status: 200, json: {} }]);
+    const c = new ApiClient({ apiKey: JWT, apiBase: BASE, fetchImpl });
+    await expect(
+      c.request({ method: "GET", path: "/api/me", tool: "get_account" }),
+    ).rejects.toMatchObject({ code: "missing_api_key" });
+    expect(requests.length).toBe(0);
+  });
+
+  it("authMode=oauth with NO bearer still errors (no anonymous call)", async () => {
+    const { fetchImpl, requests } = makeFetch([{ status: 200, json: {} }]);
+    const c = new ApiClient({ apiKey: undefined, apiBase: BASE, fetchImpl, authMode: "oauth" });
+    await expect(
+      c.request({ method: "GET", path: "/api/me", tool: "get_account" }),
+    ).rejects.toMatchObject({ code: "missing_api_key" });
+    expect(requests.length).toBe(0);
+  });
 });
 
 describe("egress safety (spec §3.2)", () => {

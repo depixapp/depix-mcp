@@ -79,7 +79,14 @@ export async function handleMcpHttp(
     try {
       const identity = await verifyWorkosAccessToken(token, { authkitDomain, resourceUrl });
       logger.info("oauth session", { sub: identity.sub, orgId: identity.orgId });
-      apiKey = undefined; // OAuth carries no sk_; tools answer with the typed OAuth guidance
+      // Forward the verified WorkOS JWT to the API as the bearer. The backend
+      // accepts it as a third auth method and resolves the DePix account linked
+      // to this operator identity — or answers 403 oauth_account_not_linked when
+      // no account is linked yet (the typed dead-end the tools surface). The
+      // session is capped to read + merchant scopes server-side (never
+      // wallet_write), so an OAuth connection can never move money. apiKey
+      // already holds `token`; keep it and just mark the session mode.
+      apiKey = token;
       authMode = "oauth";
     } catch (err) {
       if (err instanceof OAuthTokenError) {

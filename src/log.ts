@@ -1,8 +1,9 @@
-// Redacting logger (spec §3.2). Hard rule: the caller's API key never appears
-// in any log line. A defense-in-depth redaction filter strips every sk_-prefixed
-// token from anything logged, and the call sites only ever pass safe fields
-// (request id, tool name, method/path, HTTP status, error code) — never the
-// Authorization header or request/response bodies.
+// Redacting logger (spec §3.2). Hard rule: the caller's bearer credential never
+// appears in any log line. A defense-in-depth redaction filter strips both
+// credential shapes — sk_-prefixed API keys and WorkOS OAuth JWTs — from
+// anything logged, and the call sites only ever pass safe fields (request id,
+// tool name, method/path, HTTP status, error code) — never the Authorization
+// header or request/response bodies.
 //
 // All output goes to STDERR on purpose: in stdio transport mode STDOUT is the
 // JSON-RPC channel, so writing logs there would corrupt the protocol.
@@ -12,9 +13,15 @@
 // so a key the server accepted can never survive in a log line.
 const SK_TOKEN_RE = /sk_[A-Za-z0-9._-]{8,}/g;
 
-/** Replace any DePix secret-key token with a masked placeholder. */
+// WorkOS OAuth access tokens (the connector's bearer, forwarded to the API when
+// authMode=oauth) are JWTs: the `eyJ` header followed by two more base64url
+// segments. Redact them too so a forwarded access token can never survive in a
+// log line. Anchored on `eyJ` so ordinary dotted paths are never touched.
+const JWT_TOKEN_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+
+/** Replace any DePix bearer credential (sk_ key or WorkOS JWT) with a mask. */
 export function redact(value: string): string {
-  return value.replace(SK_TOKEN_RE, "sk_***");
+  return value.replace(SK_TOKEN_RE, "sk_***").replace(JWT_TOKEN_RE, "eyJ***");
 }
 
 export type LogFields = Record<string, unknown>;
