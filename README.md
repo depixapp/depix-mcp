@@ -23,7 +23,18 @@ status** — end to end, in sandbox (`sk_test_`) and production (`sk_live_`).
   limits as any external agent — no privileged path.
 
 It does **not** create deposits or withdrawals (that moves funds and belongs to
-the Wallet SDK). The pay-side tools here are **read-only** status reads.
+the Wallet SDK — see [Related](#related--moving-funds-the-wallet-sdk)). The
+pay-side tools here are **read-only** status reads.
+
+## Related — moving funds: the Wallet SDK
+
+This gateway **receives** payments and reads status. To **hold, sign, and move
+funds** — an agent running its own non-custodial Liquid wallet that pays and
+receives over Pix/DePix, converts DePix/L-BTC/USDt, buys gift cards, and
+self-onboards — use the companion
+**[`@depixapp/sdk`](https://www.npmjs.com/package/@depixapp/sdk)**
+([source](https://github.com/depixapp/depix-sdk)). The seed never leaves the
+agent and the backend never signs.
 
 ## Quickstart 1 — Connect Claude Code (remote, HTTP)
 
