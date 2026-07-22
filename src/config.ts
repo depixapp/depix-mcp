@@ -47,7 +47,7 @@ export function resolveMaxWaitSeconds(env: NodeJS.ProcessEnv = process.env): num
 
 /** Server version, surfaced in the MCP handshake and /.well-known/mcp.json. */
 export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MCP_SERVER_VERSION?.trim() || "1.0.0";
+  return env.MCP_SERVER_VERSION?.trim() || "1.1.0";
 }
 
 // ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────

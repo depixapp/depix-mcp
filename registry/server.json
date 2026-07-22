@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "com.depixapp/gateway",
+  "name": "io.github.depixapp/depix-mcp",
   "title": "DePix Gateway",
-  "description": "Non-custodial Pix payment gateway on Liquid. Create/track Pix checkouts and products via MCP.",
-  "version": "1.0.0",
+  "description": "Non-custodial Pix payment gateway on Liquid: checkouts, products, status reads, and support tickets.",
+  "version": "1.1.0",
   "websiteUrl": "https://depixapp.com",
   "repository": {
     "url": "https://github.com/depixapp/depix-mcp",
@@ -16,11 +16,21 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "DePix API key: Bearer sk_test_ (sandbox) or sk_live_ (production).",
+          "description": "DePix API key: Bearer sk_test_ (sandbox) or sk_live_ (production). Get one in the dashboard at depixapp.com, or self-onboard autonomously with no human via POST https://api.depixapp.com/api/agents/register (see https://depixapp.com/docs/en/).",
           "isRequired": true,
           "isSecret": true
         }
       ]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@depixapp/mcp",
+      "version": "1.1.0",
+      "transport": {
+        "type": "stdio"
+      }
     }
   ]
 }

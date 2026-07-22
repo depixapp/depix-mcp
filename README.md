@@ -134,7 +134,7 @@ non-payable placeholders (`SANDBOX-…-DO-NOT-PAY`).
 You can also read a synthetic deposit: **`get_deposit_status`** with a
 `sandbox_…` id returns `depix_sent`.
 
-## Tools (16)
+## Tools (21)
 
 | Tool | API | Scope |
 |---|---|---|
@@ -154,8 +154,15 @@ You can also read a synthetic deposit: **`get_deposit_status`** with a
 | `get_account` | GET /api/me | `merchant_read` |
 | `get_deposit_status` | GET /api/deposits/:id | `wallet_read` (read-only) |
 | `get_withdrawal_status` | GET /api/withdrawals/:id | `wallet_read` (read-only) |
+| `open_support_ticket` | POST /api/tickets | any key (scope-less) |
+| `get_support_ticket` | GET /api/tickets/:id | any key (scope-less) |
+| `list_support_tickets` | GET /api/tickets | any key (scope-less) |
+| `reply_support_ticket` | POST /api/tickets/:id/messages | any key (scope-less) |
+| `close_support_ticket` | POST /api/tickets/:id/close | any key (scope-less) |
 
-Amounts are BRL cents. A tool call whose key lacks the required scope returns an
+The last five are the support channel: open a ticket, poll for the human reply,
+reply back, or close it (up to 5 open per account). Replies are not pushed —
+poll `get_support_ticket`. Amounts are BRL cents. A tool call whose key lacks the required scope returns an
 `insufficient_scope` tool error naming the missing scope — that is the only way
 to discover a missing scope (the API never lists a key's scopes).
 
@@ -165,7 +172,7 @@ to discover a missing scope (the API never lists a key's scopes).
 |---|---|---|
 | `DEPIX_API_BASE` | API base URL (allowlisted origins only) | `https://api.depixapp.com` |
 | `MCP_MAX_WAIT_SECONDS` | Max `wait_for_checkout` budget; prod sets ~780 (Vercel Pro) | `290` (Hobby-safe) |
-| `MCP_SERVER_VERSION` | Version reported in the handshake | `1.0.0` |
+| `MCP_SERVER_VERSION` | Version reported in the handshake | `1.1.0` |
 | `MCP_ALLOWED_HOSTS` | Comma-separated Host allowlist (DNS-rebinding protection); set on previews to add the `*.vercel.app` host | `mcp.depixapp.com` |
 | `DEPIX_API_KEY` | **stdio mode only** — your `sk_` key | — |
 

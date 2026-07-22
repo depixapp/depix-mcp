@@ -1,6 +1,7 @@
 {
   "name": "@depixapp/mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "mcpName": "io.github.depixapp/depix-mcp",
   "type": "module",
   "description": "DePix App MCP server — agent-facing interface for the DePix App payment gateway. Pure client of the public DePix API (api.depixapp.com): receive Pix payments (checkouts/products) and read transaction status. Non-custodial, holds zero critical credentials.",
   "license": "MIT",

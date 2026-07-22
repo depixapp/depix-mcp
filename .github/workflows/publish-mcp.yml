@@ -1,0 +1,49 @@
+# Publish registry/server.json to the official MCP Registry
+# (registry.modelcontextprotocol.io) via GitHub Actions OIDC — no secret, no
+# stored key. The repo lives in the `depixapp` GitHub org, so OIDC vouches for
+# the `io.github.depixapp/*` namespace automatically (see
+# https://modelcontextprotocol.io/registry/github-actions).
+#
+# ORDERING — the npm package must exist FIRST. The registry verifies ownership
+# by fetching @depixapp/mcp@<version> from npm and checking its package.json
+# `mcpName` equals this server's name. npm publish is a MANUAL step (passkey/2FA,
+# done by a human), NOT automated here. So the release flow is:
+#   1. Bump version in package.json + registry/server.json (already 1.1.0 here).
+#   2. `npm publish` @depixapp/mcp@1.1.0 by hand (its package.json carries
+#      "mcpName": "io.github.depixapp/depix-mcp").
+#   3. Push tag `v1.1.0` (or run this workflow manually) → it publishes the
+#      server.json to the registry, which then cascades to PulseMCP + the GitHub
+#      MCP Registry; Glama picks it up by crawling the public repo.
+# If step 3 runs before step 2, the registry publish fails ownership/existence
+# validation — re-run it after npm is live.
+
+name: Publish to MCP Registry
+
+on:
+  push:
+    tags: ["v*"] # version tags like v1.1.0
+  workflow_dispatch: {} # allow a manual run once npm is published
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for OIDC authentication
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/mcp-publisher
+
+      - name: Authenticate to the MCP Registry (GitHub OIDC)
+        working-directory: registry
+        run: mcp-publisher login github-oidc
+
+      - name: Publish server to the MCP Registry
+        working-directory: registry
+        run: mcp-publisher publish
