@@ -1,8 +1,9 @@
-// Server factory (spec §2.8). Registers all 16 tools on a McpServer bound to an
-// ApiClient carrying the caller's key. Stateless: a fresh server is built per
-// HTTP request (the key comes from that request's Authorization header) and once
-// for the whole process in stdio mode. cancel_checkout is intentionally absent
-// (removed by product decision 2026-07-09).
+// Server factory (spec §2.8). Registers all 21 tools on a McpServer bound to an
+// ApiClient carrying the caller's key (16 gateway tools + 5 support-ticket
+// proxies, SPEC_TICKETS §8). Stateless: a fresh server is built per HTTP request
+// (the key comes from that request's Authorization header) and once for the
+// whole process in stdio mode. cancel_checkout is intentionally absent (removed
+// by product decision 2026-07-09).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -30,7 +31,20 @@ import {
 } from "./tools/products.js";
 import { getAccount } from "./tools/account.js";
 import { getDepositStatus, getWithdrawalStatus } from "./tools/payStatus.js";
-import type { CreateCheckoutArgs, CreateProductArgs, UpdateProductArgs } from "./requestMap.js";
+import {
+  closeSupportTicket,
+  getSupportTicket,
+  listSupportTickets,
+  openSupportTicket,
+  replySupportTicket,
+} from "./tools/tickets.js";
+import type {
+  CreateCheckoutArgs,
+  CreateProductArgs,
+  OpenTicketArgs,
+  ReplyTicketArgs,
+  UpdateProductArgs,
+} from "./requestMap.js";
 
 const INSTRUCTIONS = [
   "DePix Gateway MCP — receive Pix payments (checkouts/products) and read transaction status via the public DePix API.",
@@ -326,6 +340,72 @@ export function createServer(opts: CreateServerOptions): McpServer {
       annotations: readOnly,
     },
     (args) => run(() => getWithdrawalStatus(client, args)),
+  );
+
+  // ── Support tickets (one channel for humans and agents; NO scope) ──
+  server.registerTool(
+    "open_support_ticket",
+    {
+      title: "Open a support ticket",
+      description:
+        "Open a support ticket for a bug, unexpected behavior, or an account/payment problem. The body becomes the first message. A human replies within 1 business day — replies are NOT pushed to you: poll get_support_ticket to read them (check back in minutes, not seconds; this is not a live chat). For API or how-to questions, the docs (depixapp.com/docs and depixapp.com/llms.txt) usually answer instantly — prefer a ticket only when something is broken or account-specific. Up to 5 open tickets per account.",
+      inputSchema: s.openSupportTicketInput,
+      outputSchema: s.openSupportTicketOutput,
+      annotations: write,
+    },
+    (args) => run(() => openSupportTicket(client, args as unknown as OpenTicketArgs)),
+  );
+
+  server.registerTool(
+    "get_support_ticket",
+    {
+      title: "Get a support ticket",
+      description:
+        "Fetch one of your tickets with its full message thread. Poll this to read the human's reply — support answers within 1 business day, so check back in minutes, not seconds. Returns 404 if the ticket does not exist or was opened by another session/key.",
+      inputSchema: s.getSupportTicketInput,
+      outputSchema: s.getSupportTicketOutput,
+      annotations: readOnly,
+    },
+    (args) => run(() => getSupportTicket(client, args)),
+  );
+
+  server.registerTool(
+    "list_support_tickets",
+    {
+      title: "List your support tickets",
+      description:
+        "List the tickets you opened (this session/key), newest activity first. Use get_support_ticket to read a thread and poll for replies.",
+      inputSchema: s.listSupportTicketsInput,
+      outputSchema: s.listSupportTicketsOutput,
+      annotations: readOnly,
+    },
+    (args) => run(() => listSupportTickets(client, args)),
+  );
+
+  server.registerTool(
+    "reply_support_ticket",
+    {
+      title: "Reply to a support ticket",
+      description:
+        "Post a reply to one of your tickets. On an answered ticket this moves it back to awaiting a reply; on an auto-closed ticket within 7 days it reopens it. A human answers within 1 business day — poll get_support_ticket for the response (minutes, not seconds).",
+      inputSchema: s.replySupportTicketInput,
+      outputSchema: s.replySupportTicketOutput,
+      annotations: write,
+    },
+    (args) => run(() => replySupportTicket(client, args as unknown as ReplyTicketArgs)),
+  );
+
+  server.registerTool(
+    "close_support_ticket",
+    {
+      title: "Close a support ticket",
+      description:
+        "Close one of your tickets once you no longer need help. This is terminal — to continue later, open a new ticket.",
+      inputSchema: s.closeSupportTicketInput,
+      outputSchema: s.closeSupportTicketOutput,
+      annotations: write,
+    },
+    (args) => run(() => closeSupportTicket(client, args)),
   );
 
   return server;

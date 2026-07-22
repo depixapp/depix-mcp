@@ -451,3 +451,97 @@ export const getWithdrawalStatusOutput = {
   created_at: z.string().nullable(),
   updated_at: z.string().nullable(),
 };
+
+// ────────────────────────────── Support tickets ──────────────────────────────
+// Thin proxies over the backend /api/tickets endpoints (OpenAPI 0.17.0). The
+// tool shapes mirror the backend `serializeTicket` / `serializeMessage` JSON
+// verbatim — same field names, so there is no snake↔camel rename here; the
+// mapping is still explicit (never a blind passthrough) in tools/tickets.ts.
+
+export const TICKET_STATUSES = ["awaiting_reply", "answered", "closed"] as const;
+export const TERMINAL_TICKET_STATUSES = ["closed"] as const;
+export const TICKET_CATEGORIES = ["bug", "question", "account", "payment", "other"] as const;
+export const TICKET_SENDERS = ["user", "admin", "system"] as const;
+export const TICKET_OPENER_TYPES = ["human", "agent"] as const;
+
+const ticketStatus = z.enum(TICKET_STATUSES);
+const ticketCategory = z.enum(TICKET_CATEGORIES);
+
+// Shared object schemas: each is referenced at most once per tool's outputSchema,
+// so a single shared instance never triggers a JSON-Schema $ref (same reasoning
+// as `metadataOutput`; the $ref hazard is only a repeat WITHIN one schema).
+const ticketObject = z.object({
+  id: z.string().describe("Ticket id (tkt_…)."),
+  opener_type: z
+    .enum(TICKET_OPENER_TYPES)
+    .describe("Who opened the ticket, snapshotted from the account type at creation."),
+  status: ticketStatus.describe("awaiting_reply | answered | closed. `closed` is terminal (an auto-closed ticket can be reopened by replying within 7 days)."),
+  subject: z.string(),
+  category: ticketCategory,
+  created_at: z.string().describe("Creation timestamp (UTC)."),
+  last_activity_at: z.string().describe("Timestamp of the last user/admin message (UTC)."),
+  closed_reason: z.string().nullable().describe("'user' | 'admin' | 'auto'; null while open."),
+  closed_at: z.string().nullable().describe("Close timestamp (UTC); null while open."),
+});
+
+const ticketMessageObject = z.object({
+  id: z.string(),
+  sender: z.enum(TICKET_SENDERS).describe("Who sent the message."),
+  body: z.string(),
+  created_at: z.string().describe("Message timestamp (UTC)."),
+});
+
+export const openSupportTicketInput = {
+  subject: z.string().min(4).max(120).describe("Short subject (4–120 chars)."),
+  category: z
+    .enum(TICKET_CATEGORIES)
+    .optional()
+    .describe(
+      "Optional category (bug | question | account | payment | other; defaults to 'other'). Triage only — it does not change handling or the SLA.",
+    ),
+  body: z.string().min(1).max(4000).describe("Ticket body — becomes the first message (1–4000 chars)."),
+};
+
+export const openSupportTicketOutput = {
+  ticket: ticketObject,
+};
+
+export const getSupportTicketInput = {
+  id: z.string().regex(/^tkt_/).describe("Ticket id (tkt_…)."),
+};
+
+export const getSupportTicketOutput = {
+  ticket: ticketObject,
+  messages: z.array(ticketMessageObject).describe("Full message thread, oldest first."),
+};
+
+export const listSupportTicketsInput = {
+  limit: z.number().int().min(1).max(100).default(50),
+  offset: z.number().int().min(0).default(0),
+};
+
+export const listSupportTicketsOutput = {
+  tickets: z.array(ticketObject).describe("Your tickets (this session/key), newest activity first."),
+  total: z.number().int().describe("Total tickets for this principal (ignores pagination)."),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  has_more: z.boolean().describe("True when more tickets exist past this page."),
+};
+
+export const replySupportTicketInput = {
+  id: z.string().regex(/^tkt_/).describe("Ticket id (tkt_…)."),
+  body: z.string().min(1).max(4000).describe("Reply body (1–4000 chars)."),
+};
+
+export const replySupportTicketOutput = {
+  message: ticketMessageObject,
+  ticket: ticketObject,
+};
+
+export const closeSupportTicketInput = {
+  id: z.string().regex(/^tkt_/).describe("Ticket id (tkt_…)."),
+};
+
+export const closeSupportTicketOutput = {
+  ticket: ticketObject,
+};

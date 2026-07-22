@@ -128,3 +128,31 @@ export function buildUpdateProductBody(args: UpdateProductArgs): Record<string, 
 export function buildSetFeaturedBody(args: { product_ids: string[] }): Record<string, unknown> {
   return { productIds: args.product_ids };
 }
+
+// ── Support tickets ──
+// No field renames here (subject/category/body are snake_case on both sides),
+// but the body is still constructed explicitly so unrelated tool args (e.g. the
+// `id` path param on a reply) never leak onto the wire.
+
+export interface OpenTicketArgs {
+  subject: string;
+  category?: string;
+  body: string;
+}
+
+/** Build the POST /api/tickets wire body (category omitted when absent). */
+export function buildOpenTicketBody(args: OpenTicketArgs): Record<string, unknown> {
+  const body: Record<string, unknown> = { subject: args.subject, body: args.body };
+  put(body, "category", args.category);
+  return body;
+}
+
+export interface ReplyTicketArgs {
+  id: string;
+  body: string;
+}
+
+/** Build the POST /api/tickets/:id/messages wire body ({ body } only — `id` is a path param). */
+export function buildReplyTicketBody(args: ReplyTicketArgs): Record<string, unknown> {
+  return { body: args.body };
+}
