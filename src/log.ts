@@ -19,7 +19,7 @@ const SK_TOKEN_RE = /sk_[A-Za-z0-9._-]{8,}/g;
 // log line. Anchored on `eyJ` so ordinary dotted paths are never touched.
 const JWT_TOKEN_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
-/** Replace any DePix bearer credential (sk_ key or WorkOS JWT) with a mask. */
+/** Replace any DePix App bearer credential (sk_ key or WorkOS JWT) with a mask. */
 export function redact(value: string): string {
   return value.replace(SK_TOKEN_RE, "sk_***").replace(JWT_TOKEN_RE, "eyJ***");
 }

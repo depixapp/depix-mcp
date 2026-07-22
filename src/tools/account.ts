@@ -15,7 +15,7 @@ export async function getAccount(client: ApiClient) {
   } catch (err) {
     if (err instanceof ToolError && (err.code === "not_found" || err.code === "merchant_required")) {
       throw new ToolError(
-        "Your key is valid but has no merchant profile. Create one in the DePix dashboard (this MCP cannot create merchants).",
+        "Your key is valid but has no merchant profile. Create one in the DePix App dashboard (this MCP cannot create merchants).",
         "merchant_required",
         { data: err.data },
       );

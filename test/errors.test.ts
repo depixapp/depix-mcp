@@ -141,7 +141,7 @@ describe("OAuth session errors (F4 §2.9 — the typed dead-ends)", () => {
   it("oauth_account_not_linked → the beco-com-placa: valid login, no linked account", () => {
     const e = mapApiError(403, errorEnvelope("oauth_account_not_linked") as never);
     expect(e.code).toBe("oauth_account_not_linked");
-    expect(e.message).toContain("isn't linked to a DePix account");
+    expect(e.message).toContain("isn't linked to a DePix App account");
     expect(e.message).toContain("dashboard");
     expect(e.retryable).toBe(false);
   });

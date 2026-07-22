@@ -1,4 +1,4 @@
-// Thin, stateless HTTP client for the public DePix API (spec §2.1, §3.2, §4.6).
+// Thin, stateless HTTP client for the public DePix App API (spec §2.1, §3.2, §4.6).
 // It injects the caller's Bearer key VERBATIM, enforces the fail-closed egress
 // rules (origin allowlist + redirect:'error'), captures X-Request-Id, maps the
 // structured error envelope to ToolError, and auto-retries only transient 429 /
@@ -112,7 +112,7 @@ export class ApiClient {
       // Fail-closed BEFORE any fetch and before the Authorization header exists,
       // so a misconfigured/malicious DEPIX_API_BASE can never receive the key.
       throw new ToolError(
-        "DePix MCP is misconfigured: the API base points to a non-allowlisted origin. The request was refused before any network call.",
+        "DePix App MCP is misconfigured: the API base points to a non-allowlisted origin. The request was refused before any network call.",
         "config_error",
         { data: { origin: url.origin } },
       );
@@ -172,7 +172,7 @@ export class ApiClient {
           throw cause;
         }
         lastError = new ToolError(
-          "Could not reach the DePix API (network error). Please retry.",
+          "Could not reach the DePix App API (network error). Please retry.",
           "network_error",
           { retryable: true },
         );

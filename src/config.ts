@@ -26,7 +26,7 @@ export const MAX_WAIT_CEILING_SECONDS = 790;
 export const ALLOWED_API_ORIGINS: readonly string[] = ["https://api.depixapp.com"];
 
 export const SERVER_NAME = "com.depixapp/gateway";
-export const SERVER_TITLE = "DePix Gateway";
+export const SERVER_TITLE = "DePix App Gateway";
 
 /** Resolve the API base URL, trimming trailing slashes. */
 export function resolveApiBase(env: NodeJS.ProcessEnv = process.env): string {

@@ -80,7 +80,7 @@ export async function handleMcpHttp(
       const identity = await verifyWorkosAccessToken(token, { authkitDomain, resourceUrl });
       logger.info("oauth session", { sub: identity.sub, orgId: identity.orgId });
       // Forward the verified WorkOS JWT to the API as the bearer. The backend
-      // accepts it as a third auth method and resolves the DePix account linked
+      // accepts it as a third auth method and resolves the DePix App account linked
       // to this operator identity — or answers 403 oauth_account_not_linked when
       // no account is linked yet (the typed dead-end the tools surface). The
       // session is capped to read + merchant scopes server-side (never

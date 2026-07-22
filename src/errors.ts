@@ -1,4 +1,4 @@
-// Structured-error translation (spec §4.6). The DePix API returns a dual error
+// Structured-error translation (spec §4.6). The DePix App API returns a dual error
 // envelope: `response.errorMessage` (legacy Portuguese, human contract) and
 // `error` (machine contract: { code, message, request_id, retry_after,
 // docs_url, details }). This module turns that envelope into an actionable
@@ -51,7 +51,7 @@ export function missingApiKeyError(authMode?: "oauth"): ToolError {
     );
   }
   return new ToolError(
-    "No DePix API key on this connection. Over HTTP, connect with the header `Authorization: Bearer sk_…`; in local stdio mode set the DEPIX_API_KEY environment variable. Ask the user to reconnect with their key (sk_test_ for sandbox, sk_live_ for production) — tools cannot set it. See https://depixapp.com/docs/en/",
+    "No DePix App API key on this connection. Over HTTP, connect with the header `Authorization: Bearer sk_…`; in local stdio mode set the DEPIX_API_KEY environment variable. Ask the user to reconnect with their key (sk_test_ for sandbox, sk_live_ for production) — tools cannot set it. See https://depixapp.com/docs/en/",
     "missing_api_key",
   );
 }
@@ -173,16 +173,16 @@ export function mapApiError(
       break;
     case "oauth_account_not_linked":
       // The typed dead-end (beco-com-placa): the WorkOS identity is valid but no
-      // DePix account is linked to it, so there is nothing to act on behalf of.
+      // DePix App account is linked to it, so there is nothing to act on behalf of.
       message =
-        "This OAuth login isn't linked to a DePix account yet. Sign in to the DePix dashboard, link this login (Google/GitHub) under your connector settings, then reconnect. See https://depixapp.com/docs/en/";
+        "This OAuth login isn't linked to a DePix App account yet. Sign in to the DePix App dashboard, link this login (Google/GitHub) under your connector settings, then reconnect. See https://depixapp.com/docs/en/";
       break;
     case "account_blocked":
       message = "This account is blocked. Contact support.";
       break;
     case "merchant_required":
       message =
-        "Your key is valid but has no merchant profile. Create one in the DePix dashboard (this MCP cannot create merchants).";
+        "Your key is valid but has no merchant profile. Create one in the DePix App dashboard (this MCP cannot create merchants).";
       break;
     case "live_access_required":
       message = "This action requires a live key (sk_live_).";
@@ -249,19 +249,19 @@ export function mapApiError(
       message = `Rate limited (merchant, 30/min). Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
     case "platform_shutdown":
-      message = `The DePix platform is temporarily shut down. Retry after ${retryAfterPhrase(retryAfter)}.`;
+      message = `The DePix App platform is temporarily shut down. Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
     case "service_unavailable":
-      message = `DePix API temporarily unavailable. Retry after ${retryAfterPhrase(retryAfter)}.`;
+      message = `DePix App API temporarily unavailable. Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
     case "upstream_error":
-      message = "Upstream provider error at the DePix API. Please retry.";
+      message = "Upstream provider error at the DePix App API. Please retry.";
       break;
     case "internal_error":
-      message = "Internal error at the DePix API. Quote request_id in a support request.";
+      message = "Internal error at the DePix App API. Quote request_id in a support request.";
       break;
     default:
-      message = `DePix API error (${code}). See error.data for details.`;
+      message = `DePix App API error (${code}). See error.data for details.`;
       break;
   }
 

@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   const apiKey = process.env.DEPIX_API_KEY;
   if (!apiKey || !apiKey.startsWith("sk_")) {
     process.stderr.write(
-      "depix-mcp: set DEPIX_API_KEY to your DePix API key (sk_test_… for sandbox, sk_live_… for production).\n",
+      "depix-mcp: set DEPIX_API_KEY to your DePix App API key (sk_test_… for sandbox, sk_live_… for production).\n",
     );
     process.exit(1);
   }
