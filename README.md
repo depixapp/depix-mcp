@@ -1,5 +1,7 @@
 # depix-mcp
 
+[![smithery badge](https://smithery.ai/badge/depixapp/depix-mcp)](https://smithery.ai/servers/depixapp/depix-mcp)
+
 MCP (Model Context Protocol) server for [DePix App](https://depixapp.com) — the
 agent-facing interface of the non-custodial Pix↔DePix payment gateway.
 
