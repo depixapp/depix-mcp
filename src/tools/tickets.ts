@@ -12,8 +12,10 @@
 
 import type { ApiClient } from "../apiClient.js";
 import {
+  buildAttachTicketBody,
   buildOpenTicketBody,
   buildReplyTicketBody,
+  type AttachTicketArgs,
   type OpenTicketArgs,
   type ReplyTicketArgs,
 } from "../requestMap.js";
@@ -37,11 +39,15 @@ function normalizeTicket(raw: Record<string, unknown>) {
 
 /** Map a backend ticket_messages row to the tool shape (explicit fields). */
 function normalizeMessage(raw: Record<string, unknown>) {
+  const att = rec(raw.attachment);
   return {
     id: str(raw.id),
     sender: str(raw.sender),
     body: str(raw.body),
     created_at: str(raw.created_at),
+    // Present on every message (null for plain text). The bytes are forwarded to
+    // support, never returned — only name/mime are exposed.
+    attachment: raw.attachment ? { name: str(att.name), mime: strOrNull(att.mime) } : null,
   };
 }
 
@@ -107,4 +113,20 @@ export async function closeSupportTicket(client: ApiClient, args: { id: string }
     tool: "close_support_ticket",
   });
   return { ticket: normalizeTicket(rec(unwrap(data, "ticket"))) };
+}
+
+export async function attachSupportTicketFile(client: ApiClient, args: AttachTicketArgs) {
+  // No Idempotency-Key (same reasoning as the other ticket writes): without it a
+  // transient failure never auto-retries, so a large upload is never duplicated.
+  const { data } = await client.request({
+    method: "POST",
+    path: `/api/tickets/${encodeURIComponent(args.id)}/attachments`,
+    body: buildAttachTicketBody(args),
+    tool: "attach_support_ticket_file",
+  });
+  const d = rec(data);
+  return {
+    message: normalizeMessage(rec(d.message)),
+    ticket: normalizeTicket(rec(d.ticket)),
+  };
 }

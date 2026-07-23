@@ -1,5 +1,5 @@
-// Verifies the server registers EXACTLY the 21 tools (Appendix A's 16 gateway
-// tools + the 5 support-ticket proxies, SPEC_TICKETS §8) and that a tool call
+// Verifies the server registers EXACTLY the 22 tools (Appendix A's 16 gateway
+// tools + the 6 support-ticket proxies, SPEC_TICKETS §8) and that a tool call
 // flows through the McpServer to an isError result on an API error, with the key
 // never leaking.
 
@@ -34,6 +34,7 @@ const EXPECTED_TOOLS = [
   "get_support_ticket",
   "list_support_tickets",
   "reply_support_ticket",
+  "attach_support_ticket_file",
   "close_support_ticket",
 ].sort();
 
@@ -45,15 +46,15 @@ async function connect(apiClient: ApiClient) {
   return { server, client };
 }
 
-describe("tool catalog (16 gateway tools + 5 support-ticket tools, no cancel_checkout)", () => {
-  it("registers exactly the 21 tools", async () => {
+describe("tool catalog (16 gateway tools + 6 support-ticket tools, no cancel_checkout)", () => {
+  it("registers exactly the 22 tools", async () => {
     const { fetchImpl } = makeFetch([]);
     const { client } = await connect(new ApiClient({ apiKey: KEY, apiBase: BASE, fetchImpl }));
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(EXPECTED_TOOLS);
     expect(names).not.toContain("cancel_checkout");
-    expect(names.length).toBe(21);
+    expect(names.length).toBe(22);
   });
 
   it("advertises structured output schemas", async () => {

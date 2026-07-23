@@ -1,5 +1,5 @@
-// Server factory (spec §2.8). Registers all 21 tools on a McpServer bound to an
-// ApiClient carrying the caller's key (16 gateway tools + 5 support-ticket
+// Server factory (spec §2.8). Registers all 22 tools on a McpServer bound to an
+// ApiClient carrying the caller's key (16 gateway tools + 6 support-ticket
 // proxies, SPEC_TICKETS §8). Stateless: a fresh server is built per HTTP request
 // (the key comes from that request's Authorization header) and once for the
 // whole process in stdio mode. cancel_checkout is intentionally absent (removed
@@ -32,6 +32,7 @@ import {
 import { getAccount } from "./tools/account.js";
 import { getDepositStatus, getWithdrawalStatus } from "./tools/payStatus.js";
 import {
+  attachSupportTicketFile,
   closeSupportTicket,
   getSupportTicket,
   listSupportTickets,
@@ -39,6 +40,7 @@ import {
   replySupportTicket,
 } from "./tools/tickets.js";
 import type {
+  AttachTicketArgs,
   CreateCheckoutArgs,
   CreateProductArgs,
   OpenTicketArgs,
@@ -406,6 +408,19 @@ export function createServer(opts: CreateServerOptions): McpServer {
       annotations: write,
     },
     (args) => run(() => closeSupportTicket(client, args)),
+  );
+
+  server.registerTool(
+    "attach_support_ticket_file",
+    {
+      title: "Attach a file to a support ticket",
+      description:
+        "Attach ONE file to a ticket so the support team can see it — typically a diagnostic/log file or a screenshot that documents a bug. Provide the bytes base64-encoded in file_b64 (no data: URI prefix), up to ~3 MB, with content_type one of image/png, image/jpeg, image/webp, application/pdf, text/plain or application/json. The file is forwarded to a human on the support side; it is not stored or served back, so the result records only the filename and type. Attaching counts as a reply: an answered ticket returns to awaiting a reply, and an auto-closed ticket within 7 days reopens. If the response is attachment_unavailable, retry shortly or continue with reply_support_ticket.",
+      inputSchema: s.attachSupportTicketFileInput,
+      outputSchema: s.attachSupportTicketFileOutput,
+      annotations: write,
+    },
+    (args) => run(() => attachSupportTicketFile(client, args as unknown as AttachTicketArgs)),
   );
 
   return server;

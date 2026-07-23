@@ -484,11 +484,33 @@ const ticketObject = z.object({
   closed_at: z.string().nullable().describe("Close timestamp (UTC); null while open."),
 });
 
+// Allowed attachment types + size, mirroring the backend allowlist / 3 MB cap.
+export const ATTACHMENT_CONTENT_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "application/json",
+] as const;
+export const ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024;
+// base64 inflates ~33%; cap the encoded string a hair above the decoded ceiling.
+export const ATTACHMENT_MAX_BASE64_LENGTH = Math.ceil((ATTACHMENT_MAX_BYTES * 4) / 3) + 16;
+
+const ticketAttachmentObject = z
+  .object({
+    name: z.string().describe("Original filename."),
+    mime: z.string().nullable().describe("Content type."),
+  })
+  .nullable()
+  .describe("Attached file metadata when the message carries a file, otherwise null.");
+
 const ticketMessageObject = z.object({
   id: z.string(),
   sender: z.enum(TICKET_SENDERS).describe("Who sent the message."),
   body: z.string(),
   created_at: z.string().describe("Message timestamp (UTC)."),
+  attachment: ticketAttachmentObject,
 });
 
 export const openSupportTicketInput = {
@@ -543,5 +565,28 @@ export const closeSupportTicketInput = {
 };
 
 export const closeSupportTicketOutput = {
+  ticket: ticketObject,
+};
+
+export const attachSupportTicketFileInput = {
+  id: z.string().regex(/^tkt_/).describe("Ticket id (tkt_…)."),
+  filename: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe("Filename shown to the support team, e.g. 'error.log' or 'screenshot.png'."),
+  content_type: z
+    .enum(ATTACHMENT_CONTENT_TYPES)
+    .describe("File MIME type: image/png, image/jpeg, image/webp, application/pdf, text/plain or application/json."),
+  file_b64: z
+    .string()
+    .min(1)
+    .max(ATTACHMENT_MAX_BASE64_LENGTH)
+    .describe("The file bytes, base64-encoded (no data: URI prefix). Max ~3 MB decoded."),
+  caption: z.string().max(400).optional().describe("Optional note shown with the file (max 400 chars)."),
+};
+
+export const attachSupportTicketFileOutput = {
+  message: ticketMessageObject,
   ticket: ticketObject,
 };

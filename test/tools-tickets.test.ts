@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { ApiClient } from "../src/apiClient.js";
 import {
+  attachSupportTicketFile,
   closeSupportTicket,
   getSupportTicket,
   listSupportTickets,
@@ -102,6 +103,15 @@ describe("get_support_ticket (spec §8)", () => {
               body: "Já estamos verificando.",
               created_at: "2026-07-22 13:00:00",
             },
+            {
+              id: "tmsg_3",
+              sender: "user",
+              body: "erro.png",
+              created_at: "2026-07-22 13:30:00",
+              // Attachment metadata is mapped to { name, mime }; the internal
+              // tg_file_id is never present in the API row and never surfaced.
+              attachment: { name: "erro.png", mime: "image/png" },
+            },
           ],
         },
       },
@@ -111,8 +121,9 @@ describe("get_support_ticket (spec §8)", () => {
     expect(requests[0].url).toBe(`${BASE}/api/tickets/tkt_ab12cd34ef`);
     expect(out.ticket).toEqual(TICKET);
     expect(out.messages).toEqual([
-      { id: "tmsg_1", sender: "user", body: "Paguei o Pix mas o DePix não chegou.", created_at: "2026-07-22 12:00:00" },
-      { id: "tmsg_2", sender: "admin", body: "Já estamos verificando.", created_at: "2026-07-22 13:00:00" },
+      { id: "tmsg_1", sender: "user", body: "Paguei o Pix mas o DePix não chegou.", created_at: "2026-07-22 12:00:00", attachment: null },
+      { id: "tmsg_2", sender: "admin", body: "Já estamos verificando.", created_at: "2026-07-22 13:00:00", attachment: null },
+      { id: "tmsg_3", sender: "user", body: "erro.png", created_at: "2026-07-22 13:30:00", attachment: { name: "erro.png", mime: "image/png" } },
     ]);
     expect((out.messages[0] as Record<string, unknown>).tg_update_id).toBeUndefined();
     expect(z.object(s.getSupportTicketOutput).safeParse(out).success).toBe(true);
@@ -153,7 +164,7 @@ describe("list_support_tickets (spec §8)", () => {
 describe("reply_support_ticket (spec §8)", () => {
   it("POSTs { body } only to /api/tickets/:id/messages (id is a path param, not a body field)", async () => {
     const answered = { ...TICKET, status: "answered", last_activity_at: "2026-07-22 14:00:00" };
-    const message = { id: "tmsg_3", sender: "user", body: "Segue o comprovante.", created_at: "2026-07-22 14:00:00" };
+    const message = { id: "tmsg_3", sender: "user", body: "Segue o comprovante.", created_at: "2026-07-22 14:00:00", attachment: null };
     const { client, requests } = makeClient([{ status: 201, json: { message, ticket: answered } }]);
     const out = await replySupportTicket(client, { id: "tkt_ab12cd34ef", body: "Segue o comprovante." });
     const req = requests[0];
@@ -178,6 +189,41 @@ describe("close_support_ticket (spec §8)", () => {
     expect(req.body).toBeUndefined();
     expect(out).toEqual({ ticket: closed });
     expect(z.object(s.closeSupportTicketOutput).safeParse(out).success).toBe(true);
+  });
+});
+
+describe("attach_support_ticket_file (spec §8)", () => {
+  const B64 = Buffer.from("hello").toString("base64");
+
+  it("POSTs filename/content_type/file_b64/caption to /api/tickets/:id/attachments (id is a path param)", async () => {
+    const answered = { ...TICKET, status: "awaiting_reply", last_activity_at: "2026-07-22 14:05:00" };
+    const message = { id: "tmsg_5", sender: "user", body: "erro.png", created_at: "2026-07-22 14:05:00", attachment: { name: "erro.png", mime: "image/png" } };
+    const { client, requests } = makeClient([{ status: 201, json: { message, ticket: answered } }]);
+    const out = await attachSupportTicketFile(client, {
+      id: "tkt_ab12cd34ef",
+      filename: "erro.png",
+      content_type: "image/png",
+      file_b64: B64,
+      caption: "Tela do erro",
+    });
+    const req = requests[0];
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe(`${BASE}/api/tickets/tkt_ab12cd34ef/attachments`);
+    const body = JSON.parse(req.body!);
+    expect(body).toEqual({ filename: "erro.png", content_type: "image/png", file_b64: B64, caption: "Tela do erro" });
+    expect(body).not.toHaveProperty("id"); // path param, never on the wire
+    expect(req.headers["Idempotency-Key"]).toBeUndefined(); // no auto-retry on a large upload
+    expect(req.headers.Authorization).toBe(`Bearer ${KEY}`);
+    expect(out).toEqual({ message, ticket: answered });
+    expect(z.object(s.attachSupportTicketFileOutput).safeParse(out).success).toBe(true);
+  });
+
+  it("omits caption from the wire body when not provided", async () => {
+    const message = { id: "tmsg_6", sender: "user", body: "logs.json", created_at: "2026-07-22 14:06:00", attachment: { name: "logs.json", mime: "application/json" } };
+    const { client, requests } = makeClient([{ status: 201, json: { message, ticket: TICKET } }]);
+    await attachSupportTicketFile(client, { id: "tkt_ab12cd34ef", filename: "logs.json", content_type: "application/json", file_b64: B64 });
+    const body = JSON.parse(requests[0].body!);
+    expect(body).not.toHaveProperty("caption");
   });
 });
 
@@ -210,5 +256,17 @@ describe("ticket input schema validation (spec §8 / backend contract)", () => {
     expect(z.object(s.getSupportTicketInput).safeParse({ id: "chk_1" }).success).toBe(false);
     expect(z.object(s.replySupportTicketInput).safeParse({ id: "tkt_1", body: "oi" }).success).toBe(true);
     expect(z.object(s.closeSupportTicketInput).safeParse({ id: "nope" }).success).toBe(false);
+  });
+
+  it("attach input: tkt_ id, allowed content_type, filename 1–200, file_b64 within the size cap, caption optional", () => {
+    const attach = z.object(s.attachSupportTicketFileInput);
+    const B64 = Buffer.from("hello").toString("base64");
+    expect(attach.safeParse({ id: "tkt_1", filename: "a.png", content_type: "image/png", file_b64: B64 }).success).toBe(true);
+    expect(attach.safeParse({ id: "chk_1", filename: "a.png", content_type: "image/png", file_b64: B64 }).success).toBe(false); // wrong id prefix
+    expect(attach.safeParse({ id: "tkt_1", filename: "a.exe", content_type: "application/x-msdownload", file_b64: B64 }).success).toBe(false); // type not allowed
+    expect(attach.safeParse({ id: "tkt_1", filename: "", content_type: "image/png", file_b64: B64 }).success).toBe(false); // empty filename
+    expect(attach.safeParse({ id: "tkt_1", filename: "a.png", content_type: "image/png", file_b64: "" }).success).toBe(false); // empty payload
+    expect(attach.safeParse({ id: "tkt_1", filename: "a.png", content_type: "image/png", file_b64: "A".repeat(s.ATTACHMENT_MAX_BASE64_LENGTH + 1) }).success).toBe(false); // over size cap
+    expect(attach.safeParse({ id: "tkt_1", filename: "a.png", content_type: "image/png", file_b64: B64, caption: "ok" }).success).toBe(true);
   });
 });

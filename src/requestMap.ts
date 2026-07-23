@@ -156,3 +156,22 @@ export interface ReplyTicketArgs {
 export function buildReplyTicketBody(args: ReplyTicketArgs): Record<string, unknown> {
   return { body: args.body };
 }
+
+export interface AttachTicketArgs {
+  id: string;
+  filename: string;
+  content_type: string;
+  file_b64: string;
+  caption?: string;
+}
+
+/** Build the POST /api/tickets/:id/attachments wire body (`id` is a path param, never sent). */
+export function buildAttachTicketBody(args: AttachTicketArgs): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    filename: args.filename,
+    content_type: args.content_type,
+    file_b64: args.file_b64,
+  };
+  put(body, "caption", args.caption);
+  return body;
+}

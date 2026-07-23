@@ -134,7 +134,7 @@ non-payable placeholders (`SANDBOX-…-DO-NOT-PAY`).
 You can also read a synthetic deposit: **`get_deposit_status`** with a
 `sandbox_…` id returns `depix_sent`.
 
-## Tools (21)
+## Tools (22)
 
 | Tool | API | Scope |
 |---|---|---|
@@ -158,10 +158,12 @@ You can also read a synthetic deposit: **`get_deposit_status`** with a
 | `get_support_ticket` | GET /api/tickets/:id | any key (scope-less) |
 | `list_support_tickets` | GET /api/tickets | any key (scope-less) |
 | `reply_support_ticket` | POST /api/tickets/:id/messages | any key (scope-less) |
+| `attach_support_ticket_file` | POST /api/tickets/:id/attachments | any key (scope-less) |
 | `close_support_ticket` | POST /api/tickets/:id/close | any key (scope-less) |
 
-The last five are the support channel: open a ticket, poll for the human reply,
-reply back, or close it (up to 5 open per account). Replies are not pushed —
+The last six are the support channel: open a ticket, poll for the human reply,
+reply back, attach a screenshot or diagnostic/log file (base64, ~3 MB), or close
+it (up to 5 open per account). Replies are not pushed —
 poll `get_support_ticket`. Amounts are BRL cents. A tool call whose key lacks the required scope returns an
 `insufficient_scope` tool error naming the missing scope — that is the only way
 to discover a missing scope (the API never lists a key's scopes).
