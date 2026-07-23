@@ -1,49 +1,130 @@
-# Publish registry/server.json to the official MCP Registry
-# (registry.modelcontextprotocol.io) via GitHub Actions OIDC — no secret, no
-# stored key. The repo lives in the `depixapp` GitHub org, so OIDC vouches for
-# the `io.github.depixapp/*` namespace automatically (see
-# https://modelcontextprotocol.io/registry/github-actions).
+# Release @depixapp/mcp: publish the npm package AND the MCP Registry entry, both
+# via GitHub Actions OIDC — no stored npm token, no passkey/2FA prompt.
 #
-# ORDERING — the npm package must exist FIRST. The registry verifies ownership
-# by fetching @depixapp/mcp@<version> from npm and checking its package.json
-# `mcpName` equals this server's name. npm publish is a MANUAL step (passkey/2FA,
-# done by a human), NOT automated here. So the release flow is:
-#   1. Bump version in package.json + registry/server.json (already 1.1.0 here).
-#   2. `npm publish` @depixapp/mcp@1.1.0 by hand (its package.json carries
-#      "mcpName": "io.github.depixapp/depix-mcp").
-#   3. Push tag `v1.1.0` (or run this workflow manually) → it publishes the
-#      server.json to the registry, which then cascades to PulseMCP + the GitHub
-#      MCP Registry; Glama picks it up by crawling the public repo.
-# If step 3 runs before step 2, the registry publish fails ownership/existence
-# validation — re-run it after npm is live.
+#   - npm publish uses npm Trusted Publishing (OIDC). The package must be
+#     registered as a trusted publisher for THIS repo + workflow on npmjs.com
+#     (Package settings -> Trusted publishers). One-time human setup; after that
+#     every tagged release publishes with build provenance and no secret.
+#   - The MCP Registry publish (registry.modelcontextprotocol.io) also uses OIDC;
+#     the repo lives in the `depixapp` GitHub org, so OIDC vouches for the
+#     `io.github.depixapp/*` namespace automatically.
+#
+# ORDERING (enforced by `needs`): npm FIRST, then the registry. The registry
+# verifies ownership by fetching @depixapp/mcp@<version> from npm and checking
+# its package.json `mcpName` equals this server's name — so the package must
+# exist before the registry entry is published.
+#
+# RELEASE FLOW: bump the version in package.json AND registry/server.json
+# (packages[].version), commit, then push tag `v<version>` (e.g. v1.2.0). The
+# npm job re-runs safely if the tag is re-pushed: it SKIPS publish when that
+# version is already on npm, so the registry step still runs (idempotent re-runs
+# + the workflow_dispatch "registry only, once npm is live" path both work).
 
-name: Publish to MCP Registry
+name: Release (npm + MCP Registry)
 
 on:
   push:
-    tags: ["v*"] # version tags like v1.1.0
-  workflow_dispatch: {} # allow a manual run once npm is published
+    tags: ["v*"] # version tags like v1.2.0
+  workflow_dispatch: {} # manual re-run (skips npm publish if already published)
 
 jobs:
-  publish:
+  npm:
+    name: Publish @depixapp/mcp to npm (OIDC)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC -> npm Trusted Publishing (mints a short-lived token)
+      contents: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        run: npm ci # runs `prepare` -> build, so a compile error fails fast here
+
+      - name: Verify version consistency (tag == package.json == registry npm entry)
+        id: ver
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          NESTED=$(node -p "require('./registry/server.json').packages[0].version")
+          if [ "$NESTED" != "$PKG" ]; then
+            echo "::error::registry/server.json npm version ($NESTED) != package.json ($PKG)"; exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#v}"
+            if [ "$TAG" != "$PKG" ]; then
+              echo "::error::git tag v$TAG != package.json version $PKG"; exit 1
+            fi
+          fi
+          echo "version=$PKG" >> "$GITHUB_OUTPUT"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # No explicit build step: `npm ci` above already ran `prepare` (tsc), and
+      # `npm publish` runs it again — a third build would be pure waste.
+
+      - name: Publish to npm (skip if this version is already published)
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          if npm view "@depixapp/mcp@$V" version >/dev/null 2>&1; then
+            echo "@depixapp/mcp@$V is already on npm — skipping publish (registry step still runs)."
+          else
+            npm publish --provenance --access public
+          fi
+
+  registry:
+    name: Publish server.json to the MCP Registry (OIDC)
+    needs: npm
     runs-on: ubuntu-latest
     permissions:
       id-token: write # required for OIDC authentication
       contents: read
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Install mcp-publisher
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          curl -fL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
           sudo mv mcp-publisher /usr/local/bin/mcp-publisher
 
       - name: Authenticate to the MCP Registry (GitHub OIDC)
         working-directory: registry
         run: mcp-publisher login github-oidc
 
-      - name: Publish server to the MCP Registry
+      - name: Publish server to the MCP Registry (idempotent — the registry is immutable per version)
         working-directory: registry
-        run: mcp-publisher publish
+        run: |
+          # The MCP Registry rejects a re-publish of an existing version (409).
+          # Swallow ONLY that "already published" class so a tag re-push or a
+          # workflow_dispatch on an already-published version stays green; fail
+          # loudly on any other error.
+          set +e
+          mcp-publisher publish > publish.log 2>&1
+          code=$?
+          set -e
+          cat publish.log
+          if [ "$code" -ne 0 ]; then
+            if grep -qiE "already exists|already published|409|conflict|duplicate|same version" publish.log; then
+              echo "This version is already in the MCP Registry — idempotent no-op, not failing."
+            else
+              echo "::error::mcp-publisher publish failed"; exit 1
+            fi
+          fi
