@@ -12,7 +12,7 @@ export default function handler(_req: VercelRequest, res: VercelResponse): void 
     name: SERVER_NAME,
     title: SERVER_TITLE,
     description:
-      "Non-custodial Pix payment gateway on Liquid. Receive Pix payments (checkouts/products) and read transaction status via MCP.",
+      "Non-custodial Pix payment gateway on Liquid: checkouts, products, transaction status, and support tickets — 22 tools over MCP.",
     version: resolveServerVersion(),
     transports: [{ type: "streamable-http", url: "https://mcp.depixapp.com/mcp" }],
     auth: {
