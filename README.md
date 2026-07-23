@@ -202,6 +202,36 @@ npm run build     # compile src → dist (the stdio bin)
 Set `DEPIX_TEST_KEY=sk_test_…` to run the real-sandbox e2e test
 (`test/e2e/sandbox.test.ts`), otherwise it is skipped.
 
+**CI** (`.github/workflows/ci.yml`) runs typecheck + lint + test + build on every
+push to `main` and every PR — that is the correctness gate.
+
+## Releasing
+
+Publishing is automated via GitHub Actions using **npm Trusted Publishing
+(OIDC)** — no npm token, no 2FA prompt, and every release carries build
+provenance. `.github/workflows/publish-mcp.yml` (on a `v*` tag) publishes the
+**npm package** and then the **MCP Registry** entry (`registry/server.json`).
+
+To cut a release:
+
+1. Bump the version in **`package.json`** AND **`registry/server.json`** (both the
+   top-level `version` and `packages[].version`) — they must match, and the CI
+   guard fails the release if the tag, `package.json`, and the registry npm entry
+   disagree.
+2. Commit to `main`.
+3. Tag and push:
+   ```bash
+   git tag v1.2.0 && git push origin v1.2.0
+   ```
+
+The workflow verifies the versions, publishes to npm with provenance, then
+publishes the registry entry (idempotent — re-running a tag is a safe no-op).
+Re-tagging an already-published version skips both publishes.
+
+One-time setup (already done): the package is registered as an npm **Trusted
+Publisher** for this repo with workflow filename `publish-mcp.yml` (npmjs.com →
+package → Settings → Trusted Publisher). No secrets are stored in the repo.
+
 ## Release smoke test
 
 After a preview/production deploy:

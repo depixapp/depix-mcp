@@ -74,11 +74,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
-
-      # No explicit build step: `npm ci` above already ran `prepare` (tsc), and
-      # `npm publish` runs it again — a third build would be pure waste.
+      # No test/build steps here: the full suite runs in ci.yml on every push +
+      # PR, so a tagged commit was already validated; `npm ci` above ran `prepare`
+      # (tsc) and `npm publish` builds again, so the compiled dist is fresh.
 
       - name: Publish to npm (skip if this version is already published)
         run: |
