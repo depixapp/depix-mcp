@@ -2,10 +2,32 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_WAIT_SECONDS,
   MAX_WAIT_CEILING_SECONDS,
+  SERVER_NAME,
   resolveAllowedHosts,
   resolveApiBase,
   resolveMaxWaitSeconds,
+  resolveServerVersion,
 } from "../src/config.js";
+import pkg from "../package.json" with { type: "json" };
+
+// Release-drift tripwire: the handshake/well-known identity must stay pinned to
+// package.json (the release source of truth). A version bump or a namespace change
+// in package.json without updating config.ts fails HERE — that is exactly the drift
+// that left /.well-known/mcp.json serving the old name + version 1.1.0.
+describe("server identity ↔ package.json (release-drift tripwire)", () => {
+  it("SERVER_NAME equals package.json mcpName (canonical registry namespace)", () => {
+    expect(SERVER_NAME).toBe(pkg.mcpName);
+    expect(SERVER_NAME).toBe("io.github.depixapp/depix-mcp");
+  });
+
+  it("resolveServerVersion default equals package.json version — bump both on release", () => {
+    expect(resolveServerVersion({} as NodeJS.ProcessEnv)).toBe(pkg.version);
+  });
+
+  it("honors the MCP_SERVER_VERSION override", () => {
+    expect(resolveServerVersion({ MCP_SERVER_VERSION: "9.9.9" } as NodeJS.ProcessEnv)).toBe("9.9.9");
+  });
+});
 
 describe("resolveMaxWaitSeconds (platform-cap safety, spec §2.5)", () => {
   it("falls back to the Hobby-safe default when unset/invalid", () => {

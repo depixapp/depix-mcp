@@ -25,7 +25,14 @@ export const MAX_WAIT_CEILING_SECONDS = 790;
 // to widen it. To enable a staging origin, add it here in a reviewed change.
 export const ALLOWED_API_ORIGINS: readonly string[] = ["https://api.depixapp.com"];
 
-export const SERVER_NAME = "com.depixapp/gateway";
+// The canonical, GitHub-verified MCP Registry namespace (io.github.<org>/*) — the
+// SAME identity as package.json `mcpName` and registry/server.json `name`. It is
+// surfaced as the handshake serverInfo.name AND in /.well-known/mcp.json, so a
+// client discovering the server through the registry, npm, or the live handshake
+// sees ONE consistent identity. A test pins SERVER_NAME === package.json.mcpName so
+// they can never drift (the old `com.depixapp/gateway` reverse-DNS name predated the
+// GitHub-OIDC registry publish and left the served descriptor stale).
+export const SERVER_NAME = "io.github.depixapp/depix-mcp";
 export const SERVER_TITLE = "DePix App Gateway";
 
 /** Resolve the API base URL, trimming trailing slashes. */
@@ -45,9 +52,18 @@ export function resolveMaxWaitSeconds(env: NodeJS.ProcessEnv = process.env): num
   return DEFAULT_MAX_WAIT_SECONDS;
 }
 
-/** Server version, surfaced in the MCP handshake and /.well-known/mcp.json. */
+/**
+ * Server version, surfaced in the MCP handshake and /.well-known/mcp.json.
+ * Keep this literal in lockstep with package.json `version` on every release — a
+ * test pins the default to package.json so a forgotten bump fails CI. A runtime
+ * package.json import is deliberately avoided: config.ts is shared by two build
+ * systems (the npm `dist/` package and the Vercel `api/` bundle) where the
+ * relative path to package.json differs, so a literal + a tripwire is safer than
+ * a read. The old `1.1.0` default lagged package.json (1.2.0) and left the served
+ * /.well-known descriptor stale.
+ */
 export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MCP_SERVER_VERSION?.trim() || "1.1.0";
+  return env.MCP_SERVER_VERSION?.trim() || "1.2.0";
 }
 
 // ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────

@@ -4,13 +4,13 @@
 // (RFC 9728) when AUTHKIT_DOMAIN is configured.
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { resolveAuthkitDomain, resolveServerVersion } from "../src/config.js";
+import { resolveAuthkitDomain, resolveServerVersion, SERVER_NAME, SERVER_TITLE } from "../src/config.js";
 
 export default function handler(_req: VercelRequest, res: VercelResponse): void {
   res.setHeader("Content-Type", "application/json");
   res.status(200).json({
-    name: "com.depixapp/gateway",
-    title: "DePix App Gateway",
+    name: SERVER_NAME,
+    title: SERVER_TITLE,
     description:
       "Non-custodial Pix payment gateway on Liquid. Receive Pix payments (checkouts/products) and read transaction status via MCP.",
     version: resolveServerVersion(),
