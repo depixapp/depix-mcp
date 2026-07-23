@@ -49,7 +49,7 @@ import type {
 } from "./requestMap.js";
 
 const INSTRUCTIONS = [
-  "DePix App Gateway MCP — receive Pix payments (checkouts/products) and read transaction status via the public DePix App API.",
+  "DePix App Gateway MCP — receive Pix payments (checkouts/products), read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API. 22 tools total: 16 gateway + 6 support-ticket.",
   "Authentication is a DePix App API key (sk_test_… for sandbox, sk_live_… for production), configured on the connection itself: over HTTP it is the `Authorization: Bearer sk_…` header; in local stdio mode it is the DEPIX_API_KEY environment variable.",
   "Tools cannot set the key — if a tool reports a missing key, ask the user to reconnect with their key configured.",
   "Always test with an sk_test_ key first. `get_account` is the recommended connection test.",
