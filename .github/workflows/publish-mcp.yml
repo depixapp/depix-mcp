@@ -46,6 +46,34 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      # ── VENDORED ENGINE (unified-MCP spec §2.1/§4) ──────────────────────────
+      # The 27 wallet_* tools come from engine SOURCE vendored under src/vendor/**,
+      # which IS committed: `npm ci` runs `prepare` -> build, so the sources must
+      # already exist — a publish cannot depend on fetching a second (soon private)
+      # repo mid-install. What this step adds is the PROOF that the committed tree
+      # is exactly the pinned commit: it checks the engine out at
+      # vendor/engine.pin.json `ref` and re-runs the vendoring in --check mode,
+      # which fails on any byte of drift. Without it a tag could publish a
+      # hand-edited engine, and an npm version is immutable forever.
+      - name: Read the engine pin
+        id: pin
+        run: |
+          echo "ref=$(node -p "require('./vendor/engine.pin.json').ref")" >> "$GITHUB_OUTPUT"
+          echo "repo=$(node -p "new URL(require('./vendor/engine.pin.json').repository).pathname.slice(1)")" >> "$GITHUB_OUTPUT"
+
+      # TODO(P5): depix-sdk goes private at the end of the program — swap this for
+      # a deploy key / PAT (`token:` input) when it does. Public today, no secret.
+      - name: Checkout the engine at the pinned commit
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .vendor-src
+          fetch-depth: 0
+
+      - name: Verify the vendored engine matches the pin (fails on any drift)
+        run: node scripts/vendor-engine.mjs --from .vendor-src --check
+
       - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
         run: npm install -g npm@11
 
