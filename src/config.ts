@@ -109,17 +109,48 @@ export function resolveResourceUrl(env: NodeJS.ProcessEnv = process.env): string
 
 // DNS-rebinding protection (official MCP guidance): the Streamable HTTP
 // transport rejects requests whose Host header is not on this list. Default is
-// the production host; MCP_ALLOWED_HOSTS (comma-separated) lets Vercel preview
-// environments add their *.vercel.app host without touching code.
+// the production host; MCP_ALLOWED_HOSTS (comma-separated) adds more.
+//
+// The allowlist is matched EXACTLY — the MCP SDK does no glob/wildcard matching,
+// so `*.vercel.app` in MCP_ALLOWED_HOSTS matches nothing and every preview
+// request is rejected. That made preview deploys unreachable, i.e. unverifiable
+// before production. Previews now widen themselves from Vercel's own system env
+// (below) instead of relying on a hostname a human has to paste in per deploy.
 export const DEFAULT_ALLOWED_HOSTS: readonly string[] = ["mcp.depixapp.com"];
+
+/**
+ * Vercel system env vars carrying THIS deployment's own hostnames (no scheme,
+ * no path): the immutable per-deployment URL and the per-branch alias.
+ * Populated by the platform, not by us.
+ */
+const VERCEL_HOST_ENV_VARS = ["VERCEL_URL", "VERCEL_BRANCH_URL"] as const;
+
+/**
+ * Hostnames a NON-PRODUCTION Vercel deployment may answer to, in addition to the
+ * configured list. Production widens by NOTHING: `mcp.depixapp.com` is the only
+ * host the production deployment ever serves, and reading VERCEL_URL there would
+ * silently re-admit the `*.vercel.app` deployment URLs that DNS-rebinding
+ * protection exists to exclude.
+ */
+function vercelPreviewHosts(env: NodeJS.ProcessEnv): string[] {
+  const vercelEnv = env.VERCEL_ENV?.trim();
+  if (!vercelEnv || vercelEnv === "production") return [];
+  return VERCEL_HOST_ENV_VARS.map((name) => env[name]?.trim())
+    .filter((host): host is string => typeof host === "string" && host.length > 0)
+    // Defensive: the platform sets a bare host, but a scheme or trailing path
+    // would silently never match, which is the exact failure being fixed.
+    .map((host) => host.replace(/^https?:\/\//, "").replace(/\/.*$/, ""));
+}
 
 /** Resolve the allowed Host headers for DNS-rebinding protection. */
 export function resolveAllowedHosts(env: NodeJS.ProcessEnv = process.env): string[] {
   const raw = env.MCP_ALLOWED_HOSTS?.trim();
-  if (!raw) return [...DEFAULT_ALLOWED_HOSTS];
-  const hosts = raw
-    .split(",")
-    .map((h) => h.trim())
-    .filter((h) => h.length > 0);
-  return hosts.length > 0 ? hosts : [...DEFAULT_ALLOWED_HOSTS];
+  const configured = raw
+    ? raw
+        .split(",")
+        .map((h) => h.trim())
+        .filter((h) => h.length > 0)
+    : [];
+  const base = configured.length > 0 ? configured : [...DEFAULT_ALLOWED_HOSTS];
+  return [...new Set([...base, ...vercelPreviewHosts(env)])];
 }

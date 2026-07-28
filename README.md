@@ -259,7 +259,7 @@ model.
 | `DEPIX_API_BASE` | API base URL (allowlisted origins only) | `https://api.depixapp.com` |
 | `MCP_MAX_WAIT_SECONDS` | Max `wait_for_checkout` budget; prod sets ~780 (Vercel Pro) | `290` (Hobby-safe) |
 | `MCP_SERVER_VERSION` | Version reported in the handshake | package version |
-| `MCP_ALLOWED_HOSTS` | Comma-separated Host allowlist (DNS-rebinding protection); set on previews to add the `*.vercel.app` host | `mcp.depixapp.com` |
+| `MCP_ALLOWED_HOSTS` | Comma-separated Host allowlist (DNS-rebinding protection). Matched **exactly** — no wildcards. Vercel preview deploys add their own hostnames automatically, so this is normally unset | `mcp.depixapp.com` |
 | `DEPIX_API_KEY` | **stdio mode only** — your `sk_` key | — |
 
 Local (`npx`) level only — the wallet half:
@@ -367,6 +367,9 @@ After a preview/production deploy:
    → `completed`.
 
 > Pushing to `main` deploys to production (`mcp.depixapp.com`). Validate on a
-> Vercel preview deploy before merging. Preview hosts are not on the default
-> DNS-rebinding allowlist — set `MCP_ALLOWED_HOSTS` in the preview environment
-> (e.g. `mcp.depixapp.com,depix-mcp-<hash>.vercel.app`) to smoke-test there.
+> Vercel preview deploy before merging. **Previews are reachable out of the box:**
+> a non-production deployment adds its own `VERCEL_URL` and `VERCEL_BRANCH_URL`
+> to the DNS-rebinding allowlist (`resolveAllowedHosts`), and production widens by
+> nothing. If you ever need to allow another host, set `MCP_ALLOWED_HOSTS` to the
+> **exact** hostname — the allowlist is an exact match, so `*.vercel.app` matches
+> nothing and would leave the preview unreachable.

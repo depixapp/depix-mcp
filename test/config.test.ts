@@ -74,4 +74,65 @@ describe("resolveAllowedHosts (DNS-rebinding protection)", () => {
       "mcp.depixapp.com",
     ]);
   });
+
+  // The allowlist is matched EXACTLY — `*.vercel.app` in MCP_ALLOWED_HOSTS matches
+  // nothing, so previews were unreachable and therefore unverifiable before prod.
+  it("a preview deployment admits its OWN Vercel hostnames automatically", () => {
+    expect(
+      resolveAllowedHosts({
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "depix-mcp-abc123.vercel.app",
+        VERCEL_BRANCH_URL: "depix-mcp-git-feat-unified-depixapp.vercel.app",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([
+      "mcp.depixapp.com",
+      "depix-mcp-abc123.vercel.app",
+      "depix-mcp-git-feat-unified-depixapp.vercel.app",
+    ]);
+  });
+
+  it("PRODUCTION widens by nothing, even with VERCEL_URL set", () => {
+    expect(
+      resolveAllowedHosts({
+        VERCEL_ENV: "production",
+        VERCEL_URL: "depix-mcp-xyz.vercel.app",
+        VERCEL_BRANCH_URL: "depix-mcp-git-main-depixapp.vercel.app",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["mcp.depixapp.com"]);
+  });
+
+  it("outside Vercel (VERCEL_ENV unset) behaviour is unchanged", () => {
+    expect(
+      resolveAllowedHosts({ VERCEL_URL: "should-be-ignored.vercel.app" } as NodeJS.ProcessEnv),
+    ).toEqual(["mcp.depixapp.com"]);
+  });
+
+  it("preview hosts extend an explicit MCP_ALLOWED_HOSTS instead of replacing it", () => {
+    expect(
+      resolveAllowedHosts({
+        MCP_ALLOWED_HOSTS: "staging.depixapp.com",
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "depix-mcp-abc123.vercel.app",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["staging.depixapp.com", "depix-mcp-abc123.vercel.app"]);
+  });
+
+  it("deduplicates when the preview host is also listed explicitly", () => {
+    expect(
+      resolveAllowedHosts({
+        MCP_ALLOWED_HOSTS: "depix-mcp-abc123.vercel.app",
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "depix-mcp-abc123.vercel.app",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["depix-mcp-abc123.vercel.app"]);
+  });
+
+  it("strips a scheme/path if the platform ever supplies one (it would never match)", () => {
+    expect(
+      resolveAllowedHosts({
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "https://depix-mcp-abc123.vercel.app/",
+      } as NodeJS.ProcessEnv),
+    ).toEqual(["mcp.depixapp.com", "depix-mcp-abc123.vercel.app"]);
+  });
 });
