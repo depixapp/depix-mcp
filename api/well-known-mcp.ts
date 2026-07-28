@@ -11,10 +11,25 @@ export default function handler(_req: VercelRequest, res: VercelResponse): void 
   res.status(200).json({
     name: SERVER_NAME,
     title: SERVER_TITLE,
+    // TWO-LEVEL description (spec §1.6). This endpoint is level 1 and serves 22
+    // tools; the SAME MCP has a level 2 that runs on the operator's own machine
+    // with 27 more. A descriptor that only said "22 tools" left every reader of
+    // this document unable to discover that the wallet exists at all.
     description:
-      "Non-custodial Pix payment gateway on Liquid: checkouts, products, transaction status, and support tickets — 22 tools over MCP.",
+      "The DePix App MCP — one MCP, two levels of access. THIS hosted endpoint is level 1: receive Pix (checkouts/products), read transaction status, and support tickets — 22 tools, no seed, holds nothing. Level 2 runs locally (`npx -y @depixapp/mcp`, first run `npx -y @depixapp/mcp init`) and adds 27 wallet_* tools — a non-custodial Liquid wallet that signs on the operator's own machine — for 49 in total.",
     version: resolveServerVersion(),
     transports: [{ type: "streamable-http", url: "https://mcp.depixapp.com/mcp" }],
+    levels: {
+      hosted: { transport: "streamable-http", url: "https://mcp.depixapp.com/mcp", tool_count: 22, custody: "none" },
+      local: {
+        transport: "stdio",
+        package: "@depixapp/mcp",
+        command: "npx -y @depixapp/mcp",
+        first_run: "npx -y @depixapp/mcp init",
+        tool_count: 49,
+        custody: "operator holds the seed; signing is in-process",
+      },
+    },
     auth: {
       type: "http_bearer",
       header: "Authorization",

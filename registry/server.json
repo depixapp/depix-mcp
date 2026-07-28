@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.depixapp/depix-mcp",
-  "title": "DePix App Gateway",
-  "description": "Non-custodial Pix payment gateway on Liquid: checkouts, products, status reads, and support tickets.",
-  "version": "1.2.0",
+  "title": "DePix App MCP",
+  "description": "One MCP, two levels: hosted Pix receive (22 tools), or local npx + non-custodial wallet (49).",
+  "version": "2.0.0",
   "websiteUrl": "https://depixapp.com",
   "repository": {
     "url": "https://github.com/depixapp/depix-mcp",
@@ -16,7 +16,7 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "DePix App API key: Bearer sk_test_ (sandbox) or sk_live_ (production). Get one in the dashboard at depixapp.com, or self-onboard autonomously with no human via POST https://api.depixapp.com/api/agents/register (see https://depixapp.com/docs/en/).",
+          "description": "DePix App API key: Bearer sk_test_ (sandbox) or sk_live_ (production). Get one in the dashboard at depixapp.com, or self-onboard autonomously with no human via POST https://api.depixapp.com/api/agents/register (see https://depixapp.com/docs/en/). This hosted endpoint holds no seed and therefore serves the 22 receive/status/support tools only — the 27 wallet_* tools require the npm package below, run locally.",
           "isRequired": true,
           "isSecret": true
         }
@@ -27,10 +27,30 @@
     {
       "registryType": "npm",
       "identifier": "@depixapp/mcp",
-      "version": "1.2.0",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
-      }
+      },
+      "environmentVariables": [
+        {
+          "name": "DEPIX_API_KEY",
+          "description": "DePix App API key (sk_test_ sandbox, sk_live_ production). Used by the 22 gateway tools; without it they return missing_api_key. Requires Node.js >= 22.4.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "DEPIX_WALLET_PASSPHRASE",
+          "description": "required for the 27 wallet_* tools; without it they return wallet_not_configured. Unlocks the local wallet created by `npx -y @depixapp/mcp init`, a human ceremony at a terminal. The seed never leaves this machine and is never sent to DePix App.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "DEPIX_WALLET_DIR",
+          "description": "Directory holding the encrypted local wallet. Optional; defaults to ~/.depix-wallet.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
     }
   ]
 }

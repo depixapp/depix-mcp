@@ -2,41 +2,54 @@
 
 [![smithery badge](https://smithery.ai/badge/depixapp/depix-mcp)](https://smithery.ai/servers/depixapp/depix-mcp)
 
-MCP (Model Context Protocol) server for [DePix App](https://depixapp.com) — the
-agent-facing interface of the non-custodial Pix↔DePix payment gateway.
+The MCP (Model Context Protocol) server for [DePix App](https://depixapp.com) —
+the agent-facing interface of the non-custodial Pix↔DePix payment gateway **and**
+of a non-custodial Liquid wallet.
 
-Connect an AI agent (Claude Code, Claude Desktop, Cursor, or any MCP client) and
-it can **receive Pix payments** (checkouts and products) and **read transaction
-status** — end to end, in sandbox (`sk_test_`) and production (`sk_live_`).
+**One MCP, two levels of access.** Same package, same registry entry; what works
+depends only on whether the running instance has a seed:
 
-- **Remote (Streamable HTTP):** `https://mcp.depixapp.com/mcp`
-- **Local (stdio):** `npx -y @depixapp/mcp` with `DEPIX_API_KEY` in
-  the environment
+| | Level 1 — hosted | Level 2 — local |
+|---|---|---|
+| How | `https://mcp.depixapp.com/mcp` (Streamable HTTP) | `npx -y @depixapp/mcp` (stdio) |
+| Runs on | DePix App's servers | **your** machine |
+| Tools | **22** — receive Pix, status reads, support | **49** — the 22 **plus** 27 `wallet_*` |
+| Seed | none, ever | yours, never leaves the machine |
+| Install | zero (claude.ai, ChatGPT) | Node.js ≥ 22.4 |
+
+Custody is decided by **who holds the seed, not by the transport**. Every spend
+materializes a signer **in-process**, and there is no remote-signing path — so
+DePix App cannot host working wallet tools without becoming custodial, and does
+not. That is physics, not a product tier.
 
 ## What it is (and isn't)
 
-- **A pure client of the public DePix API** (`https://api.depixapp.com/api/*`). It
-  holds **zero critical credentials** — no Eulen token, no database, no webhook
-  HMAC, no Liquid key.
-- **Never custodial.** It never signs a transaction, never holds funds, never
-  stores your key. Your `sk_` key is passed **verbatim** to the API on each call
-  and lives only in memory for that request.
-- **Same door as everyone.** The MCP goes through the same auth, scopes and rate
-  limits as any external agent — no privileged path.
+**Both levels:**
 
-It does **not** create deposits or withdrawals (that moves funds and belongs to
-the Wallet SDK — see [Related](#related--moving-funds-the-wallet-sdk)). The
-pay-side tools here are **read-only** status reads.
+- **A pure client of the public DePix API** (`https://api.depixapp.com/api/*`) for
+  the 22 gateway tools. It holds **zero critical credentials** — no Eulen token,
+  no database, no webhook HMAC. Your `sk_` key is passed **verbatim** to the API
+  on each call and lives only in memory for that request.
+- **Same door as everyone.** No privileged path: the same auth, scopes and rate
+  limits as any external agent.
 
-## Related — moving funds: the Wallet SDK
+**Level 1 (`mcp.depixapp.com`) only:** it never signs, never holds funds, never
+stores your key. It has no wallet code at all — the wallet engine is not merely
+disabled there, it is **structurally absent** from that deployment's import graph,
+and a CI guard (`npm run guard:hosted`) fails the build if that ever changes.
 
-This gateway **receives** payments and reads status. To **hold, sign, and move
-funds** — an agent running its own non-custodial Liquid wallet that pays and
-receives over Pix/DePix, converts DePix/L-BTC/USDt, buys gift cards, and
-self-onboards — use the companion
-**[`@depixapp/sdk`](https://www.npmjs.com/package/@depixapp/sdk)**
-([source](https://github.com/depixapp/depix-sdk)). The seed never leaves the
-agent and the backend never signs.
+**Level 2 (`npx`) only:** the 27 `wallet_*` tools hold, send, convert and pay —
+signing locally, inside your own process, under guardrails (per-transaction and
+rolling-24h BRL caps, optional allowlist) that no tool call can raise. There is
+no tool that exports the seed, edits guardrails, or pays a merchant checkout QR.
+
+## Related — `@depixapp/sdk`
+
+The wallet engine started life as the standalone
+**[`@depixapp/sdk`](https://www.npmjs.com/package/@depixapp/sdk)** (still
+published, still supported for programmatic use in your own Node code). If what
+you want is **an agent with a wallet**, you want this package: `@depixapp/mcp`
+now embeds that engine and exposes it over MCP, so nothing has to be written.
 
 ## Quickstart 1 — Connect Claude Code (remote, HTTP)
 
@@ -84,13 +97,15 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=depix&config=<base64 from th
 > surface is feature-flagged (`AUTHKIT_DOMAIN`): with it unset, only the `sk_`
 > header/stdio paths above are active. Terminal clients keep using `sk_` keys.
 
-## Quickstart 2 — Local stdio (Claude Desktop)
+## Quickstart 2 — Local stdio, 49 tools (Claude Desktop / Claude Code / Cursor)
 
-The same server runs as a local process over stdio. The key comes from
-`DEPIX_API_KEY` (env), never a flag. The only official npm package is
-`@depixapp/mcp` — the `@depixapp` scope is organization-owned; do not install
-any similarly-named unscoped package. Add to your Claude Desktop config
-(`claude_desktop_config.json`):
+Requires **Node.js ≥ 22.4**. The only official npm package is `@depixapp/mcp` —
+the `@depixapp` scope is organization-owned; do not install any similarly-named
+unscoped package. Secrets come from the environment, never from a flag.
+
+### 2a. Gateway only (no wallet)
+
+Exactly the 22 tools of level 1, running locally:
 
 ```json
 {
@@ -104,11 +119,55 @@ any similarly-named unscoped package. Add to your Claude Desktop config
 }
 ```
 
-Run it directly to sanity-check:
+All 49 tools are still *listed* — the 27 `wallet_*` ones answer with a typed
+`wallet_not_configured` error telling the agent to ask you to run `init`. That is
+deliberate: MCP hosts snapshot the tool list when they connect, so a catalog that
+grew later would mean "restart your client".
+
+### 2b. First run — create the wallet
+
+**`init` is a human ceremony at a terminal, never an MCP tool.** It prints your
+12-word seed backup, so it refuses to run when stdin/stdout are not a real TTY,
+and no agent can invoke it:
+
+```bash
+npx -y @depixapp/mcp init            # create a new wallet
+npx -y @depixapp/mcp init --restore  # import an existing 12-word mnemonic
+```
+
+It asks for (or generates) a passphrase — never echoed — walks you through the
+backup ritual, and finishes by printing the exact `mcpServers` block to paste,
+with the passphrase left as a placeholder for you to fill in:
+
+```json
+{
+  "mcpServers": {
+    "depix": {
+      "command": "npx",
+      "args": ["-y", "@depixapp/mcp"],
+      "env": {
+        "DEPIX_API_KEY": "sk_test_YOUR_KEY",
+        "DEPIX_WALLET_PASSPHRASE": "<the passphrase you typed>",
+        "DEPIX_WALLET_DIR": "/Users/you/.depix-wallet"
+      }
+    }
+  }
+}
+```
+
+Clear your terminal scrollback afterwards. Restart your MCP client and ask it to
+run `wallet_status`.
+
+Run the server directly to sanity-check:
 
 ```bash
 DEPIX_API_KEY=sk_test_YOUR_KEY npx -y @depixapp/mcp
 ```
+
+> **Self-hosting over HTTP is NOT trivially safe.** The wallet tools have no auth
+> of their own and the seed is loaded process-wide. Over local **stdio** that is
+> fine. Exposed over HTTP, anyone who reaches the port can drain the wallet — bind
+> to localhost and add your own bearer/mTLS + network isolation, or don't.
 
 
 ## Quickstart 3 — Sandbox testing (the full loop)
@@ -136,7 +195,9 @@ non-payable placeholders (`SANDBOX-…-DO-NOT-PAY`).
 You can also read a synthetic deposit: **`get_deposit_status`** with a
 `sandbox_…` id returns `depix_sent`.
 
-## Tools (22)
+## Tools
+
+**22 gateway tools** — available at both levels. Amounts are BRL cents.
 
 | Tool | API | Scope |
 |---|---|---|
@@ -170,19 +231,51 @@ poll `get_support_ticket`. Amounts are BRL cents. A tool call whose key lacks th
 `insufficient_scope` tool error naming the missing scope — that is the only way
 to discover a missing scope (the API never lists a key's scopes).
 
+**27 `wallet_*` tools** — the local (`npx`) level only. They sign in-process with
+your seed; without one they return `wallet_not_configured`.
+
+| Group | Tools |
+|---|---|
+| Status & reads | `wallet_status`, `wallet_get_address`, `wallet_get_balances`, `wallet_list_transactions`, `wallet_get_guardrails`, `wallet_diagnostics` |
+| Move money | `wallet_send`, `wallet_create_deposit`, `wallet_wait_deposit`, `wallet_create_withdrawal`, `wallet_wait_withdrawal` |
+| Convert | `wallet_quote`, `wallet_convert`, `wallet_swap_quote`, `wallet_swap_execute`, `wallet_to_stablecoin`, `wallet_shift_usdt` |
+| Lightning | `wallet_pay_lightning_invoice`, `wallet_receive_lightning` |
+| Gift cards | `wallet_list_giftcards`, `wallet_list_giftcard_products`, `wallet_giftcard_price`, `wallet_buy_giftcard`, `wallet_list_giftcard_orders`, `wallet_get_giftcard_order_status` |
+| Recovery | `wallet_recover`, `wallet_pending` |
+
+`wallet_convert` is the primary conversion surface (`wallet_quote` enumerates the
+routes); the provider-level tools are the escape hatch. `wallet_shift_usdt` is the
+one **custodial** route (SideShift) and says so. Amounts carry their unit in the
+field name: `amount_cents` is BRL cents, `amount_sats` is the asset's base units.
+
+There is deliberately **no** tool to export the seed, change guardrails, edit the
+payout addresses, or pay a merchant checkout QR — not even from a fully injected
+model.
+
 ## Configuration (public, no secrets)
 
 | Env | Meaning | Default |
 |---|---|---|
 | `DEPIX_API_BASE` | API base URL (allowlisted origins only) | `https://api.depixapp.com` |
 | `MCP_MAX_WAIT_SECONDS` | Max `wait_for_checkout` budget; prod sets ~780 (Vercel Pro) | `290` (Hobby-safe) |
-| `MCP_SERVER_VERSION` | Version reported in the handshake | `1.1.0` |
+| `MCP_SERVER_VERSION` | Version reported in the handshake | package version |
 | `MCP_ALLOWED_HOSTS` | Comma-separated Host allowlist (DNS-rebinding protection); set on previews to add the `*.vercel.app` host | `mcp.depixapp.com` |
 | `DEPIX_API_KEY` | **stdio mode only** — your `sk_` key | — |
 
+Local (`npx`) level only — the wallet half:
+
+| Env | Meaning | Default |
+|---|---|---|
+| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet. **Required for the 27 `wallet_*` tools**; without it they return `wallet_not_configured` | — |
+| `DEPIX_WALLET_DIR` | Where the encrypted wallet lives | `~/.depix-wallet` |
+| `DEPIX_GUARDRAIL_*` | Per-transaction / rolling-24h BRL caps and allowlist. Immutable at runtime: set here + restart | R$100/tx, R$500/day |
+| `DEPIX_MCP_MAX_WAIT_SECONDS` | Ceiling for the wallet wait tools | `900` |
+
 There is deliberately **no** env for an API key, Eulen token, HMAC or DB
 credential in the remote server. In HTTP mode the key arrives per-request in the
-`Authorization` header.
+`Authorization` header. The wallet passphrase and seed exist **only** on the
+operator's machine — the hosted deployment reads neither and has no code that
+could.
 
 ## Endpoints
 
@@ -195,17 +288,44 @@ credential in the remote server. In HTTP mode the key arrives per-request in the
 
 ```bash
 npm install
-npm test          # vitest
-npm run typecheck # tsc --noEmit
-npm run lint      # eslint
-npm run build     # compile src → dist (the stdio bin)
+npm test           # vitest
+npm run typecheck  # tsc --noEmit
+npm run lint       # eslint
+npm run build      # compile src (incl. the vendored engine) → dist
+npm run guard:hosted   # the hosted deployment has no path to the wallet engine
+npm run licenses:check # THIRD_PARTY_LICENSES matches the prod dep tree
+npm run vendor:check   # src/vendor matches the pinned engine commit
 ```
 
 Set `DEPIX_TEST_KEY=sk_test_…` to run the real-sandbox e2e test
 (`test/e2e/sandbox.test.ts`), otherwise it is skipped.
 
-**CI** (`.github/workflows/ci.yml`) runs typecheck + lint + test + build on every
-push to `main` and every PR — that is the correctness gate.
+### The vendored engine (`src/vendor/`)
+
+The 27 wallet tools come from the DePix App wallet engine, whose source is
+**vendored** here from a pinned commit rather than taken as an npm dependency.
+
+- `vendor/engine.pin.json` is the single source of truth (repo + full 40-char SHA).
+- `npm run vendor:engine` regenerates `src/vendor/**` from that commit, stamping
+  each file with the Apache-2.0 header and its provenance. **Never hand-edit
+  anything under `src/vendor/`** — change it upstream and bump the pin.
+- The tree is **committed** because `npm ci` runs `prepare` → `build`: the sources
+  must exist before any install step could fetch them. Reproducibility comes from
+  `npm run vendor:check`, which CI runs against a fresh checkout of the pinned
+  commit and fails on a single byte of drift.
+
+### Why the hosted deployment cannot sign
+
+`api/mcp.ts` → `src/http.ts` → `src/server.ts` has **zero** import path to
+`src/vendor/**`. Neither repo runs a tree-shaking bundler, so that import graph is
+the whole guarantee. `scripts/check-hosted-isolation.mjs` enforces it twice — a
+static walk of the TypeScript sources and a `@vercel/nft` trace of the compiled
+entries — and its `--self-test` proves both checks reject a poisoned entry.
+Only `src/stdio.ts` → `src/unified.ts` may reach the engine.
+
+**CI** (`.github/workflows/ci.yml`) runs typecheck + lint + test + build + all
+three guards on every push to `main` and every PR, on Node 22 and 24 — that is the
+correctness gate.
 
 ## Releasing
 
@@ -216,18 +336,21 @@ provenance. `.github/workflows/publish-mcp.yml` (on a `v*` tag) publishes the
 
 To cut a release:
 
-1. Bump the version in **`package.json`** AND **`registry/server.json`** (both the
-   top-level `version` and `packages[].version`) — they must match, and the CI
-   guard fails the release if the tag, `package.json`, and the registry npm entry
-   disagree.
+1. Bump the version in **`package.json`**, **`registry/server.json`** (both the
+   top-level `version` and `packages[].version`) and the `resolveServerVersion`
+   fallback in **`src/config.ts`** — they must match, and CI fails the release if
+   the tag, `package.json` and the registry npm entry disagree (a unit test pins
+   the config fallback). The MCP Registry is **immutable per version**, so
+   anything that publishes from the tagged tree has to be right before the tag.
 2. Commit to `main`.
 3. Tag and push:
    ```bash
-   git tag v1.2.0 && git push origin v1.2.0
+   git tag v2.0.0 && git push origin v2.0.0
    ```
 
-The workflow verifies the versions, publishes to npm with provenance, then
-publishes the registry entry (idempotent — re-running a tag is a safe no-op).
+The workflow verifies the versions, re-checks the vendored engine against its
+pinned commit, publishes to npm with provenance, then publishes the registry entry
+(idempotent — re-running a tag is a safe no-op).
 Re-tagging an already-published version skips both publishes.
 
 One-time setup (already done): the package is registered as an npm **Trusted

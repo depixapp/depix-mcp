@@ -1,0 +1,106 @@
+# Changelog
+
+## 2.0.0 — the unified MCP (49 tools)
+
+**BREAKING.** `@depixapp/mcp` becomes ONE MCP with two levels of access: the
+hosted endpoint (`mcp.depixapp.com`, 22 tools, receive-only) and the local npx
+deployment (49 tools, including a non-custodial Liquid wallet that signs on the
+operator's own machine). Same package, same registry entry.
+
+### Why a major
+
+Two changes break existing installs, so semver leaves no choice:
+
+1. **Node floor 18 → 22.4.** The bundled wallet engine requires it (`lwk_node`,
+   the wasm signer, and the engine's own `engines.node`). Gateway-only users on
+   Node 18 or 20 are affected even though nothing about the gateway changed —
+   `npm ci` / `npx` will refuse. The CI matrix drops Node 20 for the same reason.
+2. **The local catalog goes 22 → 49.** A client that snapshotted 22 tools now
+   sees 49. The hosted endpoint is unchanged at 22.
+
+A third change is behavioural rather than semver-visible but worth reading:
+
+3. **The stdio bin no longer exits when `DEPIX_API_KEY` is absent.** It used to
+   `exit 1`. It now serves and lets the API-backed tools return the typed
+   `missing_api_key` error. Refusing to boot would deny all 27 wallet tools to an
+   operator who runs only the wallet half and legitimately has no gateway key.
+
+### Added
+
+- **27 `wallet_*` tools on the npx deployment** — hold, send, convert (DePix /
+  L-BTC / USDt, single- and multi-hop), pay and receive Lightning, buy gift cards,
+  crash-recovery reads. They sign **in-process** with a seed that never leaves the
+  machine, under immutable guardrails (per-tx + rolling-24h BRL caps, optional
+  allowlist). No tool can export the seed, change guardrails, or pay a merchant
+  checkout QR.
+- **`npx -y @depixapp/mcp init`** — the first-run ceremony: creates or restores
+  (`--restore`) the local wallet, runs the backup ritual, and prints the
+  paste-ready `mcpServers` block. **TTY-only, and deliberately not an MCP tool** —
+  a 12-word mnemonic must never transit model context or conversation logs. The
+  passphrase is never echoed and the printed block carries a placeholder.
+- **Three-state boot.** All 49 tools are ALWAYS listed. With no wallet, each
+  `wallet_*` call returns the typed `wallet_not_configured` naming `init`; with no
+  API key, the API-backed tools return `missing_api_key`. Neither is a startup
+  failure. A catalog that grew after `init` would mean "restart your client":
+  hosts snapshot `tools/list` at connect and `list_changed` support is uneven.
+- **Per-deployment `instructions` and `title`.** The hosted text keeps "it never
+  signs, never holds funds, and never stores your key" — true there — and adds a
+  signpost telling agents the local level exists. The unified text can never carry
+  that sentence (enforced by test), describes 49 tools and local signing, and the
+  server introduces itself as "DePix App — Pix + non-custodial Liquid wallet"
+  instead of "Gateway".
+- **`THIRD_PARTY_LICENSES`**, generated from the production dependency tree and
+  shipped in the tarball. Bundling third-party MIT/BSD/Apache code means their
+  notices must travel with the copy; `npm run licenses:check` keeps it current.
+- **Three CI guards**: `guard:hosted` (the hosted function has zero import path to
+  the wallet engine — a static import-graph walk plus a `@vercel/nft` trace, with
+  a self-test that proves both reject a poisoned entry), `licenses:check`, and
+  `vendor:check` (the committed engine tree matches its pinned commit byte for
+  byte, verified against a fresh checkout).
+
+### Changed
+
+- **Dependencies: 2 → 12.** The engine's runtime tree becomes real dependencies
+  (`lwk_node`, `boltz-core`, `boltz-swaps`, `liquidjs-lib`,
+  `@vulpemventures/secp256k1-zkp`, `@noble/curves`, `@noble/hashes`,
+  `@scure/base`, `hash-wasm`, `viem`). All pinned exact. `@modelcontextprotocol/sdk`
+  is pinned to a single `1.29.0` and `zod` to a single `3.25.76` — two copies of
+  zod would break `instanceof` schema checks across the gateway/wallet boundary.
+- **`.npmrc` added** (`save-exact`, `legacy-peer-deps`), mirroring the engine
+  repo. `boltz-swaps@0.0.8` declares a stale `peerOptional boltz-core@^4.0.5`
+  against the pinned `5.0.0`; npm only raises ERESOLVE when both are ROOT
+  dependencies, i.e. in this repo and CI. Consumers installing `@depixapp/mcp` are
+  unaffected — the same pair already ships in `@depixapp/sdk@1.2.0`.
+- **`@types/node` 22 → 26** (the engine needs the global `CryptoKey` type).
+  `src/oauth.ts` now declares the `JsonWebKey` shape it reads locally, since
+  `node:crypto` no longer re-exports it in those typings.
+- **`/.well-known/mcp.json`** describes both levels instead of a flat "22 tools",
+  and gained a machine-readable `levels` object.
+- **`registry/server.json`**: description carries the two-level story, and
+  `packages[]` declares `DEPIX_API_KEY` (required, secret),
+  `DEPIX_WALLET_PASSPHRASE` (optional, secret — required for the 27 wallet tools)
+  and `DEPIX_WALLET_DIR` (optional).
+
+### Unchanged (deliberately)
+
+- **The hosted deployment is still exactly 22 tools** and still holds nothing.
+  `src/server.ts` registers the same 22; the wallet mounts only in the npx entry
+  path. The wallet engine is not "disabled" on the hosted function — it is
+  structurally absent from its import graph, which is what `guard:hosted` proves.
+- The 22 tools' names, schemas, semantics, scopes and error codes.
+- OAuth 2.1 resource-server behaviour and the `AUTHKIT_DOMAIN` feature flag.
+
+### Known issues
+
+- **`boltz-core` still declares `AGPL-3.0` in its `package.json`** while shipping
+  an MIT LICENSE file. Upstream merged the metadata fix
+  (BoltzExchange/boltz-core#194) but has published **no release carrying it** —
+  `5.0.0` is still latest on npm, so the intended bump could not be made. License
+  scanners will flag this dependency until then. `THIRD_PARTY_LICENSES` states the
+  discrepancy explicitly and reproduces the governing MIT text.
+- **`SIDESHIFT_AFFILIATE_ID` is not baked** into published builds unless it is set
+  in the publish environment. When unset, the compiled engine keeps its runtime
+  env read, so `wallet_shift_usdt` works for an operator who exports the variable
+  and fails with `AFFILIATE_ID_MISSING` otherwise. Baking an empty string (what
+  the engine's own build does on a dev machine) would remove the runtime read and
+  break that tool permanently, so it is skipped instead.
