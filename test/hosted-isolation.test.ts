@@ -28,8 +28,14 @@ describe("hosted isolation guard", () => {
       expect(stdout).toMatch(/A\. import-graph walk: \d+ hosted entries, \d+ source files reached, 0 violations/);
       // Check B: the @vercel/nft trace of the compiled entries.
       expect(stdout).toMatch(/B\. @vercel\/nft trace: \d+ compiled entries, \d+ files traced, 0 violations/);
-      // The self-test: a poisoned entry must be rejected by BOTH checks.
-      expect(stdout).toMatch(/self-test: poisoned entry rejected by A \([1-9]\d* violation\(s\)\) and by B \([1-9]\d* violation\(s\)\)/);
+      // The self-test: poisoned entries — one at the top level and one in a
+      // SUBDIRECTORY — must both be DISCOVERED and rejected by BOTH checks. The
+      // nested case is the one that used to slip through: entry discovery was not
+      // recursive, so an `api/v2/rogue.ts` importing the wallet engine was never
+      // looked at and passed both checks silently.
+      expect(stdout).toMatch(
+        /self-test: 2\/2 poisoned entries discovered \(flat \+ nested\), rejected by A \(2\/2\) and by B \([1-9]\d* violation\(s\)\)/,
+      );
       expect(stdout).toContain("[guard] OK");
     },
     180_000,

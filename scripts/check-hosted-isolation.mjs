@@ -26,7 +26,7 @@
 //   entry that imports the engine — a guard that cannot fail is not a guard.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +55,9 @@ const DENIED_PACKAGES = [
 
 /** A trace that resolved almost nothing would report "0 violations" and look green. */
 const TRACE_FLOOR = 50;
+
+/** Filename marker for the temporary poisoned fixtures the self-test writes. */
+const SELF_TEST_MARKER = "zz-guard-self-test";
 
 const selfTest = process.argv.includes("--self-test");
 const failures = [];
@@ -127,6 +130,25 @@ function walkSourceGraph(entries) {
   return { visited, violations };
 }
 
+/**
+ * Every entry file under `dir`, at ANY depth.
+ *
+ * RECURSIVE ON PURPOSE. A non-recursive readdir only saw the top level, so an
+ * entry one directory down — `api/v2/rogue.ts`, a perfectly ordinary Vercel
+ * route — was never discovered and a file importing the wallet engine from there
+ * passed BOTH checks silently. The guard's blind spot was the guard's own file
+ * discovery, not its analysis.
+ */
+function listEntries(dir, extension) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true })
+    .map((f) => (typeof f === "string" ? f : String(f)))
+    .filter((f) => f.endsWith(extension))
+    .map((f) => join(dir, f))
+    .filter((f) => statSync(f).isFile())
+    .sort();
+}
+
 // ── check B — @vercel/nft trace of the compiled hosted entries ──────────────
 
 const GUARD_OUT = join(repoRoot, ".guard-dist");
@@ -165,9 +187,7 @@ function compileForTrace() {
 
 async function traceCompiled(entryFilter) {
   const { nodeFileTrace } = await import("@vercel/nft");
-  const entries = readdirSync(join(GUARD_OUT, "api"))
-    .filter((f) => f.endsWith(".js") && entryFilter(f))
-    .map((f) => join(GUARD_OUT, "api", f));
+  const entries = listEntries(join(GUARD_OUT, "api"), ".js").filter(entryFilter);
   const { fileList, warnings } = await nodeFileTrace(entries, { base: repoRoot, processCwd: repoRoot });
   const traced = [...fileList];
   const violations = traced.filter((f) => {
@@ -181,9 +201,7 @@ async function traceCompiled(entryFilter) {
 
 // ── run ──────────────────────────────────────────────────────────────────────
 
-const apiEntries = readdirSync(join(repoRoot, "api"))
-  .filter((f) => f.endsWith(".ts"))
-  .map((f) => join(repoRoot, "api", f));
+const apiEntries = listEntries(join(repoRoot, "api"), ".ts");
 
 const graph = walkSourceGraph(apiEntries);
 if (graph.violations.length > 0) failures.push(`A. import-graph walk from api/*.ts:\n      - ${graph.violations.join("\n      - ")}`);
@@ -192,21 +210,31 @@ console.log(
     `${graph.violations.length} violations.`,
 );
 
-// The poisoned self-test entry is written BEFORE the compile so one tsc run
+// The poisoned self-test entries are written BEFORE the compile so one tsc run
 // covers both the real check and the self-test trace.
-const poisoned = selfTest ? join(repoRoot, "api", `zz-guard-self-test-${process.pid}.ts`) : null;
-if (poisoned !== null) {
+//
+// TWO fixtures, and the NESTED one is the important half: the flat case passed
+// from day one while a file at api/v2/ was never even discovered, so a self-test
+// that only checked the top level certified a guard with a hole in it.
+const poisonedFixtures = selfTest
+  ? [
+      { file: join(repoRoot, "api", `${SELF_TEST_MARKER}-flat-${process.pid}.ts`), up: ".." },
+      { file: join(repoRoot, "api", "v2", `${SELF_TEST_MARKER}-nested-${process.pid}.ts`), up: "../.." },
+    ]
+  : [];
+for (const { file, up } of poisonedFixtures) {
+  mkdirSync(dirname(file), { recursive: true });
   writeFileSync(
-    poisoned,
+    file,
     "// TEMPORARY self-test fixture — written and deleted by scripts/check-hosted-isolation.mjs.\n" +
-      'import { WALLET_TOOL_NAMES } from "../src/vendor/depix-sdk/mcp/server.js";\n' +
+      `import { WALLET_TOOL_NAMES } from "${up}/src/vendor/depix-sdk/mcp/server.js";\n` +
       "export default WALLET_TOOL_NAMES;\n",
   );
 }
 
 try {
   compileForTrace();
-  const real = await traceCompiled((f) => !f.startsWith("zz-guard-self-test-"));
+  const real = await traceCompiled((f) => !f.includes(SELF_TEST_MARKER));
   if (real.violations.length > 0) {
     failures.push(`B. @vercel/nft trace of the compiled api/*.js:\n      - ${real.violations.join("\n      - ")}`);
   }
@@ -221,24 +249,49 @@ try {
       `${real.violations.length} violations${real.warnings?.size ? ` (${real.warnings.size} tracer warnings, non-fatal)` : ""}.`,
   );
 
-  if (poisoned !== null) {
-    const graphSelfTest = walkSourceGraph([poisoned]);
-    if (graphSelfTest.violations.length === 0) {
-      failures.push("SELF-TEST A: the import-graph walk did NOT flag an entry importing the vendored engine — the guard is broken.");
+  if (poisonedFixtures.length > 0) {
+    // Check A must DISCOVER the fixtures itself (not be handed them): discovery
+    // is exactly where the hole was. Re-listing api/ has to return both.
+    const discovered = listEntries(join(repoRoot, "api"), ".ts").filter((f) => f.includes(SELF_TEST_MARKER));
+    if (discovered.length !== poisonedFixtures.length) {
+      failures.push(
+        `SELF-TEST A: entry discovery found ${discovered.length} of ${poisonedFixtures.length} poisoned fixtures — ` +
+          "a hosted entry in a subdirectory is invisible to the guard.",
+      );
     }
-    const traceSelfTest = await traceCompiled((f) => f.startsWith("zz-guard-self-test-"));
+    // One walk PER fixture: a single shared walk marks the vendored file visited
+    // on the first hit and reports nothing for the second, which would look like
+    // the nested case escaping. Each entry must be proven caught on its own.
+    const caught = discovered.filter((entry) => walkSourceGraph([entry]).violations.length > 0);
+    if (caught.length < discovered.length) {
+      failures.push(
+        `SELF-TEST A: the import-graph walk flagged ${caught.length} of ${discovered.length} ` +
+          "entries importing the vendored engine — the guard is broken.",
+      );
+    }
+    const traceSelfTest = await traceCompiled((f) => f.includes(SELF_TEST_MARKER));
+    if (traceSelfTest.entries.length !== poisonedFixtures.length) {
+      failures.push(
+        `SELF-TEST B: the trace discovered ${traceSelfTest.entries.length} of ${poisonedFixtures.length} compiled ` +
+          "poisoned entries — nested hosted entries are not being traced.",
+      );
+    }
     if (traceSelfTest.violations.length === 0) {
       failures.push("SELF-TEST B: the @vercel/nft trace did NOT flag a compiled entry importing the vendored engine — the guard is broken.");
     }
     console.log(
-      `[guard] self-test: poisoned entry rejected by A (${graphSelfTest.violations.length} violation(s)) ` +
-        `and by B (${traceSelfTest.violations.length} violation(s)).`,
+      `[guard] self-test: ${discovered.length}/${poisonedFixtures.length} poisoned entries discovered (flat + nested), ` +
+        `rejected by A (${caught.length}/${discovered.length}) and by B (${traceSelfTest.violations.length} violation(s)).`,
     );
   }
 } catch (err) {
   failures.push(`B. @vercel/nft trace could not run: ${err instanceof Error ? err.message : String(err)}`);
 } finally {
-  if (poisoned !== null) rmSync(poisoned, { force: true });
+  for (const { file } of poisonedFixtures) rmSync(file, { force: true });
+  // Remove api/v2/ too, but only if the fixture left it empty — a real nested
+  // route directory must survive the self-test untouched.
+  const nestedDir = join(repoRoot, "api", "v2");
+  if (existsSync(nestedDir) && readdirSync(nestedDir).length === 0) rmSync(nestedDir, { recursive: true, force: true });
   rmSync(GUARD_OUT, { recursive: true, force: true });
   rmSync(GUARD_TSCONFIG, { force: true });
 }
