@@ -1,10 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
+    // ES2023 + allowJs are the VENDORED ENGINE's requirements (src/vendor/**, built
+    // upstream with target ES2023 / allowJs): it is compiled by this package's tsc,
+    // so the union of settings lives here. Node >= 22.4 (engines) supports all of it.
+    // allowJs also makes tsc EMIT the engine's `sync/worker.js` — a real Worker entry
+    // resolved with `new URL("./worker.js", import.meta.url)`; without it the file
+    // would be missing from dist and background sync would fail at runtime.
+    "target": "ES2023",
+    "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "allowJs": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,

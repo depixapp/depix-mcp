@@ -14,7 +14,18 @@
 // itself. This is NOT the classic AuthKit session-token family (JWKS at
 // api.workos.com/sso/jwks/<client_id>); mixing them fails every signature.
 
-import { createPublicKey, verify as cryptoVerify, type JsonWebKey } from "node:crypto";
+import { createPublicKey, verify as cryptoVerify } from "node:crypto";
+
+// `JsonWebKey` used to be re-exported from node:crypto's types; @types/node >= 26
+// (required by the vendored engine) no longer exports it there. Declared locally
+// so this module owns the exact shape it reads instead of tracking a moving
+// @types export — structurally what createPublicKey({ format: "jwk" }) accepts.
+interface JsonWebKey {
+  kty?: string;
+  n?: string;
+  e?: string;
+  [key: string]: unknown;
+}
 
 /** Only RS256 is accepted. Never trust the token header's alg on its own. */
 const ALLOWED_ALGS = new Set(["RS256"]);

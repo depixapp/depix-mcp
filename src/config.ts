@@ -33,7 +33,22 @@ export const ALLOWED_API_ORIGINS: readonly string[] = ["https://api.depixapp.com
 // they can never drift (the old `com.depixapp/gateway` reverse-DNS name predated the
 // GitHub-OIDC registry publish and left the served descriptor stale).
 export const SERVER_NAME = "io.github.depixapp/depix-mcp";
+
+/**
+ * Handshake title of the DePix App-HOSTED deployment (mcp.depixapp.com): the
+ * receive-only, 22-tool gateway subset — accurate there, and the default of
+ * createServer(). `SERVER_NAME` above is deliberately NOT per-deployment: both
+ * deployments are the same registry entry and must answer to the same identity.
+ */
 export const SERVER_TITLE = "DePix App Gateway";
+
+/**
+ * Handshake title of the UNIFIED local deployment (`npx -y @depixapp/mcp`, 49
+ * tools). This string ships inside the npm tarball, so it is fixed here and not
+ * at a later surface pass: a server that holds the operator's seed and signs
+ * Liquid transactions must not introduce itself to the model as a "Gateway".
+ */
+export const UNIFIED_SERVER_TITLE = "DePix App — Pix + non-custodial Liquid wallet";
 
 /** Resolve the API base URL, trimming trailing slashes. */
 export function resolveApiBase(env: NodeJS.ProcessEnv = process.env): string {
@@ -63,7 +78,7 @@ export function resolveMaxWaitSeconds(env: NodeJS.ProcessEnv = process.env): num
  * /.well-known descriptor stale.
  */
 export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MCP_SERVER_VERSION?.trim() || "1.2.0";
+  return env.MCP_SERVER_VERSION?.trim() || "2.0.0";
 }
 
 // ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────

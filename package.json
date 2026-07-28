@@ -1,9 +1,23 @@
 {
   "name": "@depixapp/mcp",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "mcpName": "io.github.depixapp/depix-mcp",
   "type": "module",
-  "description": "DePix App MCP server — agent-facing interface for the DePix App payment gateway. Pure client of the public DePix API (api.depixapp.com): receive Pix payments (checkouts/products) and read transaction status. Non-custodial, holds zero critical credentials.",
+  "description": "The DePix App MCP server — one MCP, two levels of access: hosted receive-only Pix gateway (22 tools), or local via npx with a non-custodial Liquid wallet that signs on your own machine (49 tools). Checkouts, products, status reads, support tickets, hold/send/convert, Lightning and gift cards.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "wallet",
+    "non-custodial",
+    "pix",
+    "liquid",
+    "bitcoin",
+    "lightning",
+    "payments",
+    "depix",
+    "stablecoin"
+  ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -11,7 +25,7 @@
   },
   "homepage": "https://depixapp.com",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.4"
   },
   "bin": {
     "depix-mcp": "dist/stdio.js"
@@ -19,23 +33,41 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_LICENSES"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "vendor:engine": "node scripts/vendor-engine.mjs",
+    "vendor:check": "node scripts/vendor-engine.mjs --check",
+    "guard:hosted": "node scripts/check-hosted-isolation.mjs",
+    "licenses": "node scripts/gen-third-party-licenses.mjs",
+    "licenses:check": "node scripts/gen-third-party-licenses.mjs --check",
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.20.0",
-    "zod": "^3.25.0"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
+    "@scure/base": "2.2.0",
+    "@vulpemventures/secp256k1-zkp": "3.2.1",
+    "boltz-core": "5.0.0",
+    "boltz-swaps": "0.0.8",
+    "hash-wasm": "4.12.0",
+    "liquidjs-lib": "6.0.2-liquid.38",
+    "lwk_node": "0.18.0",
+    "viem": "2.54.1",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "26.1.1",
+    "@vercel/nft": "^0.29.0",
     "@vercel/node": "^5.0.0",
     "eslint": "^9.0.0",
     "globals": "^15.0.0",
