@@ -37,13 +37,24 @@ const check = args.includes("--check");
 const fromIdx = args.indexOf("--from");
 const fromArg = fromIdx >= 0 ? args[fromIdx + 1] : undefined;
 
-const candidates = [
-  fromArg,
-  process.env.DEPIX_SDK_REPO,
-  resolve(repoRoot, "..", "..", "..", "depix-sdk"), // .claude/worktrees/<wt> -> siblings of depix-mcp
-  resolve(repoRoot, "..", "depix-sdk"),
-  resolve(repoRoot, ".vendor-src"),
-].filter(Boolean);
+// Walk UP from the repo root looking for a sibling `depix-sdk` clone, so this
+// works both from a normal checkout and from a git worktree nested several levels
+// deep (.claude/worktrees/<branch>/), where the sibling is 4 directories up.
+function ancestorSiblings(name) {
+  const found = [];
+  let dir = repoRoot;
+  for (let i = 0; i < 6; i += 1) {
+    found.push(resolve(dir, "..", name));
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return found;
+}
+
+const candidates = [fromArg, process.env.DEPIX_SDK_REPO, resolve(repoRoot, ".vendor-src"), ...ancestorSiblings("depix-sdk")].filter(
+  Boolean,
+);
 
 const sourceRepo = candidates.find((p) => existsSync(join(p, ".git")) || existsSync(join(p, "HEAD")));
 if (!sourceRepo) {
