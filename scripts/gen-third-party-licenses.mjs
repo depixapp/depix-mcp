@@ -8,9 +8,11 @@
 // copy. NOTICE alone does not discharge that; a generated inventory with the actual
 // license texts does.
 //
-// It reads the tree `npm ls --omit=dev --all` reports, so it covers TRANSITIVE deps
-// too, and takes the license TEXT from each package's own LICENSE file (falling back
-// to the SPDX id in its package.json when a package ships none).
+// It reads the tree `npm ls --omit=dev --all --long` reports, so it covers TRANSITIVE
+// deps too, and takes the license TEXT from each package's own LICENSE file (falling
+// back to the SPDX id in its package.json when a package ships none). See readTree()
+// for the two traps in that JSON — deduped STUB nodes and duplicate versions — that
+// silently shrank this inventory to a quarter of the real closure.
 //
 // Usage:
 //   node scripts/gen-third-party-licenses.mjs           write THIRD_PARTY_LICENSES
@@ -43,16 +45,22 @@ const ANNOTATIONS = {
 const LICENSE_FILE_RE = /^(LICEN[CS]E|COPYING|NOTICE)([-.].*)?$/i;
 
 function readTree() {
-  // `npm ls` exits non-zero (ELSPROBLEMS) whenever the tree has any advisory —
-  // here, boltz-swaps' stale `peerOptional boltz-core@^4` against the pinned 5.0.0
-  // (see .npmrc). The JSON on stdout is complete and correct either way, so the
-  // exit code is read for diagnostics rather than trusted as a gate.
+  // `npm ls` exits non-zero (ELSPROBLEMS) on ANY tree advisory — extraneous
+  // packages, an unmet optional peer, a version quibble. The JSON on stdout is
+  // complete and correct either way, so the exit code is not trusted as a gate:
+  // this file must be generated from the real tree even when npm has an opinion
+  // about it.
   let raw;
   try {
-    raw = execFileSync("npm", ["ls", "--omit=dev", "--all", "--json"], {
+    // `--long` is load-bearing, not cosmetic: it is what puts `path` on every
+    // node. Without it two copies of the same package (boltz-core 4.x and 5.x)
+    // are indistinguishable and the inventory reads whichever one happens to sit
+    // at the root of node_modules — i.e. it can attribute the WRONG license text
+    // to a version that ships.
+    raw = execFileSync("npm", ["ls", "--omit=dev", "--all", "--long", "--json"], {
       cwd: repoRoot,
       encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
+      maxBuffer: 256 * 1024 * 1024,
     });
   } catch (err) {
     raw = typeof err?.stdout === "string" ? err.stdout : "";
@@ -60,25 +68,50 @@ function readTree() {
   }
   const tree = JSON.parse(raw);
   const found = new Map();
-  (function walk(deps) {
+
+  // ALWAYS descend, and dedupe only for OUTPUT.
+  //
+  // npm emits a deduped node the first time it can and a bare STUB elsewhere —
+  // and the stub is not guaranteed to come second. Proven here:
+  // `boltz-core.dependencies["liquidjs-lib"]` is a stub with no `dependencies`,
+  // while the expanded `liquidjs-lib` node has 13 children. Descending only on
+  // first sight of a key let the stub claim it and silently dropped every
+  // transitive dependency underneath — the inventory reported 44 packages when
+  // the real closure is 172, and THIS FILE SHIPS IMMUTABLY in the tarball.
+  //
+  // npm's JSON is a finite tree (it never re-expands a cycle), so descending on
+  // every edge terminates; the depth cap is a belt-and-braces guard only.
+  const MAX_DEPTH = 64;
+  (function walk(deps, depth) {
+    if (depth > MAX_DEPTH) return;
     for (const [name, node] of Object.entries(deps ?? {})) {
-      // Skip what is LISTED but not SHIPPED: boltz-swaps declares a long tail of
+      // Skip what is LISTED but not INSTALLED: boltz-swaps declares a long tail of
       // optional peers (@solana/*, tronweb, @metaplex-foundation/*, …) that npm
-      // reports as unmet peer entries with no resolved version. They are not
-      // installed, never enter the tarball's install closure, and inventorying
-      // them would be a false claim about what this package distributes.
-      if (typeof node.version !== "string" || node.missing === true) continue;
-      const key = `${name}@${node.version}`;
-      if (!found.has(key)) {
-        found.set(key, { name, version: node.version });
-        walk(node.dependencies);
+      // reports as unmet entries with no resolved version. They never enter the
+      // install closure, and inventorying them would be a false claim about what
+      // this package distributes.
+      if (typeof node.version === "string" && node.missing !== true) {
+        const key = `${name}@${node.version}`;
+        // Keep the FIRST node that carries a real path: a stub may have none.
+        const existing = found.get(key);
+        if (existing === undefined) found.set(key, { name, version: node.version, path: node.path });
+        else if (!existing.path && node.path) existing.path = node.path;
       }
+      walk(node.dependencies, depth + 1);
     }
-  })(tree.dependencies);
+  })(tree.dependencies, 0);
+
   return [...found.values()].sort((a, b) => (a.name === b.name ? a.version.localeCompare(b.version) : a.name.localeCompare(b.name)));
 }
 
-function packageDir(name) {
+/**
+ * The directory a specific tree node actually resolves to. `node.path` (from
+ * `--long`) is authoritative — with two copies of a package installed, the root
+ * `node_modules/<name>` is only ONE of them, and guessing picks the wrong
+ * license text half the time.
+ */
+function packageDir(name, nodePath) {
+  if (typeof nodePath === "string" && existsSync(nodePath)) return nodePath;
   const dir = join(repoRoot, "node_modules", ...name.split("/"));
   return existsSync(dir) ? dir : null;
 }
@@ -109,8 +142,8 @@ const deps = readTree();
 const missing = [];
 const sections = [];
 
-for (const { name, version } of deps) {
-  const dir = packageDir(name);
+for (const { name, version, path: nodePath } of deps) {
+  const dir = packageDir(name, nodePath);
   if (dir === null) {
     missing.push(`${name}@${version} (not installed — run \`npm ci\` before generating)`);
     continue;
@@ -133,10 +166,11 @@ App wallet engine (relicensed Apache-2.0 by its owner; see src/vendor/) and INST
 the third-party packages inventoried below. Their licenses require that their
 copyright and permission notices travel with every copy — this file is that notice.
 
-Inventory: the ${deps.length} installed package${deps.length === 1 ? "" : "s"} of this package's
-PRODUCTION dependency tree (\`npm ls --omit=dev --all\`), transitive dependencies included.
-Unmet OPTIONAL peers that npm lists but never installs are excluded — they are not
-distributed with this package.
+Inventory: the ${deps.length} installed package${deps.length === 1 ? "" : "s"} of this package's PRODUCTION
+dependency tree (\`npm ls --omit=dev --all --long\`), every transitive dependency included
+and each entry read from the copy npm actually resolved (two versions of the same
+package are listed separately). Unmet OPTIONAL peers that npm lists but never installs
+are excluded — they are not distributed with this package.
 
 GENERATED FILE — do not edit by hand. Regenerate with:
     npm run licenses
