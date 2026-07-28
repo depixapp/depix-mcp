@@ -10,6 +10,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ApiClient } from "./apiClient.js";
 import { SERVER_NAME, SERVER_TITLE, resolveServerVersion } from "./config.js";
 import { ToolError } from "./errors.js";
+import { hostedInstructions } from "./instructions.js";
 import { logger } from "./log.js";
 import * as s from "./schemas.js";
 import {
@@ -47,14 +48,6 @@ import type {
   ReplyTicketArgs,
   UpdateProductArgs,
 } from "./requestMap.js";
-
-const INSTRUCTIONS = [
-  "DePix App Gateway MCP — receive Pix payments (checkouts/products), read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API. 22 tools total: 16 gateway + 6 support-ticket.",
-  "Authentication is a DePix App API key (sk_test_… for sandbox, sk_live_… for production), configured on the connection itself: over HTTP it is the `Authorization: Bearer sk_…` header; in local stdio mode it is the DEPIX_API_KEY environment variable.",
-  "Tools cannot set the key — if a tool reports a missing key, ask the user to reconnect with their key configured.",
-  "Always test with an sk_test_ key first. `get_account` is the recommended connection test.",
-  "This server is a pure, non-custodial API client: it never signs, never holds funds, and never stores your key.",
-].join(" ");
 
 function ok(out: unknown): CallToolResult {
   return {
@@ -103,6 +96,22 @@ export interface CreateServerOptions {
   version?: string;
   /** Inject a preconfigured client (tests). */
   apiClient?: ApiClient;
+  /**
+   * PER-DEPLOYMENT handshake `instructions` (spec §1.6). Default: the hosted
+   * (receive-only, 22-tool) text, because the hosted entry is the caller that
+   * passes nothing. The unified npx build MUST override it — the hosted text
+   * asserts this server "never signs, never holds funds", which is false once
+   * the 27 wallet tools are mounted on the same server.
+   */
+  instructions?: string;
+  /**
+   * PER-DEPLOYMENT handshake `title` (spec §8/P2, moved from P4). Default
+   * "DePix App Gateway", correct for the hosted receive-only deployment; the
+   * unified build passes UNIFIED_SERVER_TITLE so a 49-tool local server does not
+   * introduce itself as a gateway. `name` is NOT per-deployment: it is the one
+   * registry identity (io.github.depixapp/depix-mcp) both deployments answer to.
+   */
+  title?: string;
 }
 
 export function createServer(opts: CreateServerOptions): McpServer {
@@ -110,8 +119,8 @@ export function createServer(opts: CreateServerOptions): McpServer {
   const version = opts.version ?? resolveServerVersion();
 
   const server = new McpServer(
-    { name: SERVER_NAME, title: SERVER_TITLE, version },
-    { instructions: INSTRUCTIONS },
+    { name: SERVER_NAME, title: opts.title ?? SERVER_TITLE, version },
+    { instructions: opts.instructions ?? hostedInstructions() },
   );
 
   const readOnly = { readOnlyHint: true, openWorldHint: true };
