@@ -21,6 +21,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { UNIFIED_SERVER_TITLE } from "./config.js";
 import { UNIFIED_INIT_COMMAND, UNIFIED_RUN_COMMAND, gatewaySentences } from "./instructions.js";
 import { createServer, type CreateServerOptions } from "./server.js";
@@ -62,10 +63,15 @@ export function unifiedInstructions(opts: { walletConfigured: boolean }): string
   ].join(" ");
 }
 
-/** Wallet dir the engine itself would use: $DEPIX_WALLET_DIR ?? ~/.depix-wallet. */
+/**
+ * Wallet dir the engine itself would use. Mirrors the engine's own resolveDataDir
+ * EXACTLY — `??`, not a truthiness/trim check, and `join`, not string concat — so
+ * the boot-time "is a wallet configured?" probe can never look somewhere other
+ * than where the wallet will actually open (which would serve the wrong
+ * `instructions` for the whole session).
+ */
 export function resolveWalletDir(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.DEPIX_WALLET_DIR?.trim();
-  return explicit && explicit.length > 0 ? explicit : `${homedir()}/.depix-wallet`;
+  return env.DEPIX_WALLET_DIR ?? join(homedir(), ".depix-wallet");
 }
 
 /**
