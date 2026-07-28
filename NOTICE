@@ -1,5 +1,12 @@
-DePix App Gateway (@depixapp/mcp)
+DePix App MCP (@depixapp/mcp)
 Copyright 2026 DePix App
+
+One MCP, two levels of access: a hosted Pix receive gateway and a local,
+non-custodial Liquid wallet.
 
 Licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
+
+This product embeds the DePix App wallet engine (src/vendor/), owned by DePix App
+and distributed here under Apache-2.0, and installs third-party packages whose
+licenses are reproduced in THIRD_PARTY_LICENSES.
