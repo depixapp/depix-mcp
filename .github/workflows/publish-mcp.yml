@@ -78,6 +78,10 @@ jobs:
         run: npm install -g npm@11
 
       - name: Install dependencies
+        env:
+          # `npm ci` runs `prepare` -> build -> postbuild, which is where the bake
+          # happens; the publish step sets it too so both builds agree.
+          SIDESHIFT_AFFILIATE_ID: ${{ secrets.SIDESHIFT_AFFILIATE_ID }}
         run: npm ci # runs `prepare` -> build, so a compile error fails fast here
 
       - name: Verify version consistency (tag == package.json == registry npm entry)
@@ -102,11 +106,30 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # No test/build steps here: the full suite runs in ci.yml on every push +
-      # PR, so a tagged commit was already validated; `npm ci` above ran `prepare`
-      # (tsc) and `npm publish` builds again, so the compiled dist is fresh.
+      # These DO run here, despite ci.yml covering every push and PR: ci.yml is
+      # triggered by `push: branches: [main]` and `pull_request`, NEITHER of which
+      # fires on a tag, and this job has no `needs:` on a green CI run. So without
+      # them a `git tag v2.0.1 && git push --tags` on any commit — including one
+      # that never touched main — publishes to npm and to the immutable MCP
+      # Registry with nothing but tsc and eslint having looked at it.
+      - name: Test
+        run: npm test
+
+      - name: Guard — hosted deployment is structurally keyless
+        run: npm run guard:hosted
+
+      - name: Guard — THIRD_PARTY_LICENSES is current
+        run: npm run licenses:check
 
       - name: Publish to npm (skip if this version is already published)
+        env:
+          # Baked into the compiled engine by scripts/postbuild.mjs, which npm
+          # publish re-runs through `prepare`. The bake is CONDITIONAL: if this
+          # secret does not exist the value is empty, the step is skipped, and the
+          # compiled module keeps its runtime `process.env` read — so wiring it
+          # here is safe whether or not the secret is ever created. Without the
+          # wiring, creating the secret later would have no effect at all.
+          SIDESHIFT_AFFILIATE_ID: ${{ secrets.SIDESHIFT_AFFILIATE_ID }}
         run: |
           V="${{ steps.ver.outputs.version }}"
           if npm view "@depixapp/mcp@$V" version >/dev/null 2>&1; then
