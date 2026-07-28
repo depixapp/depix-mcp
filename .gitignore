@@ -3,3 +3,13 @@ node_modules/
 .env
 .env.*
 dist/
+
+# Engine checkout used by `npm run vendor:engine` / `--check` in CI. The vendored
+# OUTPUT (src/vendor/**) is committed on purpose — see scripts/vendor-engine.mjs.
+.vendor-src/
+
+# Scratch emitted by scripts/check-hosted-isolation.mjs (compiled api/ tree it
+# traces with @vercel/nft). Always removed by the script; ignored so an
+# interrupted run cannot dirty the tree.
+.guard-dist/
+.guard-tsconfig.json

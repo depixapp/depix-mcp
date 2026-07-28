@@ -1,0 +1,2818 @@
+/*
+ * Copyright 2026 DePix App
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at http://www.apache.org/licenses/LICENSE-2.0 — see LICENSE.
+ *
+ * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
+ * Origin:    https://github.com/depixapp/depix-sdk
+ * Commit:    6216f6ca88104ad1c2e5d3ae45b357a59d315312
+ * Path:      src/wallet.ts
+ * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
+ *
+ * DePix App owns this code and distributes THIS copy under Apache-2.0. The
+ * `@depixapp/sdk` lineage of the same source remains AGPL-3.0-only; nothing
+ * from that published tarball is reused here (spec §2.2).
+ */
+// DepixWallet — the public facade (spec §2.3, mirroring wallet.js:2875-2918
+// adapted to headless Node).
+//
+// Lifecycle: open() / create() / restore() acquire the exclusive dataDir lock
+// (§2.4) and hold it until close(). open() NEVER auto-creates a seed
+// (WALLET_NOT_FOUND). The passphrase stays in process memory; the decrypted
+// mnemonic/signer only materialize inside each signing operation and are
+// zeroed in a finally block (per-op auth, frontend parity).
+//
+// Backup gate (§2.9/G12): no receive address is derived before a backup was
+// exported AND confirmed — since every inflow needs an address, no funds can
+// enter an unbacked wallet. restore() is proof of possession and is born
+// confirmed; non-interactive create() only skips the gate with an explicit
+// `mnemonicSecured: true`.
+
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
+import { base64 } from "@scure/base";
+import type { Wollet } from "lwk_node";
+import { ASSETS, MAINNET_ASSET_ID_TO_KEY, type AssetKey } from "./assets.js";
+import { runBackupRitual, type RitualIo } from "./backup-ritual.js";
+import {
+  Address,
+  AssetId,
+  Mnemonic,
+  Pset,
+  Signer,
+  TxBuilder,
+  buildWollet,
+  descriptorFromMnemonic,
+  generateMnemonic,
+  mainnetNetwork,
+  validateMnemonic
+} from "./engine/lwk.js";
+import {
+  DepixApiClient,
+  type FetchLike,
+  type StatusReadResponse,
+  type WithdrawRequestBody,
+  type WithdrawWireResponse
+} from "./api/client.js";
+import { DepixApiError, WalletError } from "./errors.js";
+import {
+  assertFeeAddressExplicit,
+  assertSplitConsistent,
+  assertWithdrawPsetOutputs,
+  centsToDepixSats,
+  normalizeWithdrawResponse,
+  type NormalizedWithdraw,
+  type WithdrawMode
+} from "./flows/withdraw.js";
+import { waitForDeposit as pollDeposit, waitForWithdrawal as pollWithdrawal, type WaitOptions } from "./flows/status.js";
+import { PendingWithdrawals } from "./pending.js";
+import {
+  Guardrails,
+  resolveGuardrailConfig,
+  type GuardrailAnchorStore,
+  type GuardrailConfig,
+  type ResolvedGuardrailConfig
+} from "./guardrails/guardrails.js";
+import { QuotesClient, resolveApiBase as resolveQuotesApiBase, type QuotesSource } from "./guardrails/quotes.js";
+import { BrlValuator } from "./guardrails/valuation.js";
+import { createLogger, registerSecret, type Logger } from "./logger.js";
+import { Mutex } from "./mutex.js";
+import {
+  assertStrongPassphrase,
+  deriveKeyBytes,
+  deriveStateSubkey,
+  importAesKey
+} from "./store/crypto.js";
+import { acquireDirLock, type DirLock } from "./store/dir-lock.js";
+import { ensureDir } from "./store/fs-util.js";
+import { SeedStore, type WalletFileV1 } from "./store/seed-store.js";
+import { UpdateStore } from "./store/update-store.js";
+import { SyncEngine, type EsploraClientLike, type EsploraProvider } from "./sync/sync.js";
+import { ConvertNamespace, type ConvertNamespaceOptions } from "./convert/namespace.js";
+import type { ConvertWalletHooks } from "./convert/hooks.js";
+import {
+  intentDepsFromNamespace,
+  makeAdvancedNamespace,
+  makeConvertFacade,
+  quoteRoutes,
+  type CoinSelection,
+  type ConvertFacade,
+  type ConvertIntent,
+  type IntentDeps,
+  type RouteQuote,
+  type SelectCoinsParams,
+  type SendManyParams,
+  type SendManyRecipient,
+  type SendManyResult,
+  type WalletAdvanced,
+  type WalletUtxo
+} from "./convert/intent.js";
+
+// Re-exported so the primitive types are importable from the wallet module too
+// (they live next to WalletAdvanced in convert/intent.ts).
+export type {
+  CoinSelection,
+  SelectCoinsParams,
+  SendManyParams,
+  SendManyRecipient,
+  SendManyResult,
+  WalletUtxo
+} from "./convert/intent.js";
+import { LWK_VERSION, SDK_VERSION } from "./version.js";
+import type { GuardrailDestination } from "./guardrails/allowlist.js";
+import { BoltzConvert, type BoltzConvertDeps, type BoltzResumeSummary } from "./convert/boltz/convert.js";
+import { BoltzSwapStore } from "./convert/boltz/store.js";
+import { activePlanContinuation } from "./convert/continuation.js";
+import {
+  isPlanContinuationAuthorized,
+  listPendingPlans,
+  resumeConversionPlans,
+  type PlanResumeSummary
+} from "./convert/multihop.js";
+import { ConversionPlanStore } from "./convert/plan-store.js";
+import { isShiftTerminal } from "./convert/sideshift.js";
+import { GiftcardsNamespace } from "./giftcards/namespace.js";
+import { GiftcardConfigClient, type GiftcardConfigSource } from "./giftcards/config.js";
+import { CryptorefillsClient, type CryptorefillsFetch } from "./giftcards/cryptorefills.js";
+import { GiftcardOrderStore } from "./giftcards/store.js";
+import { MerchantNamespace } from "./merchant.js";
+
+export interface WalletSyncOptions {
+  /** Override the Esplora provider chain (default: waterfalls→vanilla §2.6). */
+  providers?: EsploraProvider[];
+  /** Run fullScan in a worker_thread (§2.7). Default ON. */
+  worker?: boolean;
+  /** Advanced/testing: inject fake Esplora clients (broadcast seam). */
+  clientFactory?: (provider: EsploraProvider) => EsploraClientLike;
+  /**
+   * Incremental-sync timeout (ms). Default 60_000 (~1 min). Raise it for a
+   * heavily-used wallet or a slow provider — a warm sync legitimately runs up to
+   * ~1 min, so do NOT cap sync() below this externally.
+   */
+  syncTimeoutMs?: number;
+  /**
+   * Deep-rescan / virgin cold-start timeout (ms). Default 600_000 (10 min). A
+   * `sync({ rescan: true })` or a first cold scan can take several minutes.
+   */
+  coldStartTimeoutMs?: number;
+}
+
+/** Per-call options of wallet.sync() (PR-D). */
+export interface WalletSyncCallOptions {
+  /**
+   * true → deep re-scan from zero: drop the persisted update-chain cache and
+   * cold-scan a fresh LWK state (useful when the wallet looks desynchronized —
+   * missing transactions, stale balances). Slower than the default incremental
+   * sync (cold-start timeout applies). Default false (incremental).
+   */
+  rescan?: boolean;
+}
+
+export interface OpenOptions {
+  /** Default: $DEPIX_WALLET_DIR ?? ~/.depix-wallet */
+  dataDir?: string;
+  /** Default: $DEPIX_WALLET_PASSPHRASE (required when a seed exists) */
+  passphrase?: string;
+  sync?: WalletSyncOptions;
+  /**
+   * Guardrail config (§4.2). Option > env (DEPIX_GUARDRAIL_*) > default
+   * (R$100/tx + R$500/day). IMMUTABLE at runtime (G9): set only here (or via
+   * env) + restart — there is no update method an injected LLM could reach.
+   */
+  guardrails?: GuardrailConfig;
+  /**
+   * Advanced/testing: inject the /api/quotes source used for L-BTC/USDt BRL
+   * valuation (§4.4). Default: a QuotesClient against apiBase (env DEPIX_API_BASE
+   * ?? https://api.depixapp.com), fresh 30s / stale 5min.
+   */
+  quotes?: QuotesSource;
+  /** Default: $DEPIX_API_KEY (sk_test_/sk_live_) — required for deposit/withdraw/waitFor. */
+  apiKey?: string;
+  /** Default: $DEPIX_API_BASE ?? https://api.depixapp.com. */
+  apiBase?: string;
+  /** Advanced/testing: inject the fetch implementation of the API client. */
+  fetch?: FetchLike;
+  /**
+   * Auto-run resumePendingWithdrawals() on open() (§3.2.9). Default true — an
+   * MCP-only agent has no other path to recover after a crash. Opt out here.
+   */
+  resumePendingWithdrawalsOnOpen?: boolean;
+  /**
+   * Auto-run resumePendingConversions() on open() (§5 recovery): reconcile
+   * in-flight Boltz swaps (re-attach watch / claim / refund), the tracked
+   * SideSwap peg-in, and non-terminal SideShift shifts. Default true — the
+   * same fund-safety rationale as the withdrawals resume. Opt out here.
+   */
+  resumePendingConversionsOnOpen?: boolean;
+  /**
+   * Advanced/testing: inject the SideSwap client factory / foreign-PSET signer /
+   * clock used by wallet.convert.sideswap.* (§5). Default: the real WS client
+   * and lwk signer.
+   */
+  convert?: ConvertNamespaceOptions;
+  /**
+   * Advanced/testing: inject the Boltz conversion deps (fake REST/WS client,
+   * verify-lockup / refund / reverse overrides) so the wallet.convert.boltz
+   * flows never touch real Boltz or WASM (§5.3).
+   */
+  boltz?: BoltzConvertDeps;
+  /**
+   * Advanced/testing: inject the gift-card providers (fake CryptoRefills REST
+   * client + /api/config source) so wallet.giftcards.* never touches the network
+   * (§5.5). Default: real clients on global fetch / apiBase.
+   */
+  giftcards?: GiftcardsWalletOptions;
+}
+
+/** Injection points for wallet.giftcards.* (spec §5.5). */
+export interface GiftcardsWalletOptions {
+  /** Inject the CryptoRefills REST client (tests). Default: real client, global fetch. */
+  cryptorefills?: CryptorefillsClient;
+  /** Inject the /api/config gift-card source (tests). Default: GiftcardConfigClient. */
+  config?: GiftcardConfigSource;
+  /** Fetch impl for the default CryptoRefills client (ignored if `cryptorefills` given). */
+  cryptorefillsFetch?: CryptorefillsFetch;
+}
+
+export interface CreateOptions extends OpenOptions {
+  /** Import this mnemonic instead of generating one (12 words, English). */
+  mnemonic?: string;
+  /**
+   * Non-interactive escape hatch (§2.9): the mnemonic is returned in the
+   * foreground; only an EXPLICIT true makes the wallet be born
+   * backup-confirmed. Skipping the backup is a conscious, logged decision —
+   * never a silent default.
+   */
+  mnemonicSecured?: boolean;
+  /** Override TTY detection (tests/advanced). */
+  interactive?: boolean;
+  /** Inject ritual I/O (tests). */
+  ritualIo?: RitualIo;
+}
+
+export interface RestoreOptions extends OpenOptions {
+  mnemonic: string;
+}
+
+export interface CreateResult {
+  /** The 12 words, in the foreground — impossible not to receive (§2.9). */
+  mnemonic: string;
+  descriptor: string;
+  backupConfirmed: boolean;
+  wallet: DepixWallet;
+}
+
+export interface BackupTarget {
+  kind: "mnemonic";
+}
+
+export interface MnemonicBackup {
+  kind: "mnemonic";
+  mnemonic: string;
+}
+
+export interface WalletBalances {
+  balances: Record<AssetKey, bigint>;
+  /** Total BRL estimate in integer cents (§4.4); null if any needed quote is unavailable. */
+  brlEstimate: number | null;
+}
+
+export interface WalletTransaction {
+  txid: string;
+  height: number | null;
+  timestamp: number | null;
+  type: string;
+  feeSats: bigint;
+  /** Net balance deltas keyed by asset (AssetKey when known, raw hex id otherwise). */
+  balance: Record<string, bigint>;
+}
+
+export interface SendParams {
+  asset: AssetKey;
+  amountSats: bigint;
+  address: string;
+}
+
+export interface SendResult {
+  txid: string;
+}
+
+export interface DepositParams {
+  /** Deposit amount in BRL cents (R$ 5,00–R$ 3.000,00 server-side). */
+  amountCents: number;
+  /** CPF/CNPJ of the OWNER who will pay the QR (wire: payer_tax_number, §2.3). */
+  payerTaxNumber: string;
+}
+
+export interface DepositResult {
+  id: string;
+  qrCopyPaste: string;
+  sandbox?: true;
+}
+
+export interface WithdrawParams {
+  pixKey: string;
+  /** CPF/CNPJ of the destination Pix key HOLDER (wire: taxNumber, §2.3). */
+  recipientTaxNumber: string;
+  amountCents: number;
+  /** "send" → depositAmountInCents (você envia); "payout" → payoutAmountInCents (você recebe). */
+  mode: WithdrawMode;
+}
+
+/** Normative return of withdraw() (§2.3). txid is null only in sandbox. */
+export interface WithdrawResult {
+  withdrawalId: string;
+  txid: string | null;
+  feeCents: number | null;
+  feeAddress: string | null;
+  netCents: number;
+  grossCents: number;
+  payoutCents: number;
+  sandbox?: true;
+}
+
+/**
+ * Read-only guardrail config + current rolling-24h usage (§4). Feeds the
+ * wallet_get_guardrails / wallet_status MCP tools (§6.2) and any programmatic
+ * caller. There is deliberately NO setter — the config is the owner's,
+ * immutable at runtime (G9); this only exposes it.
+ */
+export interface GuardrailReadout {
+  usedCents: number;
+  dailyLimitCents: number;
+  perTxLimitCents: number;
+  remainingCents: number;
+  /** Whether the owner turned the allowlist on (§4.3). */
+  allowlistEnabled: boolean;
+}
+
+/** Sync-health slice of wallet.diagnostics() (PR-D) — mirrors §2.5 meta.json. */
+export interface WalletDiagnosticsSync {
+  /** Epoch-ms of the last completed scan pass, or null before any scan. */
+  lastScanAt: number | null;
+  /** Epoch-ms of the last scan whose result also persisted, or null. */
+  lastSuccessAt: number | null;
+  /** Epoch-ms of the last update-persist failure (§2.5), or null. */
+  lastPersistFailedAt: number | null;
+  /** Error NAME of the last failed persist (never a message/path), or null. */
+  lastPersistErrorName: string | null;
+  /** Persisted update-chain links on disk (0 after a wipe/rescan-clear). */
+  persistedUpdates: number;
+  /** Whether the in-memory LWK state is initialized (a sync/read already ran). */
+  walletLoaded: boolean;
+}
+
+/** Per-rail pending counters of wallet.diagnostics() — the getPending() tally. */
+export interface WalletDiagnosticsPending {
+  withdrawals: number;
+  boltzSwaps: number;
+  pegins: number;
+  sideshiftShifts: number;
+  plans: number;
+}
+
+/**
+ * wallet.diagnostics() snapshot (PR-D) — a read-only health report for
+ * support. Same fund-safety rule as getPending(): METADATA ONLY, never key
+ * material (no seed, mnemonic, passphrase, descriptor or store secrets).
+ */
+export interface WalletDiagnostics {
+  /** This SDK's version (package.json), or "unknown". */
+  sdkVersion: string;
+  /** The exact pinned lwk_node version this build ships, or "unknown". */
+  lwkVersion: string;
+  dataDir: string;
+  backupConfirmed: boolean;
+  /** false on a view-only/wiped wallet. A boolean only — never the material. */
+  hasSeed: boolean;
+  apiKeyConfigured: boolean;
+  sync: WalletDiagnosticsSync;
+  pending: WalletDiagnosticsPending;
+  /**
+   * Guardrail config + rolling-24h usage, or null when the readout is
+   * unavailable (e.g. the state key cannot be derived on this wallet).
+   */
+  guardrails: GuardrailReadout | null;
+}
+
+export interface ResumeSummary {
+  /** rebroadcast + reposted. */
+  resumed: number;
+  /** "signed" records re-broadcast with the SAME bytes. */
+  rebroadcast: number;
+  /** "requested" records re-POSTed with the same Idempotency-Key + re-validated. */
+  reposted: number;
+  /** records that failed GCM authentication and were discarded (§3.2.9). */
+  discarded: number;
+  /** records that could not be resumed this pass. */
+  failed: number;
+}
+
+/** Peg-in leg of resumePendingConversions() (§5.2 — tracking reconciliation). */
+export interface PegInResumeSummary {
+  /** In-flight peg-ins still tracked after reconciliation. */
+  pending: number;
+  /** Tracked peg-ins SideSwap reported Done — cleared from the store. */
+  cleared: number;
+  /** Reconciliation attempts that failed (record kept for the next resume). */
+  failed: number;
+}
+
+/** SideShift leg of resumePendingConversions() (§5.4 — status refresh). */
+export interface SideShiftResumeSummary {
+  /** Non-terminal tracked shifts found in the local log. */
+  checked: number;
+  /** Shifts whose status was refreshed from SideShift into the log. */
+  refreshed: number;
+  /** Status refreshes that failed (record kept, retried on the next resume). */
+  failed: number;
+}
+
+/**
+ * resumePendingConversions() result (§5 recovery): one entry per conversion
+ * rail. Auto-run by open() (opt-out via resumePendingConversionsOnOpen) and
+ * re-run by wallet.recover().
+ */
+export interface ConversionResumeSummary {
+  /** convert.boltz.resume() summary; null when the wallet has no seed (no Boltz rail). */
+  boltz: BoltzResumeSummary | null;
+  pegin: PegInResumeSummary;
+  sideshift: SideShiftResumeSummary;
+  /**
+   * Multi-hop conversion plans resumed from the last completed leg (PR-C):
+   * crash-between-legs plans re-drive the next leg with the previous leg's
+   * REAL settled amount; in-flight legs are probed, never re-executed.
+   */
+  plans: PlanResumeSummary;
+}
+
+/** wallet.recover() result — every rail's recovery summary (§3.2.9 + §5). */
+export interface RecoverySummary extends ConversionResumeSummary {
+  withdrawals: ResumeSummary;
+}
+
+/** Common shape of one in-flight item from wallet.getPending(). */
+export interface PendingItemBase {
+  /** Which rail the item is in flight on. */
+  rail: "withdrawal" | "boltz" | "pegin" | "sideshift" | "plan";
+  /** Rail-scoped id: Idempotency-Key | Boltz swapId | peg orderId | shift id | planId. */
+  id: string;
+  /** Rail-specific state/status string. */
+  state: string;
+  createdAt: number | null;
+}
+
+export interface PendingWithdrawalItem extends PendingItemBase {
+  rail: "withdrawal";
+  withdrawalId: string | null;
+  txid: string | null;
+}
+
+export interface PendingBoltzSwapItem extends PendingItemBase {
+  rail: "boltz";
+  swapType: "submarine" | "reverse" | "stablecoin";
+}
+
+export interface PendingPegInItem extends PendingItemBase {
+  rail: "pegin";
+  /** BTC address the owner funds externally. */
+  pegAddr: string;
+  /** OUR Liquid receive address SideSwap pays L-BTC to. */
+  recvAddr: string;
+}
+
+export interface PendingSideShiftItem extends PendingItemBase {
+  rail: "sideshift";
+  shiftType: "send" | "receive";
+  network: string;
+}
+
+/** An in-flight multi-hop conversion plan (PR-C) — the legs it chains show up
+ *  on their own rails (boltz/sideshift/pegin) once started. */
+export interface PendingConversionPlanItem extends PendingItemBase {
+  rail: "plan";
+  /** The route being executed (its id lists every leg). */
+  routeId: string;
+  hops: number;
+  /** 1-based leg currently being driven. */
+  currentLeg: number;
+  /** Manual instruction when the plan is parked needs_review. */
+  note?: string;
+}
+
+/**
+ * One in-flight item from wallet.getPending() — a unified, read-only view over
+ * the five durable stores (§3.2.9 withdrawals, §5.3 Boltz swaps, §5.2 peg-in,
+ * §5.4 SideShift shifts, PR-C multi-hop conversion plans). Metadata only —
+ * NEVER key material.
+ */
+export type PendingItem =
+  | PendingWithdrawalItem
+  | PendingBoltzSwapItem
+  | PendingPegInItem
+  | PendingSideShiftItem
+  | PendingConversionPlanItem;
+
+function resolveDataDir(explicit?: string): string {
+  return explicit ?? process.env.DEPIX_WALLET_DIR ?? join(homedir(), ".depix-wallet");
+}
+
+/**
+ * Redact the OS home-directory prefix of an absolute path down to `~`. Used
+ * ONLY for the dataDir VALUE surfaced by diagnostics() / the wallet_diagnostics
+ * MCP tool: an absolute dataDir routinely embeds the OS username, which becomes
+ * privacy-sensitive once the snapshot reaches an MCP host or is pasted into a
+ * support thread. Not key material — the path is still support-useful, just
+ * without the username. The real dataDir is kept intact everywhere else (dir
+ * lock, stores, error messages). Boundary-safe: only a full leading path
+ * segment is redacted (never `/home/bob-2` when home is `/home/bob`).
+ */
+export function redactHomePath(p: string): string {
+  const home = homedir();
+  if (!home) return p;
+  if (p === home) return "~";
+  const prefix = home.endsWith(sep) ? home : home + sep;
+  if (p.startsWith(prefix)) return "~" + sep + p.slice(prefix.length);
+  return p;
+}
+
+function resolvePassphrase(explicit?: string): string | undefined {
+  return explicit ?? process.env.DEPIX_WALLET_PASSPHRASE;
+}
+
+function resolveApiKey(explicit?: string): string | undefined {
+  return explicit ?? process.env.DEPIX_API_KEY;
+}
+
+function resolveApiBase(explicit?: string): string | undefined {
+  return explicit ?? process.env.DEPIX_API_BASE;
+}
+
+async function runRitual(mnemonic: string, io?: RitualIo): Promise<boolean> {
+  if (io) return runBackupRitual(mnemonic, io);
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await runBackupRitual(mnemonic, {
+      // The ritual only runs on a real TTY (checked by the caller): stdout is
+      // the interactive terminal here, not an MCP JSON-RPC channel.
+      write: (text) => void process.stdout.write(`${text}\n`),
+      question: (prompt) => rl.question(prompt)
+    });
+  } finally {
+    rl.close();
+  }
+}
+
+// ─── wallet.advanced low-level primitives (PR-E) — pure planning helpers ─────
+
+/** One planned output of an advanced.sendMany() transaction. */
+export interface SendManyOutput {
+  assetKey: AssetKey;
+  amountSats: bigint;
+  address: string;
+  /** true → TxBuilder.addLbtcRecipient; false → addRecipient with the asset id. */
+  lbtc: boolean;
+}
+
+/** Validated output plan + the per-asset totals the guardrail values (§4.3). */
+export interface SendManyPlan {
+  /** The N outputs, in the caller's order. */
+  outputs: SendManyOutput[];
+  /**
+   * Sum of the output amounts per asset — this is what gets valued in BRL and
+   * enforced as ONE total by the §4.3 choke point, so N small outputs can
+   * never slice under the per-tx ceiling.
+   */
+  totalsByAsset: Map<AssetKey, bigint>;
+}
+
+/**
+ * Validate the sendMany recipients and produce the deterministic output plan.
+ * Pure (no lwk, no I/O) so the multi-output construction is unit-testable;
+ * address VALIDITY is checked separately by sendMany (it needs the lwk parser).
+ */
+export function planSendMany(recipients: readonly SendManyRecipient[]): SendManyPlan {
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    throw new WalletError(
+      "INVALID_ARGUMENT",
+      "sendMany requires a non-empty recipients array ({ asset, amountSats, address })"
+    );
+  }
+  const outputs: SendManyOutput[] = [];
+  const totalsByAsset = new Map<AssetKey, bigint>();
+  for (const recipient of recipients) {
+    const asset = ASSETS[recipient?.asset as AssetKey];
+    if (!asset) {
+      throw new WalletError("UNSUPPORTED_ASSET", `Unknown asset: ${String(recipient?.asset)}`);
+    }
+    if (typeof recipient.amountSats !== "bigint" || recipient.amountSats <= 0n) {
+      throw new WalletError(
+        "INVALID_AMOUNT",
+        "every sendMany recipient amountSats must be a positive bigint"
+      );
+    }
+    if (typeof recipient.address !== "string" || recipient.address.trim().length === 0) {
+      throw new WalletError(
+        "INVALID_ADDRESS",
+        "every sendMany recipient needs a Liquid address string"
+      );
+    }
+    outputs.push({
+      assetKey: asset.key,
+      amountSats: recipient.amountSats,
+      address: recipient.address,
+      lbtc: asset.key === "LBTC"
+    });
+    totalsByAsset.set(asset.key, (totalsByAsset.get(asset.key) ?? 0n) + recipient.amountSats);
+  }
+  return { outputs, totalsByAsset };
+}
+
+/**
+ * Greedy coin selection over an already-asset-filtered UTXO list: confirmed
+ * coins first (several counterparties refuse unconfirmed inputs — same shape
+ * as the SideSwap taker selection in convert/sideswap.ts), largest-first
+ * within each group, stopping at the first coin that covers the target. Pure
+ * and INFORMATIONAL — LWK's TxBuilder does its own selection at build time.
+ * Returns everything it accumulated even when the coins cannot cover (the
+ * caller decides whether that is an error).
+ */
+export function selectCoinsGreedy(
+  utxos: readonly WalletUtxo[],
+  targetSats: bigint
+): { selected: WalletUtxo[]; totalSats: bigint } {
+  const ordered = [...utxos].sort((a, b) => {
+    const aConfirmed = a.height !== null;
+    const bConfirmed = b.height !== null;
+    if (aConfirmed !== bConfirmed) return aConfirmed ? -1 : 1;
+    return b.amountSats > a.amountSats ? 1 : b.amountSats < a.amountSats ? -1 : 0;
+  });
+  const selected: WalletUtxo[] = [];
+  let totalSats = 0n;
+  for (const utxo of ordered) {
+    if (totalSats >= targetSats) break;
+    selected.push(utxo);
+    totalSats += utxo.amountSats;
+  }
+  return { selected, totalSats };
+}
+
+interface WalletParts {
+  dataDir: string;
+  passphrase: string | undefined;
+  seedStore: SeedStore;
+  file: WalletFileV1;
+  lock: DirLock;
+  sync?: WalletSyncOptions;
+  /** Resolved guardrail config (§4.2) — immutable, plumbed from open()/env. */
+  guardrailConfig: ResolvedGuardrailConfig;
+  /** Injected quotes source, or undefined for the default QuotesClient (§4.4). */
+  quotes?: QuotesSource;
+  apiKey?: string;
+  apiBase?: string;
+  apiFetch?: FetchLike;
+  /** SideSwap client/signer/clock injection for wallet.convert.* (§5). */
+  convert?: ConvertNamespaceOptions;
+  /** Injected Boltz conversion deps (§5.3) — advanced/testing. */
+  boltz?: BoltzConvertDeps;
+  /** Injected gift-card providers (§5.5) — advanced/testing. */
+  giftcards?: GiftcardsWalletOptions;
+}
+
+export class DepixWallet {
+  private readonly dataDir: string;
+  private readonly seedStore: SeedStore;
+  private readonly updateStore: UpdateStore;
+  private readonly syncEngine: SyncEngine;
+  private readonly guardrails: Guardrails;
+  /** Resolved, immutable guardrail config (§4.2/G9) — read by getGuardrails(). */
+  private readonly guardrailConfig: ResolvedGuardrailConfig;
+  private readonly valuator: BrlValuator;
+  /**
+   * Conversions (§5). CALLABLE — `wallet.convert({ from, to, network, amount })`
+   * executes an intent (routing table PR-B; wallet.quote() enumerates the
+   * candidates). For backward compatibility it still carries the provider
+   * namespaces (wallet.convert.sideswap.* / .boltz.* / .sideshift.* —
+   * deprecated aliases); their canonical home is wallet.advanced.* (PR-D).
+   */
+  readonly convert: ConvertFacade;
+  /**
+   * The power-user surface (PR-D): the SAME provider namespace instances that
+   * back wallet.convert()/quote() — wallet.advanced.sideswap/.boltz/.sideshift
+   * — for fine-grained control (quote streams, pegStatus, manual resume…).
+   * The legacy wallet.convert.{sideswap,boltz,sideshift} getters alias these
+   * very instances and stay supported (deprecated in docs) for 1.x.
+   */
+  readonly advanced: WalletAdvanced;
+  /** Intent-layer deps (PR-B) — shared by wallet.quote() and the convert facade. */
+  private readonly intentDeps: IntentDeps;
+  /** Gift cards (§5.5): wallet.giftcards.list()/buy()/listOrders(). */
+  readonly giftcards: GiftcardsNamespace;
+  /** Merchant light-profile (§5.6): wallet.merchant.get()/update(). */
+  readonly merchant: MerchantNamespace;
+  private readonly logger: Logger;
+  private readonly passphrase: string | undefined;
+  // Pix flows (PR2) — null when no apiKey / no seed. deposit/withdraw/waitFor
+  // surface a clear error rather than a confusing crash when they are missing.
+  private readonly api: DepixApiClient | null;
+  private readonly pending: PendingWithdrawals | null;
+  // Boltz conversion holder (§2.3, §5.3). null on a view-only/wiped wallet (no
+  // seed to sign the L-BTC lockup / no key to authenticate the swap store). The
+  // same BoltzConvert instance is exposed as wallet.convert.boltz; this private
+  // handle lets close() dispose its in-flight watches (.sideswap lives on the
+  // ConvertNamespace `convert` field).
+  private readonly convertNamespace: { boltz: BoltzConvert } | null;
+  // The SAME BoltzSwapStore instance wired into BoltzConvert — held so
+  // getPending() can read the in-flight swaps without expanding BoltzConvert's
+  // public surface (reads are metadata-only; records carry swap-scoped keys).
+  private readonly boltzSwapStore: BoltzSwapStore | null;
+  // Multi-hop conversion plans (PR-C) — encrypted with the same seed-derived
+  // key material as the Boltz store (AAD = planId). null on a view-only/wiped
+  // wallet (no key → no crash-safe plan → multi-hop convert() is refused).
+  // Also consulted by the guardrail hooks to authenticate a continuation leg's
+  // count-once skip (§4.3) — a planId that does not decrypt gets FULL enforcement.
+  private readonly conversionPlanStore: ConversionPlanStore | null;
+  private file: WalletFileV1;
+  private lock: DirLock | null;
+  private wollet: Wollet | null = null;
+  private wolletReady = false;
+  private wolletPromise: Promise<Wollet> | null = null;
+  // Memoized key material for the seed store + guardrails-state (§4.5). Argon2id
+  // over passphrase+salt is deliberately expensive, so it runs at most once per
+  // process; the raw bytes feed BOTH the seed AES key (seed encrypt/decrypt +
+  // anchor re-encryption) AND the HKDF-derived state subkey (state file), which
+  // domain-separates the two keystreams (review low, state-crypto.ts:14).
+  private rootKeyBytesPromise: Promise<Uint8Array> | null = null;
+  private seedKeyPromise: Promise<CryptoKey> | null = null;
+  private guardrailKeyPromise: Promise<CryptoKey> | null = null;
+  // Serializes the guardrail choke point (enforce→sign→record) and the
+  // nextReceiveIndex read-modify-write against concurrent in-process calls
+  // (§4.3 TOCTOU fix; the dataDir lock only guards across processes).
+  private readonly opMutex = new Mutex();
+  // Serializes multi-hop conversion-plan RECOVERY (§5/§4.1) against itself:
+  // resumeConversionPlans() drives legs from a readAll() snapshot, so two
+  // concurrent recover()/open() passes — or parallel wallet_recover calls —
+  // must not drive the same plan in parallel (that re-broadcasts a leg =
+  // double-spend). Distinct from opMutex (which only serializes signing): this
+  // guards the whole plan-driving sweep. Defense-in-depth with the per-leg
+  // atomic claim in ConversionPlanStore.claimLeg().
+  private readonly recoveryMutex = new Mutex();
+
+  private constructor(parts: WalletParts) {
+    this.dataDir = parts.dataDir;
+    this.seedStore = parts.seedStore;
+    this.file = parts.file;
+    this.lock = parts.lock;
+    this.passphrase = parts.passphrase;
+    this.logger = createLogger();
+    this.updateStore = new UpdateStore(parts.dataDir);
+    this.valuator = new BrlValuator(parts.quotes ?? new QuotesClient({ apiBase: resolveQuotesApiBase() }));
+    // Seed-bound anchor backed by wallet.json's authenticated envelope (§4.5).
+    // The marker + monotonic epoch are covered by the seed's GCM AAD, so an
+    // injected agent cannot strip the marker (it bricks seed decryption) nor roll
+    // the epoch back (no passphrase); advance() re-encrypts the seed under the
+    // bumped anchor and durably rewrites wallet.json.
+    const anchor: GuardrailAnchorStore = {
+      read: () => this.seedStore.readGuardrailAnchor(),
+      advance: async () => {
+        const epoch = await this.seedStore.advanceGuardrailAnchor(await this.seedKey());
+        // wallet.json's iv + anchor fields changed on disk — refresh the cache so
+        // a subsequent decrypt uses the current AAD.
+        await this.refreshFile();
+        return epoch;
+      }
+    };
+    this.guardrailConfig = parts.guardrailConfig;
+    this.guardrails = new Guardrails({
+      dataDir: parts.dataDir,
+      config: parts.guardrailConfig,
+      stateKey: () => this.guardrailStateKey(),
+      anchor,
+      logger: this.logger
+    });
+    this.syncEngine = new SyncEngine({
+      descriptor: this.requireDescriptor(),
+      dataDir: parts.dataDir,
+      updateStore: this.updateStore,
+      providers: parts.sync?.providers,
+      worker: parts.sync?.worker,
+      clientFactory: parts.sync?.clientFactory,
+      ...(parts.sync?.syncTimeoutMs !== undefined ? { syncTimeoutMs: parts.sync.syncTimeoutMs } : {}),
+      ...(parts.sync?.coldStartTimeoutMs !== undefined ? { coldStartTimeoutMs: parts.sync.coldStartTimeoutMs } : {}),
+      logger: this.logger
+    });
+    // API client — only when an apiKey is configured. Its base defaults to the
+    // canonical host inside the client.
+    this.api = parts.apiKey
+      ? new DepixApiClient({
+          apiKey: parts.apiKey,
+          apiBase: parts.apiBase,
+          fetch: parts.apiFetch,
+          logger: this.logger
+        })
+      : null;
+    // Pending-withdrawals store — needs the seed-store key material (passphrase
+    // + wallet salt). A view-only/wiped wallet cannot withdraw, so it has none.
+    this.pending =
+      parts.passphrase && parts.file.salt
+        ? new PendingWithdrawals({
+            dataDir: parts.dataDir,
+            passphrase: parts.passphrase,
+            saltB64: parts.file.salt,
+            logger: this.logger
+          })
+        : null;
+    // Boltz conversion namespace (§5.3). Needs the seed key material (durable
+    // authenticated boltz-swaps.json) + the ability to sign the L-BTC lockup, so
+    // it only exists for a wallet with a seed — a view-only/wiped wallet has none.
+    // Held as a private field (not just inside .convert) so close() can dispose
+    // its in-flight watches (§5.3 resource hygiene) — the SAME instance is wired
+    // into the convert namespace below as wallet.convert.boltz.
+    this.boltzSwapStore =
+      parts.passphrase && parts.file.salt
+        ? new BoltzSwapStore({
+            dataDir: parts.dataDir,
+            passphrase: parts.passphrase,
+            saltB64: parts.file.salt,
+            logger: this.logger
+          })
+        : null;
+    this.conversionPlanStore =
+      parts.passphrase && parts.file.salt
+        ? new ConversionPlanStore({
+            dataDir: parts.dataDir,
+            passphrase: parts.passphrase,
+            saltB64: parts.file.salt,
+            logger: this.logger
+          })
+        : null;
+    this.convertNamespace = this.boltzSwapStore
+      ? {
+          boltz: new BoltzConvert(
+            {
+              store: this.boltzSwapStore,
+              logger: this.logger,
+              lockupLbtc: (p) => this.lockupLbtc(p),
+              getReceiveAddress: () => this.getReceiveAddress()
+            },
+            parts.boltz ?? {}
+          )
+        }
+      : null;
+    // Conversions (§5) — a narrow seam onto the same choke point (§4.3), BRL
+    // valuator (§4.4), op mutex (§4.3 TOCTOU) and encrypted seed used by
+    // send()/withdraw(). Everything forwarded here already exists on this
+    // instance; the convert flows live under src/convert/. wallet.convert exposes
+    // BOTH .sideswap (§5.1/§5.2, always available) and .boltz (§5.3, the same
+    // BoltzConvert instance held above — absent on a seedless/view-only wallet).
+    const convertHooks: ConvertWalletHooks = {
+      dataDir: this.dataDir,
+      logger: this.logger,
+      ensureWollet: () => this.ensureWollet(),
+      getReceiveAddress: () => this.getReceiveAddress(),
+      decryptMnemonic: () => this.decryptMnemonic(),
+      valuate: (asset, amountSats) => this.valuator.valuate(asset, amountSats),
+      // §4.3 with the multi-hop count-once carve-out (PR-C): a leg running
+      // inside an AUTHENTICATED plan-continuation context already had its
+      // intent's value counted at the plan's first outflow leg — skip only the
+      // VALUE ceilings; the allowlist still gates this leg's destinations.
+      // Everything else (including a forged/tampered planId) gets the full
+      // choke point — fail closed.
+      enforceGuardrails: async (intent) => {
+        if (await this.isAuthorizedPlanContinuation()) {
+          this.guardrails.checkAllowlist(intent.destinations ?? []);
+          return;
+        }
+        return this.guardrails.enforce(intent);
+      },
+      // Count-once accounting: a continuation leg's spend was already recorded
+      // (in full) when the plan's first outflow leg signed — recording it again
+      // would double-charge the same money against the rolling-24h window.
+      recordSpend: async (brlCents, kind) => {
+        if (await this.isAuthorizedPlanContinuation()) return;
+        return this.guardrails.recordSpend(brlCents, kind);
+      },
+      runExclusive: (fn) => this.opMutex.runExclusive(fn),
+      broadcast: (finalized) => this.syncEngine.broadcast(finalized),
+      assertOpen: () => this.assertOpen(),
+      now: () => Date.now()
+    };
+    const convertNs = new ConvertNamespace(
+      convertHooks,
+      parts.convert,
+      this.convertNamespace?.boltz ?? null
+    );
+    // The intent layer (PR-B) reuses the sub-namespaces — it adds NO signing
+    // path of its own; every money-moving leg still crosses the §4.3 choke
+    // point inside the provider methods. wallet.convert stays the home of the
+    // advanced namespaces AND becomes callable with a high-level intent.
+    // PR-C adds the multi-hop seams: the encrypted plan store and a read-only
+    // probe over the Boltz swap store (recovery reconciles in-flight exit legs
+    // against the SAME records boltz.resume() drives).
+    this.intentDeps = {
+      ...intentDepsFromNamespace(convertNs, parts.convert?.intent),
+      planStore: this.conversionPlanStore,
+      logger: this.logger,
+      ...(this.boltzSwapStore
+        ? {
+            probeBoltzSwap: async (swapId: string) => {
+              // A missing record means the swap CONCLUDED (Boltz removes
+              // terminal records); a TAMPERED record throws instead — the plan
+              // resume then keeps the plan for the next pass rather than
+              // closing it over unauthenticated data.
+              const record = await this.boltzSwapStore!.get(swapId);
+              return record ? { type: record.type, state: record.state } : null;
+            }
+          }
+        : {})
+    };
+    // Pass assertOpen so the callable facade fails fast on a closed wallet — parity
+    // with wallet.quote() (§ money methods all assertOpen() first).
+    this.convert = makeConvertFacade(convertNs, this.intentDeps, () => this.assertOpen());
+    // wallet.advanced (PR-D): the SAME ConvertNamespace instances re-exposed as
+    // the canonical power-user surface — reference-identical to the facade's
+    // legacy getters, so provider state is shared, never duplicated. PR-E adds
+    // the low-level primitives as closures into THIS instance: listUtxos/
+    // selectCoins are read-only; sendMany routes through the same private
+    // machinery as send() (§4.3 choke point + opMutex + recordSpend), so the
+    // namespace carries no signing path of its own.
+    this.advanced = makeAdvancedNamespace(convertNs, {
+      listUtxos: () => this.advancedListUtxos(),
+      selectCoins: (params) => this.advancedSelectCoins(params),
+      sendMany: (params) => this.advancedSendMany(params)
+    });
+    // Gift cards (§5.5): browse + buy via CryptoRefills, paid over Lightning by
+    // REUSING the same BoltzConvert instance as wallet.convert.boltz (so the
+    // guardrail choke point + refund/watch machinery is shared, not duplicated).
+    // The catalog + config are unauthenticated (CryptoRefills is browser-direct;
+    // /api/config is public); buy() additionally needs the seed (null boltz on a
+    // view-only/wiped wallet → WALLET_NOT_FOUND at buy time).
+    this.giftcards = new GiftcardsNamespace({
+      config:
+        parts.giftcards?.config ??
+        new GiftcardConfigClient({
+          ...(parts.apiBase !== undefined ? { apiBase: parts.apiBase } : {}),
+          ...(parts.apiFetch ? { fetch: parts.apiFetch } : {}),
+          logger: this.logger
+        }),
+      cryptorefills:
+        parts.giftcards?.cryptorefills ??
+        new CryptorefillsClient(
+          parts.giftcards?.cryptorefillsFetch ? { fetchImpl: parts.giftcards.cryptorefillsFetch } : {}
+        ),
+      boltz: this.convertNamespace?.boltz ?? null,
+      store: new GiftcardOrderStore({ dataDir: this.dataDir, logger: this.logger }),
+      logger: this.logger
+    });
+    // Merchant light-profile (§5.6): get()/update() over the SAME API client as
+    // the Pix flows. A lazy getter (not the client) so a wallet opened without an
+    // apiKey throws the wallet's clear API_KEY_REQUIRED at call time. Only the 5
+    // light fields are exposed; liquid_address/split_address are absent by
+    // construction (see merchant.ts). No money, no signing — pure API surface.
+    this.merchant = new MerchantNamespace(() => this.requireApi());
+  }
+
+  // ─── lifecycle ─────────────────────────────────────────────────────────
+
+  /**
+   * Open an existing wallet. NEVER auto-creates a seed — a dataDir without a
+   * wallet fails with WALLET_NOT_FOUND instructing the create quickstart.
+   */
+  static async open(options: OpenOptions = {}): Promise<DepixWallet> {
+    const dataDir = resolveDataDir(options.dataDir);
+    const passphrase = resolvePassphrase(options.passphrase);
+    // Resolve the (immutable) guardrail config up front so a bad option/env
+    // fails fast with GUARDRAIL_CONFIG_INVALID before any lock is taken (§4.2).
+    const guardrailConfig = resolveGuardrailConfig(options.guardrails);
+    const apiKey = resolveApiKey(options.apiKey);
+    const apiBase = resolveApiBase(options.apiBase);
+    const seedStore = new SeedStore(dataDir);
+    const file = await seedStore.read();
+    if (!file) {
+      throw new WalletError(
+        "WALLET_NOT_FOUND",
+        `No wallet in ${dataDir}. Run DepixWallet.create() (see the quickstart) — ` +
+          "the SDK never creates a seed automatically."
+      );
+    }
+    if (file.encryptedSeed) {
+      assertStrongPassphrase(passphrase as string);
+      registerSecret(passphrase);
+    }
+    await ensureDir(dataDir);
+    const lock = await acquireDirLock(dataDir);
+    let wallet: DepixWallet;
+    try {
+      if (file.encryptedSeed) {
+        // Validate the passphrase eagerly (fail fast with WRONG_PASSPHRASE).
+        // The decrypted plaintext is NOT retained: it goes out of scope here
+        // and signing re-materializes it per operation (§2.3). Log redaction is
+        // pattern-based (logger.ts), never by keeping the live seed resident.
+        await seedStore.decryptMnemonic(passphrase as string);
+      }
+      wallet = new DepixWallet({
+        dataDir,
+        passphrase,
+        seedStore,
+        file,
+        lock,
+        sync: options.sync,
+        guardrailConfig,
+        quotes: options.quotes,
+        apiKey,
+        apiBase,
+        apiFetch: options.fetch,
+        convert: options.convert,
+        boltz: options.boltz,
+        giftcards: options.giftcards
+      });
+    } catch (err) {
+      await lock.release();
+      throw err;
+    }
+    // Auto-resume any crashed withdrawals (§3.2.9), opt-out via option. Best
+    // effort: resumePendingWithdrawals() never throws (it logs per-record
+    // failures), so a stuck resume can never block opening the wallet.
+    if (options.resumePendingWithdrawalsOnOpen !== false) {
+      await wallet.resumePendingWithdrawals().catch(() => {
+        /* resume already logs; never fail open() on it */
+      });
+    }
+    // Auto-resume in-flight CONVERSIONS the same way (§5 recovery wiring):
+    // Boltz swaps (re-attach watch / claim / refund), the tracked peg-in and
+    // non-terminal SideShift shifts. resumePendingConversions() never throws
+    // (per-rail failures are logged); the extra catch keeps even a pathological
+    // failure from ever blocking open().
+    if (options.resumePendingConversionsOnOpen !== false) {
+      await wallet.resumePendingConversions().catch(() => {
+        /* resume already logs; never fail open() on it */
+      });
+    }
+    return wallet;
+  }
+
+  /**
+   * Create a wallet (§2.9). Interactive TTY runs the backup ritual; in
+   * non-interactive mode the mnemonic is returned in the foreground and the
+   * wallet is only born confirmed with an explicit `mnemonicSecured: true`.
+   */
+  static async create(options: CreateOptions = {}): Promise<CreateResult> {
+    const dataDir = resolveDataDir(options.dataDir);
+    const passphrase = resolvePassphrase(options.passphrase);
+    const guardrailConfig = resolveGuardrailConfig(options.guardrails);
+    assertStrongPassphrase(passphrase as string);
+    registerSecret(passphrase);
+    const mnemonic =
+      options.mnemonic !== undefined ? validateMnemonic(options.mnemonic) : generateMnemonic();
+    // The mnemonic is NOT registered for redaction (that would keep the seed
+    // resident for the whole process — §2.3 requires per-op ephemerality). It
+    // is returned to the caller in the foreground; logs redact it by pattern.
+    const descriptor = descriptorFromMnemonic(mnemonic);
+
+    await ensureDir(dataDir);
+    const lock = await acquireDirLock(dataDir);
+    try {
+      const seedStore = new SeedStore(dataDir);
+      if ((await seedStore.read()) !== null) {
+        throw new WalletError(
+          "WALLET_ALREADY_EXISTS",
+          `A wallet already exists in ${dataDir}. Open it, restore over it, or use another dataDir.`
+        );
+      }
+      await seedStore.initialize({
+        passphrase: passphrase as string,
+        mnemonic,
+        descriptor,
+        backupConfirmed: false
+      });
+
+      let backupConfirmed = false;
+      if (options.mnemonicSecured === true) {
+        backupConfirmed = true;
+      } else {
+        const interactive =
+          options.interactive ??
+          (process.stdin.isTTY === true && process.stdout.isTTY === true);
+        if (interactive) {
+          backupConfirmed = await runRitual(mnemonic, options.ritualIo);
+        }
+      }
+      if (backupConfirmed) {
+        await seedStore.setBackupConfirmed(true);
+      }
+      const file = (await seedStore.read())!;
+      const wallet = new DepixWallet({
+        dataDir,
+        passphrase,
+        seedStore,
+        file,
+        lock,
+        sync: options.sync,
+        guardrailConfig,
+        quotes: options.quotes,
+        apiKey: resolveApiKey(options.apiKey),
+        apiBase: resolveApiBase(options.apiBase),
+        apiFetch: options.fetch,
+        convert: options.convert,
+        boltz: options.boltz,
+        giftcards: options.giftcards
+      });
+      return { mnemonic, descriptor, backupConfirmed, wallet };
+    } catch (err) {
+      await lock.release();
+      throw err;
+    }
+  }
+
+  /**
+   * Restore from a mnemonic. Providing the mnemonic IS proof of possession —
+   * the wallet is born backupConfirmed (§2.9). DESCRIPTOR_MISMATCH when the
+   * dataDir holds a different wallet's descriptor.
+   */
+  static async restore(options: RestoreOptions): Promise<DepixWallet> {
+    const dataDir = resolveDataDir(options.dataDir);
+    const passphrase = resolvePassphrase(options.passphrase);
+    const guardrailConfig = resolveGuardrailConfig(options.guardrails);
+    assertStrongPassphrase(passphrase as string);
+    registerSecret(passphrase);
+    const mnemonic = validateMnemonic(options.mnemonic);
+    // Not registered for redaction — see create(): retaining the plaintext for
+    // log redaction would defeat the per-op zeroing (§2.3). Redaction is by
+    // pattern (logger.ts).
+    const descriptor = descriptorFromMnemonic(mnemonic);
+
+    await ensureDir(dataDir);
+    const lock = await acquireDirLock(dataDir);
+    try {
+      const seedStore = new SeedStore(dataDir);
+      const existing = await seedStore.read();
+      if (existing?.descriptor && existing.descriptor !== descriptor) {
+        throw new WalletError(
+          "DESCRIPTOR_MISMATCH",
+          "This mnemonic derives a different wallet than the one in this dataDir."
+        );
+      }
+      await seedStore.initialize({
+        passphrase: passphrase as string,
+        mnemonic,
+        descriptor,
+        backupConfirmed: true
+      });
+      const file = (await seedStore.read())!;
+      return new DepixWallet({
+        dataDir,
+        passphrase,
+        seedStore,
+        file,
+        lock,
+        sync: options.sync,
+        guardrailConfig,
+        quotes: options.quotes,
+        apiKey: resolveApiKey(options.apiKey),
+        apiBase: resolveApiBase(options.apiBase),
+        apiFetch: options.fetch,
+        convert: options.convert,
+        boltz: options.boltz,
+        giftcards: options.giftcards
+      });
+    } catch (err) {
+      await lock.release();
+      throw err;
+    }
+  }
+
+  /**
+   * Free a wasm Wollet only after abandoned (timed-out) scans settled — a
+   * zombie scan still borrows the wollet inside wasm (Promise.race cannot
+   * cancel it), and freeing under it is the "null pointer passed to rust"
+   * crash class. The drain is BOUNDED; on timeout the wollet is deliberately
+   * LEAKED instead — a bounded leak beats a crash or an unbounded hang
+   * holding the dataDir lock.
+   */
+  private async freeWolletSafely(wollet: Wollet, context: string): Promise<void> {
+    let drained = false;
+    try {
+      drained = await this.syncEngine.drainAbandonedScans();
+    } catch {
+      // drain never rejects by contract; stay fail-safe anyway
+    }
+    if (!drained) {
+      this.logger.warn(
+        "abandoned wasm scan still running — leaking wollet instead of freeing under it",
+        { context }
+      );
+      return;
+    }
+    try {
+      wollet.free();
+    } catch {
+      // best effort
+    }
+  }
+
+  /** Release the dataDir lock and free wasm resources. */
+  async close(): Promise<void> {
+    // Cancel any in-flight Boltz watches (status WebSocket + reconnect timer)
+    // BEFORE freeing anything — otherwise a reverse/submarine watch keeps a socket
+    // and its backoff timer alive past close(), reconnecting to Boltz forever
+    // (§5.3 resource hygiene).
+    try {
+      this.convertNamespace?.boltz.dispose();
+    } catch {
+      // best effort
+    }
+    if (this.wollet) {
+      await this.freeWolletSafely(this.wollet, "close");
+      this.wollet = null;
+      this.wolletReady = false;
+    }
+    if (this.lock) {
+      await this.lock.release();
+      this.lock = null;
+    }
+  }
+
+  // ─── backup gate (§2.9) ────────────────────────────────────────────────
+
+  isBackupConfirmed(): boolean {
+    return this.file.backupConfirmed === true;
+  }
+
+  /** Export the seed backup. Default target: the 12-word mnemonic. */
+  async exportBackup(target: BackupTarget = { kind: "mnemonic" }): Promise<MnemonicBackup> {
+    if (target.kind !== "mnemonic") {
+      throw new TypeError(`Unknown backup target kind: ${String(target.kind)}`);
+    }
+    const mnemonic = await this.decryptMnemonic();
+    return { kind: "mnemonic", mnemonic };
+  }
+
+  /** Sugar for exportBackup({ kind: "mnemonic" }).mnemonic. */
+  async exportMnemonic(): Promise<string> {
+    return (await this.exportBackup()).mnemonic;
+  }
+
+  /** Persist backupConfirmed: true (durable §2.4 recipe). */
+  async confirmBackup(): Promise<void> {
+    this.assertOpen();
+    await this.seedStore.setBackupConfirmed(true);
+    await this.refreshFile();
+  }
+
+  private assertBackupConfirmed(): void {
+    if (!this.isBackupConfirmed()) {
+      throw new WalletError(
+        "BACKUP_REQUIRED",
+        "Receive addresses are blocked until the seed backup is exported and confirmed. " +
+          "Call exportBackup() (default: the 12-word mnemonic), store it with the guardian, " +
+          "then confirmBackup(). restore() from an existing mnemonic is always born confirmed."
+      );
+    }
+  }
+
+  // ─── read surface ──────────────────────────────────────────────────────
+
+  getDescriptor(): string {
+    return this.requireDescriptor();
+  }
+
+  /**
+   * Fresh receive address per call (§3.1, decision 2026-07-10): LWK's
+   * address(null) returns the last UNUSED index — two deposits before the
+   * first QR is paid would reuse the same address. The SDK keeps a persisted
+   * monotonic nextReceiveIndex and derives max(lwk_last_unused, next),
+   * bumping and persisting the counter BEFORE returning. All addresses come
+   * from the same descriptor, so one sync sees them all; zero on-chain reuse.
+   */
+  async getReceiveAddress(options: { index?: number } = {}): Promise<string> {
+    this.assertOpen();
+    this.assertBackupConfirmed();
+    const wollet = await this.ensureWollet();
+    if (typeof options.index === "number") {
+      return wollet.address(options.index).address().toString();
+    }
+    // Serialize the read-modify-write of nextReceiveIndex under the same
+    // per-instance mutex as send() (§3.1 fresh-address guarantee): concurrent
+    // getReceiveAddress() calls must not both read the same counter value and
+    // derive the SAME address, which would regress the on-chain-reuse property
+    // the fresh-address decision exists to protect.
+    return this.opMutex.runExclusive(async () => {
+      const lastUnused = wollet.address(null).index();
+      const next = this.file.nextReceiveIndex ?? 0;
+      const idx = Math.max(lastUnused, next);
+      await this.seedStore.setNextReceiveIndex(idx + 1);
+      // Raise the degraded-scan coverage floor over this handed-out address:
+      // nextReceiveIndex runs AHEAD of lwk's last-used view, so a payment to
+      // it during a waterfalls outage would otherwise be invisible to the
+      // truncated vanilla fallback (gap_limit=20). Best-effort — issuing the
+      // address must never fail on a meta write. The explicit-index path
+      // above deliberately does NOT bump: a typoed huge index would poison
+      // every degraded scan up to the clamp.
+      await this.updateStore.bumpScanHint(idx + 1).catch(() => {});
+      await this.refreshFile();
+      return wollet.address(idx).address().toString();
+    });
+  }
+
+  async getBalances(): Promise<WalletBalances> {
+    this.assertOpen();
+    const wollet = await this.ensureWollet();
+    const balances: Record<AssetKey, bigint> = { DEPIX: 0n, USDT: 0n, LBTC: 0n };
+    const entries = wollet.balance().entries() as Iterable<[unknown, unknown]>;
+    for (const [assetId, amount] of entries) {
+      const key = MAINNET_ASSET_ID_TO_KEY[String(assetId)];
+      if (key) balances[key] = BigInt(amount as bigint);
+    }
+    // brlEstimate (§2.3/§4.4): DePix is 1:1; L-BTC/USDt need /api/quotes. A read
+    // surface fails soft — a single unavailable quote makes the whole estimate
+    // null (never a misleading partial). Zero-balance assets need no quote, so
+    // an all-DePix (or empty) wallet estimates without any network call.
+    const brlEstimate = await this.estimateBalancesBrlCents(balances);
+    return { balances, brlEstimate };
+  }
+
+  /** Sum the BRL-cent estimate of all balances, or null if any needed quote is unavailable. */
+  private async estimateBalancesBrlCents(balances: Record<AssetKey, bigint>): Promise<number | null> {
+    let total = 0;
+    for (const key of Object.keys(balances) as AssetKey[]) {
+      const cents = await this.valuator.estimateBrlCents(key, balances[key]);
+      if (cents === null) return null; // a needed quote is unavailable
+      total += cents;
+    }
+    return total;
+  }
+
+  async listTransactions(): Promise<WalletTransaction[]> {
+    this.assertOpen();
+    const wollet = await this.ensureWollet();
+    return wollet.transactions().map((tx) => {
+      const balance: Record<string, bigint> = {};
+      const entries = tx.balance().entries() as Iterable<[unknown, unknown]>;
+      for (const [assetId, amount] of entries) {
+        const key = MAINNET_ASSET_ID_TO_KEY[String(assetId)] ?? String(assetId);
+        balance[key] = BigInt(amount as bigint);
+      }
+      return {
+        txid: tx.txid().toString(),
+        height: tx.height() ?? null,
+        timestamp: tx.timestamp() ?? null,
+        type: tx.txType(),
+        feeSats: tx.fee(),
+        balance
+      };
+    });
+  }
+
+  /**
+   * Sync against the provider chain (§2.6), worker fullScan by default (§2.7).
+   * Default: INCREMENTAL — LWK scans forward from the current in-memory state.
+   * `{ rescan: true }` (PR-D) deep-scans from ZERO instead: the persisted
+   * update-chain cache is dropped and a virgin LWK state is cold-scanned (the
+   * §2.7 cold-start timeout applies) — the recovery move when the wallet looks
+   * desynchronized (missing transactions, stale balances).
+   *
+   * TIMING: an incremental sync can run up to ~1 min (WARM_SYNC_TIMEOUT_MS = 60s);
+   * a deep re-scan (or a virgin cold scan) up to SEVERAL MINUTES (COLD_START_-
+   * TIMEOUT_MS = 600s / 10 min). This call OWNS its timeout and rotates across
+   * esplora providers — do NOT wrap it in a shorter external race (e.g. a 10s
+   * Promise.race), which aborts a scan that would have completed and leaves stale
+   * balances. Both bounds are configurable (syncTimeoutMs / coldStartTimeoutMs);
+   * raise them for a heavily-used wallet or a slow provider.
+   */
+  async sync(options: WalletSyncCallOptions = {}): Promise<{ updated: boolean }> {
+    this.assertOpen();
+    if (options.rescan === true) return this.rescanFromZero();
+    const wollet = await this.ensureWollet();
+    return this.syncEngine.sync(wollet);
+  }
+
+  /**
+   * Deep re-scan (PR-D). Serialized under the op mutex so no signing operation
+   * can hold the stale Wollet across the swap. Ordering is fail-safe:
+   *   1. join any in-flight Wollet build (never abandon a half-built instance);
+   *   2. hand the cache-drop to the engine's rescan pass as `beforeScan` — it
+   *      runs AFTER the in-flight incremental scan of the stale state is drained
+   *      and after the pass claims the sync slot, so a concurrent non-mutexed
+   *      sync() cannot persist an orphan chain-link across the clear (rescan
+   *      means "trust nothing cached"; the cache is rebuilt by this very scan,
+   *      §2.5 recoverable);
+   *   3. cold-scan a VIRGIN wollet via that same rescan pass (never joined onto
+   *      an in-flight incremental scan of the stale state);
+   *   4. only on success, swap the fresh wollet in and free the stale one — a
+   *      failed rescan leaves the current in-memory state fully usable.
+   */
+  private async rescanFromZero(): Promise<{ updated: boolean }> {
+    return this.opMutex.runExclusive(async () => {
+      await this.ensureWollet();
+      const fresh = buildWollet(this.requireDescriptor());
+      let result: { updated: boolean };
+      try {
+        // clearForRescan, NOT clearAll: the scan-coverage floor
+        // (meta.scanToIndexHint) must survive the wipe — deleting it is what
+        // turned the frontend's 2026-07-18 deep sync during the waterfalls
+        // outage into a wrong-balance gap_limit=20 rebuild.
+        result = await this.syncEngine.rescan(fresh, () => this.updateStore.clearForRescan());
+      } catch (err) {
+        // A timed-out attempt may leave a zombie wasm scan still borrowing
+        // `fresh` — free it only once the zombies settled (bounded).
+        await this.freeWolletSafely(fresh, "rescan-failed");
+        throw err;
+      }
+      const stale = this.wollet;
+      this.wollet = fresh;
+      this.wolletReady = true;
+      if (stale) await this.freeWolletSafely(stale, "rescan-swap");
+      return result;
+    });
+  }
+
+  /**
+   * Read the guardrail config + current rolling-24h usage (read-only, §4). Feeds
+   * the wallet_get_guardrails / wallet_status MCP tools (§6.2). A missing/tampered
+   * state with the seed-bound marker set reports the window as FULL (fail-closed,
+   * §4.5) — honest for status. No setter exists (immutable at runtime, G9).
+   */
+  async getGuardrails(): Promise<GuardrailReadout> {
+    this.assertOpen();
+    const usage = await this.guardrails.usage();
+    return {
+      usedCents: usage.usedCents,
+      dailyLimitCents: usage.dailyLimitCents,
+      perTxLimitCents: usage.perTxLimitCents,
+      remainingCents: usage.remainingCents,
+      allowlistEnabled: this.guardrailConfig.allowlist.enabled
+    };
+  }
+
+  // ─── money ─────────────────────────────────────────────────────────────
+
+  /**
+   * Enumerate EVERY candidate conversion route for an intent trio — single-hop
+   * AND multi-hop — with per-leg estimates (PR-B). Read-only: moves no money,
+   * signs nothing; an unestimatable leg yields nulls plus a note, never a
+   * throw. No policy: the agent compares and passes its chosen route id to
+   * wallet.convert({ ..., route }).
+   */
+  async quote(params: ConvertIntent): Promise<RouteQuote[]> {
+    this.assertOpen();
+    return quoteRoutes(params, this.intentDeps);
+  }
+
+  /**
+   * Send an asset to a Liquid address, signed locally (§2.3).
+   * EVERY send goes through the guardrail choke point BEFORE signing (§4.3):
+   * per-tx and rolling-24h daily BRL caps (config §4.2). DePix values 1:1 to
+   * BRL; L-BTC/USDt are valued via GET /api/quotes and fail CLOSED with
+   * QUOTES_UNAVAILABLE when no fresh/stale quote is available (§4.4/G6). When
+   * the allowlist is ON, the destination address is checked against
+   * `allowlist.liquidAddresses` (matched by scriptPubkey — §4.3).
+   */
+  async send(params: SendParams): Promise<SendResult> {
+    this.assertOpen();
+    const asset = ASSETS[params.asset];
+    if (!asset) {
+      throw new WalletError("UNSUPPORTED_ASSET", `Unknown asset: ${String(params.asset)}`);
+    }
+    if (typeof params.amountSats !== "bigint" || params.amountSats <= 0n) {
+      throw new WalletError("INVALID_AMOUNT", "amountSats must be a positive bigint");
+    }
+    let address: InstanceType<typeof Address>;
+    try {
+      address = new Address(params.address);
+    } catch (err) {
+      throw new WalletError("INVALID_ADDRESS", `Not a valid Liquid address: ${params.address}`, {
+        cause: err
+      });
+    }
+
+    // Serialize the whole enforce→sign→record→broadcast section per wallet
+    // instance (§4.3 TOCTOU fix). Without this, two concurrent send() calls —
+    // Promise.all([send(a), send(b)]) or parallel injected wallet_send tool
+    // calls — both read used=0, both pass the daily cap, both sign, defeating
+    // the R$500/day ceiling (the ONLY layer for pure Liquid sends, §4.6).
+    // Serializing also prevents both from selecting the same UTXOs. The lock is
+    // released on the throw paths too (Mutex keeps the queue alive on error).
+    return this.opMutex.runExclusive(async () => {
+      // Choke point (§4.3) — BEFORE anything is built or signed. Valuation may
+      // hit /api/quotes for non-DePix assets and fail CLOSED (§4.4/G6).
+      const brlCents = await this.valuator.valuate(asset.key, params.amountSats);
+      await this.guardrails.enforce({
+        kind: "send",
+        brlCents,
+        destinations: [{ kind: "liquidAddress", address: params.address }]
+      });
+
+      const wollet = await this.ensureWollet();
+      const network = mainnetNetwork();
+      let builder = new TxBuilder(network);
+      try {
+        if (asset.key === "LBTC") {
+          builder = builder.addLbtcRecipient(address, params.amountSats);
+        } else {
+          builder = builder.addRecipient(address, params.amountSats, new AssetId(asset.id));
+        }
+      } catch (err) {
+        throw new WalletError("INVALID_ADDRESS", "Recipient rejected by the transaction builder", {
+          cause: err
+        });
+      }
+
+      let pset;
+      try {
+        pset = builder.finish(wollet);
+      } catch (err) {
+        throw await this.classifyFinishError(err, asset.key, params.amountSats);
+      }
+
+      // Materialize the signer for this operation only and zero it in finally
+      // (per-op auth — wallet.js:2601-2607 parity). JS strings are immutable,
+      // so the best available "zeroing" for the decrypted mnemonic is freeing
+      // the wasm-side objects and dropping every reference on scope exit.
+      let signed;
+      {
+        let mnemonic: InstanceType<typeof Mnemonic> | null = null;
+        let signer: InstanceType<typeof Signer> | null = null;
+        try {
+          mnemonic = new Mnemonic(await this.decryptMnemonic());
+          signer = new Signer(mnemonic, network);
+          signed = signer.sign(pset);
+        } finally {
+          try {
+            signer?.free();
+            mnemonic?.free();
+          } catch {
+            // best effort
+          }
+        }
+      }
+
+      // Accounted at SIGNING time, not settlement (§4.5) — a failed broadcast
+      // still counts against the window (the tx may propagate later).
+      await this.guardrails.recordSpend(brlCents, "send");
+
+      const finalized = wollet.finalize(signed);
+      const txid = await this.syncEngine.broadcast(finalized);
+      return { txid };
+    });
+  }
+
+  // ─── low-level primitives (PR-E): wallet.advanced.* ───────────────────────
+
+  /**
+   * advanced.listUtxos() — READ-ONLY view of the wallet's unspent outputs.
+   * Signs nothing, moves nothing, records nothing; metadata only (no blinding
+   * factors — those stay inside the SideSwap taker seam, convert/sideswap.ts).
+   */
+  private async advancedListUtxos(): Promise<WalletUtxo[]> {
+    this.assertOpen();
+    const wollet = await this.ensureWollet();
+    // Confirmation count needs the chain tip; a never-synced wallet may not
+    // have one — report 0 confirmations rather than fail a read surface.
+    let tipHeight: number | null = null;
+    try {
+      const h = wollet.tip().height();
+      if (Number.isSafeInteger(h) && h > 0) tipHeight = h;
+    } catch {
+      // no tip yet — confirmations stay 0
+    }
+    const result: WalletUtxo[] = [];
+    for (const utxo of wollet.utxos()) {
+      try {
+        const outpoint = utxo.outpoint();
+        const unblinded = utxo.unblinded();
+        const assetId = unblinded.asset().toString();
+        const height = utxo.height() ?? null;
+        const confirmations =
+          height !== null && tipHeight !== null && tipHeight >= height
+            ? tipHeight - height + 1
+            : 0;
+        result.push({
+          asset: MAINNET_ASSET_ID_TO_KEY[assetId] ?? assetId,
+          amountSats: BigInt(unblinded.value()),
+          outpoint: { txid: outpoint.txid().toString(), vout: outpoint.vout() },
+          address: utxo.address().toString(),
+          height,
+          confirmations
+        });
+      } catch (err) {
+        // A malformed/unblindable entry is unspendable anyway, so dropping it
+        // is correct (parity with collectSwapUtxos). But selectCoins() consumes
+        // this list, so a silent drop could surface a false INSUFFICIENT_FUNDS
+        // from that informational helper — leave a debug breadcrumb naming the
+        // skipped outpoint (best-effort read; the throw may be the outpoint
+        // itself, in which case it stays "unknown").
+        let outpointRef = "unknown";
+        try {
+          const op = utxo.outpoint();
+          outpointRef = `${op.txid().toString()}:${op.vout()}`;
+        } catch {
+          // outpoint unreadable too — keep "unknown"
+        }
+        this.logger.debug("advanced.listUtxos: skipped unreadable UTXO", {
+          outpoint: outpointRef,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * advanced.selectCoins() — READ-ONLY coin-selection helper: which UTXOs
+   * would cover `targetSats` of `asset` (greedy, confirmed-first,
+   * largest-first) and the estimated change. INFORMATIONAL: LWK's TxBuilder
+   * performs its own selection at build time, and the network fee is not
+   * modeled here. Nothing is reserved, signed or spent.
+   */
+  private async advancedSelectCoins(params: SelectCoinsParams): Promise<CoinSelection> {
+    this.assertOpen();
+    const asset = ASSETS[params?.asset];
+    if (!asset) {
+      throw new WalletError("UNSUPPORTED_ASSET", `Unknown asset: ${String(params?.asset)}`);
+    }
+    if (typeof params.targetSats !== "bigint" || params.targetSats <= 0n) {
+      throw new WalletError("INVALID_AMOUNT", "targetSats must be a positive bigint");
+    }
+    const candidates = (await this.advancedListUtxos()).filter((u) => u.asset === asset.key);
+    const { selected, totalSats } = selectCoinsGreedy(candidates, params.targetSats);
+    if (totalSats < params.targetSats) {
+      throw new WalletError(
+        "INSUFFICIENT_FUNDS",
+        `Wallet ${asset.key} UTXOs total ${totalSats} sats — cannot cover the ` +
+          `${params.targetSats} sats target`
+      );
+    }
+    return {
+      utxos: selected,
+      totalSats,
+      targetSats: params.targetSats,
+      changeSats: totalSats - params.targetSats
+    };
+  }
+
+  /**
+   * advanced.sendMany() — ONE Liquid transaction with N recipient outputs
+   * (possibly across assets), signed locally. SAME GUARDRAIL INVARIANT AS
+   * send() (§4.3), enforced on the TOTAL: the output amounts are summed per
+   * asset, each per-asset total is valued in BRL (§4.4 — non-DePix assets
+   * fail CLOSED without a quote), and the GRAND TOTAL crosses
+   * guardrails.enforce() as one intent — so N small outputs can never slice
+   * under the per-tx ceiling, and the rolling-24h window sees the full value.
+   * EVERY destination address is a `liquidAddress` allowlist destination.
+   * The whole enforce→build→sign→record→broadcast section runs under the
+   * per-wallet opMutex (§4.3 TOCTOU), and the spend is recorded at SIGNING
+   * time (§4.5) — exactly the send() cadence. There is no way to reach the
+   * signer through this method without crossing the choke point first.
+   */
+  private async advancedSendMany(params: SendManyParams): Promise<SendManyResult> {
+    this.assertOpen();
+    const plan = planSendMany(params?.recipients as readonly SendManyRecipient[]);
+    // Parse every address up front — INVALID_ADDRESS before the mutex, before
+    // any valuation or signing (parity with send()).
+    const parsed = plan.outputs.map((output) => {
+      try {
+        return { output, address: new Address(output.address) };
+      } catch (err) {
+        throw new WalletError("INVALID_ADDRESS", `Not a valid Liquid address: ${output.address}`, {
+          cause: err
+        });
+      }
+    });
+
+    // Serialize enforce→build→sign→record→broadcast per wallet instance —
+    // same §4.3 TOCTOU rationale as send(): without this, concurrent calls
+    // could all read the same window and jointly exceed the daily cap.
+    return this.opMutex.runExclusive(async () => {
+      // Choke point (§4.3) on the TOTAL — BEFORE anything is built or signed.
+      let brlCents = 0;
+      for (const [assetKey, totalSats] of plan.totalsByAsset) {
+        brlCents += await this.valuator.valuate(assetKey, totalSats);
+      }
+      await this.guardrails.enforce({
+        kind: "send-many",
+        brlCents,
+        destinations: plan.outputs.map((output) => ({
+          kind: "liquidAddress" as const,
+          address: output.address
+        }))
+      });
+
+      const wollet = await this.ensureWollet();
+      const network = mainnetNetwork();
+      let builder = new TxBuilder(network);
+      try {
+        for (const { output, address } of parsed) {
+          builder = output.lbtc
+            ? builder.addLbtcRecipient(address, output.amountSats)
+            : builder.addRecipient(
+                address,
+                output.amountSats,
+                new AssetId(ASSETS[output.assetKey].id)
+              );
+        }
+      } catch (err) {
+        throw new WalletError("INVALID_ADDRESS", "Recipient rejected by the transaction builder", {
+          cause: err
+        });
+      }
+
+      let pset;
+      try {
+        pset = builder.finish(wollet);
+      } catch (err) {
+        throw await this.classifySendManyFinishError(err, plan.totalsByAsset);
+      }
+
+      // Ephemeral signer, zeroed in finally (per-op auth §2.3 — as send()).
+      let signed;
+      {
+        let mnemonic: InstanceType<typeof Mnemonic> | null = null;
+        let signer: InstanceType<typeof Signer> | null = null;
+        try {
+          mnemonic = new Mnemonic(await this.decryptMnemonic());
+          signer = new Signer(mnemonic, network);
+          signed = signer.sign(pset);
+        } finally {
+          try {
+            signer?.free();
+            mnemonic?.free();
+          } catch {
+            // best effort
+          }
+        }
+      }
+
+      // Accounted at SIGNING time, not settlement (§4.5) — same as send().
+      await this.guardrails.recordSpend(brlCents, "send-many");
+
+      const finalized = wollet.finalize(signed);
+      const txid = await this.syncEngine.broadcast(finalized);
+      return { txid };
+    });
+  }
+
+  /**
+   * Multi-asset variant of classifyFinishError for sendMany: when EVERY
+   * per-asset output total is covered by the balances, the shortfall is the
+   * L-BTC network fee (unless an L-BTC output is itself part of the intent —
+   * then, like send()'s L-BTC branch, the two cannot be told apart).
+   */
+  private async classifySendManyFinishError(
+    err: unknown,
+    totals: ReadonlyMap<AssetKey, bigint>
+  ): Promise<WalletError> {
+    const message = String((err as Error)?.message ?? err ?? "").toLowerCase();
+    const insufficient = message.includes("insufficient") || message.includes("not enough");
+    if (!insufficient) {
+      return new WalletError("INVALID_AMOUNT", "Transaction build failed", { cause: err });
+    }
+    try {
+      const { balances } = await this.getBalances();
+      let covered = true;
+      for (const [assetKey, totalSats] of totals) {
+        if (balances[assetKey] < totalSats) {
+          covered = false;
+          break;
+        }
+      }
+      if (covered && !totals.has("LBTC")) {
+        return new WalletError(
+          "INSUFFICIENT_LBTC_FOR_FEE",
+          "Not enough L-BTC to pay the network fee — convert a little to L-BTC and retry",
+          { cause: err }
+        );
+      }
+    } catch {
+      // fall through to INSUFFICIENT_FUNDS
+    }
+    return new WalletError("INSUFFICIENT_FUNDS", "Insufficient funds for this multi-output send", {
+      cause: err
+    });
+  }
+
+  /**
+   * Guardrail choke point + L-BTC lockup signing for a conversion (§4.3/§5.3).
+   * Same proven path as send()'s L-BTC branch — enforce (value L-BTC in BRL with
+   * the caller's FINAL destinations) → build → ephemeral-sign → recordSpend →
+   * broadcast, all under opMutex — but the destination CLASS is the caller's
+   * (e.g. `lightning` for a Boltz submarine payee), NOT `liquidAddress`: the
+   * lockup being protocol-bound does NOT exempt the final destination (§4.3).
+   * The internal seam wallet.convert.boltz uses to fund a lockup.
+   *
+   * `feeSplit` (gift cards, §5.5): an OPTIONAL second L-BTC output in the SAME
+   * transaction paying the 1% DePix service fee to the config `splitAddress`. It
+   * is NOT counted by the guardrail (only `amountSats` — the lockup — is valued,
+   * per §4.3 "idem") and is NOT an allowlist destination (it pays DePix's own
+   * authenticated-config address, protocol-bound by construction). `kind` labels
+   * the spend for the rolling-24h accountant (default "boltz-submarine").
+   */
+  private async lockupLbtc(params: {
+    address: string;
+    amountSats: bigint;
+    destinations: readonly GuardrailDestination[];
+    feeSplit?: { address: string; amountSats: bigint };
+    kind?: string;
+  }): Promise<{ txid: string }> {
+    this.assertOpen();
+    if (typeof params.amountSats !== "bigint" || params.amountSats <= 0n) {
+      throw new WalletError("INVALID_AMOUNT", "lockup amountSats must be a positive bigint");
+    }
+    const spendKind = params.kind ?? "boltz-submarine";
+    let address: InstanceType<typeof Address>;
+    try {
+      address = new Address(params.address);
+    } catch (err) {
+      throw new WalletError("INVALID_ADDRESS", `Not a valid Liquid address: ${params.address}`, {
+        cause: err
+      });
+    }
+    // Parse the fee-split address up front (INVALID_ADDRESS before any signing).
+    let feeAddress: InstanceType<typeof Address> | null = null;
+    if (params.feeSplit) {
+      if (typeof params.feeSplit.amountSats !== "bigint" || params.feeSplit.amountSats <= 0n) {
+        throw new WalletError("INVALID_AMOUNT", "feeSplit amountSats must be a positive bigint");
+      }
+      try {
+        feeAddress = new Address(params.feeSplit.address);
+      } catch (err) {
+        throw new WalletError("INVALID_ADDRESS", `Not a valid fee-split Liquid address: ${params.feeSplit.address}`, {
+          cause: err
+        });
+      }
+    }
+
+    return this.opMutex.runExclusive(async () => {
+      // Fail-safe signal for the Boltz caller (convert.ts): a lockup rollback is
+      // only safe when NOTHING hit the network. Everything up to `finalize` is
+      // provably pre-broadcast; `broadcast()` can reject AFTER the tx already
+      // propagated. We tag pre-broadcast errors as `nothingLocked` so the caller
+      // rolls back only then — a broadcast-stage error leaves the flag unset and
+      // the caller PRESERVES the refund record (§5.3).
+      let broadcastAttempted = false;
+      try {
+        // Choke point BEFORE anything is built/signed. L-BTC is valued via
+        // /api/quotes and fails CLOSED with QUOTES_UNAVAILABLE (§4.4/G6).
+        const brlCents = await this.valuator.valuate("LBTC", params.amountSats);
+        await this.guardrails.enforce({
+          kind: spendKind,
+          brlCents,
+          destinations: params.destinations
+        });
+
+        const wollet = await this.ensureWollet();
+        const network = mainnetNetwork();
+        let builder = new TxBuilder(network);
+        try {
+          builder = builder.addLbtcRecipient(address, params.amountSats);
+          // Optional service-fee output in the SAME tx (gift card, §5.5). It pays
+          // DePix's own config splitAddress — protocol-bound, not an allowlist
+          // destination, and not counted by the guardrail above.
+          if (feeAddress && params.feeSplit) {
+            builder = builder.addLbtcRecipient(feeAddress, params.feeSplit.amountSats);
+          }
+        } catch (err) {
+          throw new WalletError("INVALID_ADDRESS", "Recipient rejected by the transaction builder", {
+            cause: err
+          });
+        }
+
+        let pset;
+        try {
+          pset = builder.finish(wollet);
+        } catch (err) {
+          throw await this.classifyFinishError(err, "LBTC", params.amountSats);
+        }
+
+        // Ephemeral signer, zeroed in finally (per-op auth §2.3).
+        let signed;
+        {
+          let mnemonic: InstanceType<typeof Mnemonic> | null = null;
+          let signer: InstanceType<typeof Signer> | null = null;
+          try {
+            mnemonic = new Mnemonic(await this.decryptMnemonic());
+            signer = new Signer(mnemonic, network);
+            signed = signer.sign(pset);
+          } finally {
+            try {
+              signer?.free();
+              mnemonic?.free();
+            } catch {
+              // best effort
+            }
+          }
+        }
+
+        // Accounted at SIGNING time, not settlement (§4.5).
+        await this.guardrails.recordSpend(brlCents, spendKind);
+
+        const finalized = wollet.finalize(signed);
+        // Crossing into the network stage — an error from here on may leave the
+        // lockup live, so the caller must NOT roll back the refund material.
+        broadcastAttempted = true;
+        const txid = await this.syncEngine.broadcast(finalized);
+        return { txid };
+      } catch (err) {
+        if (!broadcastAttempted && err !== null && typeof err === "object") {
+          try {
+            (err as { nothingLocked?: boolean }).nothingLocked = true;
+          } catch {
+            // Non-extensible/frozen error → default to PRESERVE (leave unset).
+          }
+        }
+        throw err;
+      }
+    });
+  }
+
+  // ─── Pix flows (§3) ────────────────────────────────────────────────────
+
+  /**
+   * On-ramp (§3.1): create a Pix deposit QR. Fills depixAddress with a FRESH
+   * receive address of THIS wallet (subject to the backup gate §2.9 —
+   * BACKUP_REQUIRED before the backup is confirmed): the only point the AX
+   * layer touches the immutable Eulen flow. deposit() does NOT pass through the
+   * guardrail — it is an INFLOW (§4.3). The QR is paid by the human OWNER; the
+   * DePix lands here and appears on the next sync().
+   *
+   * The DePix CREDITED is the paid amount MINUS the provider's fees (a fixed
+   * fee plus a percentage — e.g. a R$31.63 deposit lands ~R$30.01). Success is
+   * waitForDeposit() reaching `depix_sent`; do NOT assert the balance rose by
+   * exactly `amountCents`.
+   */
+  async deposit(params: DepositParams): Promise<DepositResult> {
+    this.assertOpen();
+    const api = this.requireApi();
+    if (!Number.isSafeInteger(params.amountCents) || params.amountCents <= 0) {
+      throw new WalletError(
+        "INVALID_AMOUNT",
+        "deposit amountCents must be a positive integer (BRL cents)"
+      );
+    }
+    if (typeof params.payerTaxNumber !== "string" || params.payerTaxNumber.trim().length === 0) {
+      throw new WalletError("INVALID_ARGUMENT", "payerTaxNumber (payer CPF/CNPJ) is required");
+    }
+    // Fresh receive address (§3.1) — throws BACKUP_REQUIRED until backup done.
+    const depixAddress = await this.getReceiveAddress();
+    const wire = await api.createDeposit(
+      { amountInCents: params.amountCents, depixAddress, payer_tax_number: params.payerTaxNumber },
+      { idempotencyKey: DepixApiClient.newIdempotencyKey() }
+    );
+    const result: DepositResult = { id: wire.id, qrCopyPaste: wire.qrCopyPaste };
+    if (wire.sandbox === true) result.sandbox = true;
+    return result;
+  }
+
+  /**
+   * Off-ramp (§3.2 — CRITICAL contract). Persists the request BEFORE the POST
+   * (crash-safe §3.2.9), then processes the AUTHENTICATED response:
+   * fee-address fail-closed (FEE_ADDRESS_NOT_EXPLICIT), split consistency
+   * (NET+fee=GROSS), guardrail on the GROSS, ONE Liquid tx with the Eulen
+   * output + an EXPLICIT fee output, sign, persist-before-broadcast, broadcast.
+   * There is NO txid-archival step — Eulen reports settlement via webhook and
+   * the F0.9 cron verifies the fee output on-chain.
+   */
+  async withdraw(params: WithdrawParams): Promise<WithdrawResult> {
+    this.assertOpen();
+    const api = this.requireApi();
+    const pending = this.requirePending();
+    if (params.mode !== "send" && params.mode !== "payout") {
+      throw new WalletError(
+        "INVALID_ARGUMENT",
+        `withdraw mode must be "send" or "payout", got ${String(params.mode)}`
+      );
+    }
+    if (!Number.isSafeInteger(params.amountCents) || params.amountCents <= 0) {
+      throw new WalletError(
+        "INVALID_AMOUNT",
+        "withdraw amountCents must be a positive integer (BRL cents)"
+      );
+    }
+    if (typeof params.pixKey !== "string" || params.pixKey.trim().length === 0) {
+      throw new WalletError("INVALID_ARGUMENT", "pixKey is required");
+    }
+    if (
+      typeof params.recipientTaxNumber !== "string" ||
+      params.recipientTaxNumber.trim().length === 0
+    ) {
+      throw new WalletError(
+        "INVALID_ARGUMENT",
+        "recipientTaxNumber (destination Pix-key holder CPF/CNPJ) is required"
+      );
+    }
+
+    const request: WithdrawRequestBody = {
+      pixKey: params.pixKey,
+      taxNumber: params.recipientTaxNumber
+    };
+    if (params.mode === "send") request.depositAmountInCents = params.amountCents;
+    else request.payoutAmountInCents = params.amountCents;
+
+    const idempotencyKey = DepixApiClient.newIdempotencyKey();
+    // Persist BEFORE the POST so a crash mid-request resumes with the SAME
+    // Idempotency-Key (§3.2.9). Nothing is signed yet — no double-pay window.
+    await pending.putRequested({ idempotencyKey, request });
+    let wire;
+    try {
+      wire = await api.createWithdraw(request, { idempotencyKey });
+    } catch (err) {
+      // Only a DEFINITIVE rejection (4xx other than 409) means the server did
+      // NOT create the withdrawal — drop the still-unsigned record. A TRANSIENT
+      // failure (network / 5xx / 409 in-flight) may have created it server-side
+      // with the response lost, so KEEP the "requested" record: a later open()
+      // re-POSTs the SAME Idempotency-Key (authenticated replay, §3.2.9) instead
+      // of orphaning the provider-side withdrawal. Nothing is signed here, so
+      // keeping the record can never double-pay.
+      if (this.isPermanentApiRejection(err)) {
+        await this.discardIfUnsigned(idempotencyKey);
+      }
+      throw err;
+    }
+    return this.processWithdrawResponse(wire, idempotencyKey);
+  }
+
+  /** Poll GET /api/deposits/:id until terminal (§3.4, shared read throttle). */
+  async waitForDeposit(id: string, options: WaitOptions = {}): Promise<StatusReadResponse> {
+    this.assertOpen();
+    return pollDeposit(this.requireApi(), id, options);
+  }
+
+  /** Poll GET /api/withdrawals/:id until terminal (§3.4; sandbox `confirmed`). */
+  async waitForWithdrawal(id: string, options: WaitOptions = {}): Promise<StatusReadResponse> {
+    this.assertOpen();
+    return pollWithdrawal(this.requireApi(), id, options);
+  }
+
+  /**
+   * Recover crashed withdrawals (§3.2.9). Auto-run by open() (opt-out). NEVER
+   * throws — per-record failures are logged. "signed" records are re-broadcast
+   * with the SAME bytes (never re-signed — the anti-double-pay invariant);
+   * "requested" records re-POST with the same Idempotency-Key
+   * (authenticated replay) and re-run the full validation cadence. A record
+   * failing GCM authentication is discarded and never signed from.
+   */
+  async resumePendingWithdrawals(): Promise<ResumeSummary> {
+    const summary: ResumeSummary = {
+      resumed: 0,
+      rebroadcast: 0,
+      reposted: 0,
+      discarded: 0,
+      failed: 0
+    };
+    if (!this.lock || !this.pending) return summary;
+
+    let readResult;
+    try {
+      readResult = await this.pending.readAll();
+    } catch (err) {
+      this.logger.error("could not read pending withdrawals — skipping resume", {
+        error: String((err as Error)?.message ?? err)
+      });
+      return summary;
+    }
+
+    for (const id of readResult.tamperedIds) {
+      summary.discarded++;
+      this.logger.error(
+        "pending withdrawal failed authentication (tampered) — discarding, not signed from",
+        { idempotencyKey: id }
+      );
+      await this.pending.remove(id).catch(() => {});
+    }
+
+    for (const record of readResult.records) {
+      try {
+        if (record.state === "signed") {
+          if (!record.signedTxHex) {
+            summary.failed++;
+            continue;
+          }
+          // Re-broadcast the EXACT signed bytes — NEVER re-sign (§3.2.9).
+          await this.syncEngine.broadcastRawTx(record.signedTxHex);
+          summary.rebroadcast++;
+          await this.pending.remove(record.idempotencyKey).catch(() => {});
+        } else {
+          // "requested": re-POST same key (authenticated replay) + re-validate.
+          if (!this.api) {
+            summary.failed++;
+            continue;
+          }
+          const wire = await this.api.createWithdraw(record.request, {
+            idempotencyKey: record.idempotencyKey
+          });
+          await this.processWithdrawResponse(wire, record.idempotencyKey);
+          summary.reposted++;
+        }
+      } catch (err) {
+        summary.failed++;
+        this.logger.error("failed to resume a pending withdrawal", {
+          idempotencyKey: record.idempotencyKey,
+          state: record.state,
+          error: String((err as Error)?.message ?? err)
+        });
+        // A permanent 4xx (not_found/expired/validation — not 409) means the
+        // provider will never complete this withdrawal → drop the record.
+        if (this.isPermanentApiRejection(err)) {
+          await this.pending.remove(record.idempotencyKey).catch(() => {});
+        }
+      }
+    }
+
+    summary.resumed = summary.rebroadcast + summary.reposted;
+    return summary;
+  }
+
+  /**
+   * Recover in-flight CONVERSIONS (§5) — the counterpart of
+   * resumePendingWithdrawals() for the three conversion rails:
+   *   Boltz (§5.3): convert.boltz.resume() reconciles submarine/reverse/
+   *     stablecoin swaps with Boltz — re-attach the watch, claim, or refund.
+   *   Peg-in (§5.2): the store load TTL-prunes stale records; a live one is
+   *     reconciled with SideSwap and cleared once Done (the L-BTC lands on our
+   *     own descriptor address regardless — this is tracking hygiene).
+   *   SideShift (§5.4): every non-terminal tracked shift has its status
+   *     refreshed into sideshift-shifts.json (CUSTODIAL — nothing to sign; a
+   *     stuck receive still needs setRefundAddress() by the caller).
+   * Auto-run by open() (opt-out via resumePendingConversionsOnOpen). NEVER
+   * throws — per-rail failures are logged and retried on the next
+   * open()/recover().
+   */
+  async resumePendingConversions(): Promise<ConversionResumeSummary> {
+    const summary: ConversionResumeSummary = {
+      boltz: null,
+      pegin: { pending: 0, cleared: 0, failed: 0 },
+      sideshift: { checked: 0, refreshed: 0, failed: 0 },
+      plans: { checked: 0, advanced: 0, completed: 0, needsReview: 0, discarded: 0, failed: 0 }
+    };
+    if (!this.lock) return summary;
+
+    // Boltz — only when the wallet has seed material (a view-only/wiped wallet
+    // has no swap store / lockup signer). resume() itself never throws; the
+    // try/catch here is belt-and-braces so no rail can abort the sweep.
+    if (this.convertNamespace) {
+      try {
+        summary.boltz = await this.convertNamespace.boltz.resume();
+      } catch (err) {
+        this.logger.error("boltz conversion resume failed — will retry on the next resume", {
+          error: String((err as Error)?.message ?? err)
+        });
+      }
+    }
+
+    try {
+      const pegin = await this.convert.sideswap.getPendingPegIn();
+      if (pegin) {
+        try {
+          const status = await this.convert.sideswap.pegStatus({ orderId: pegin.orderId, pegIn: true });
+          if (status.status === "Done") {
+            await this.convert.sideswap.clearPendingPegIn();
+            summary.pegin.cleared++;
+          } else {
+            summary.pegin.pending++;
+          }
+        } catch (err) {
+          summary.pegin.pending++;
+          summary.pegin.failed++;
+          this.logger.error("pending peg-in reconciliation failed — kept for the next resume", {
+            orderId: pegin.orderId,
+            error: String((err as Error)?.message ?? err)
+          });
+        }
+      }
+    } catch (err) {
+      summary.pegin.failed++;
+      this.logger.error("could not read the pending peg-in — skipping its resume", {
+        error: String((err as Error)?.message ?? err)
+      });
+    }
+
+    try {
+      const shifts = await this.convert.sideshift.listShifts();
+      for (const shift of shifts) {
+        if (isShiftTerminal(shift.status)) continue;
+        summary.sideshift.checked++;
+        try {
+          await this.convert.sideshift.getStatus(shift.id);
+          summary.sideshift.refreshed++;
+        } catch (err) {
+          summary.sideshift.failed++;
+          this.logger.error("sideshift status refresh failed — kept for the next resume", {
+            shiftId: shift.id,
+            error: String((err as Error)?.message ?? err)
+          });
+        }
+      }
+    } catch (err) {
+      summary.sideshift.failed++;
+      this.logger.error("could not read the sideshift shift log — skipping its resume", {
+        error: String((err as Error)?.message ?? err)
+      });
+    }
+
+    // Multi-hop plans LAST (PR-C) — deliberately after boltz.resume() and the
+    // shift refresh above, so the per-leg probes read freshly reconciled
+    // provider state. Resumes from the last completed leg (a crash between
+    // legs re-drives the next leg with the previous leg's REAL settled
+    // amount); a started leg is never re-executed. resumeConversionPlans()
+    // never throws — the catch is belt-and-braces like the boltz rail's.
+    // Serialized under recoveryMutex (§4.1): two concurrent recover()/open()
+    // passes drive plans one after the other, so the second reads the first's
+    // in_flight/settled state and probes instead of re-broadcasting a leg.
+    try {
+      summary.plans = await this.recoveryMutex.runExclusive(() =>
+        resumeConversionPlans(this.intentDeps, this.logger)
+      );
+    } catch (err) {
+      summary.plans.failed++;
+      this.logger.error("conversion-plan resume failed — will retry on the next resume", {
+        error: String((err as Error)?.message ?? err)
+      });
+    }
+
+    return summary;
+  }
+
+  /**
+   * Re-run crash recovery for EVERYTHING pending, across all rails —
+   * withdrawals (§3.2.9) + Boltz + peg-in + SideShift (§5) — mid-session.
+   * Idempotent (each rail's resume re-drives the SAME persisted bytes/keys and
+   * removes what completed) and safe to call repeatedly; it only completes or
+   * refunds PREVIOUSLY authorized operations, never starts a new payment.
+   */
+  async recover(): Promise<RecoverySummary> {
+    this.assertOpen();
+    const withdrawals = await this.resumePendingWithdrawals();
+    const conversions = await this.resumePendingConversions();
+    return { withdrawals, ...conversions };
+  }
+
+  /**
+   * Unified read-only view of everything IN FLIGHT across the four durable
+   * stores (§3.2.9 pending withdrawals, §5.3 Boltz swaps, §5.2 the tracked
+   * peg-in, §5.4 non-terminal SideShift shifts). No network, no signing, no
+   * mutation (beyond the peg-in store's own TTL prune-on-read) — and NO key
+   * material: Boltz/withdrawal records carry secrets, so only rail/id/state
+   * metadata is surfaced here. Use recover() to re-drive these items.
+   */
+  async getPending(): Promise<PendingItem[]> {
+    this.assertOpen();
+    const items: PendingItem[] = [];
+
+    if (this.pending) {
+      // Tampered records are resume's job (discard + loud log) — skip here.
+      const { records } = await this.pending.readAll();
+      for (const record of records) {
+        items.push({
+          rail: "withdrawal",
+          id: record.idempotencyKey,
+          state: record.state,
+          createdAt: record.createdAt ?? null,
+          withdrawalId: record.withdrawalId ?? null,
+          txid: record.txid ?? null
+        });
+      }
+    }
+
+    if (this.boltzSwapStore) {
+      const { records } = await this.boltzSwapStore.readAll();
+      for (const record of records) {
+        items.push({
+          rail: "boltz",
+          id: record.swapId,
+          state: record.state,
+          createdAt: record.createdAt ?? null,
+          swapType: record.type
+        });
+      }
+    }
+
+    const pegin = await this.convert.sideswap.getPendingPegIn();
+    if (pegin) {
+      items.push({
+        rail: "pegin",
+        id: pegin.orderId,
+        state: "pending",
+        createdAt: pegin.createdAt ?? null,
+        pegAddr: pegin.pegAddr,
+        recvAddr: pegin.recvAddr
+      });
+    }
+
+    const shifts = await this.convert.sideshift.listShifts();
+    for (const shift of shifts) {
+      if (isShiftTerminal(shift.status)) continue;
+      items.push({
+        rail: "sideshift",
+        id: shift.id,
+        state: shift.status,
+        createdAt: shift.createdAt ?? null,
+        shiftType: shift.type,
+        network: shift.network
+      });
+    }
+
+    // Multi-hop conversion plans (PR-C) — a plan on disk is by definition
+    // unfinished (terminal outcomes remove it). Metadata only.
+    for (const plan of await listPendingPlans(this.intentDeps)) {
+      items.push({
+        rail: "plan",
+        id: plan.planId,
+        state: plan.state,
+        createdAt: plan.createdAt,
+        routeId: plan.routeId,
+        hops: plan.hops,
+        currentLeg: plan.currentLegIndex + 1,
+        ...(plan.note !== undefined ? { note: plan.note } : {})
+      });
+    }
+
+    return items;
+  }
+
+  /**
+   * Read-only health snapshot for support (PR-D): sync state (§2.5 meta —
+   * last scan/success, last persist failure), versions (SDK + pinned lwk),
+   * per-rail pending counters (the getPending() tally), dataDir, backup state
+   * and the guardrail usage readout. Local only — no network, no signing —
+   * and NEVER key material (getPending()'s fund-safety rule applies verbatim:
+   * no seed, mnemonic, passphrase, descriptor or store secrets).
+   */
+  async diagnostics(): Promise<WalletDiagnostics> {
+    this.assertOpen();
+    const meta = await this.updateStore.readMeta();
+    const statuses = await this.updateStore.listStatuses();
+
+    const pending: WalletDiagnosticsPending = {
+      withdrawals: 0,
+      boltzSwaps: 0,
+      pegins: 0,
+      sideshiftShifts: 0,
+      plans: 0
+    };
+    for (const item of await this.getPending()) {
+      const rail = item.rail;
+      if (rail === "withdrawal") pending.withdrawals++;
+      else if (rail === "boltz") pending.boltzSwaps++;
+      else if (rail === "pegin") pending.pegins++;
+      else if (rail === "sideshift") pending.sideshiftShifts++;
+      else if (rail === "plan") pending.plans++;
+      else {
+        // Compile-time exhaustiveness: a rail added to PendingItem without a
+        // branch here fails tsc (`rail` narrows to never). At runtime a support
+        // snapshot must not throw, so an unknown rail is logged and SKIPPED —
+        // never silently miscounted into plans.
+        const _unknownRail: never = rail;
+        this.logger.warn("diagnostics: skipping pending item with unknown rail", String(_unknownRail));
+      }
+    }
+
+    // Best effort: the readout needs the seed-derived state key, which a
+    // view-only/wiped wallet cannot derive — a support snapshot must degrade
+    // to null there, never throw.
+    let guardrails: GuardrailReadout | null = null;
+    try {
+      guardrails = await this.getGuardrails();
+    } catch {
+      // unavailable on this wallet — reported as null
+    }
+
+    return {
+      sdkVersion: SDK_VERSION,
+      lwkVersion: LWK_VERSION,
+      // Home-prefix redacted to `~` — the value leaves the process (MCP host /
+      // support). The real dataDir stays intact everywhere else in this class.
+      dataDir: redactHomePath(this.dataDir),
+      backupConfirmed: this.isBackupConfirmed(),
+      hasSeed: Boolean(this.file.encryptedSeed),
+      apiKeyConfigured: this.api !== null,
+      sync: {
+        lastScanAt: meta.lastScanAt ?? null,
+        lastSuccessAt: meta.lastSuccessAt ?? null,
+        lastPersistFailedAt: meta.lastPersistFailedAt ?? null,
+        lastPersistErrorName: meta.lastPersistErrorName ?? null,
+        persistedUpdates: statuses.length,
+        walletLoaded: this.wolletReady
+      },
+      pending,
+      guardrails
+    };
+  }
+
+  /**
+   * Run the withdraw contract on an AUTHENTICATED response (shared by the
+   * initial call and resume-of-"requested"). Sandbox short-circuits BEFORE any
+   * on-chain validation (§3.2 step 0). The guardrail→build→sign→broadcast
+   * section is serialized with send()/other withdraws (§4.3 TOCTOU).
+   */
+  private async processWithdrawResponse(
+    wire: WithdrawWireResponse,
+    idempotencyKey: string
+  ): Promise<WithdrawResult> {
+    try {
+      const norm = normalizeWithdrawResponse(wire);
+
+      // Step 0 (§3.2): sandbox short-circuit BEFORE any address/fee validation —
+      // the placeholders do not parse and the SDK runs NO on-chain leg.
+      if (norm.sandbox) {
+        await this.pending?.remove(idempotencyKey).catch(() => {});
+        return {
+          withdrawalId: norm.withdrawalId,
+          txid: null,
+          feeCents: norm.feeCents,
+          feeAddress: norm.feeAddress,
+          netCents: norm.netCents,
+          grossCents: norm.grossCents,
+          payoutCents: norm.payoutCents,
+          sandbox: true
+        };
+      }
+
+      // Steps 3–4 fail-closed validations (pure — nothing is signed if they trip):
+      if (norm.hasFee) {
+        // fee_address MUST be explicit (ex1) or the fee output is unverifiable →
+        // account block. Abort BEFORE signing (§3.2.3).
+        const feeAddr = assertFeeAddressExplicit(norm.feeAddress as string);
+        try {
+          feeAddr.free();
+        } catch {
+          // best effort
+        }
+        assertSplitConsistent(norm.netCents, norm.feeCents as number, norm.grossCents);
+      }
+      this.assertParseableLiquidAddress(norm.depositAddress);
+
+      return await this.opMutex.runExclusive(async () => {
+        // Guardrail on the GROSS (§3.2.4) — BEFORE anything is built or signed.
+        await this.guardrails.enforce({ kind: "withdraw", brlCents: norm.grossCents });
+        const signedTxHex = await this.buildSignPersistWithdraw(norm, idempotencyKey);
+        // Broadcast the SAME persisted bytes (identical path to resume).
+        const txid = await this.syncEngine.broadcastRawTx(signedTxHex);
+        // Broadcast succeeded → tx is public; drop the record. A crash in the
+        // broadcast→remove window leaves a "signed" record that resume simply
+        // re-broadcasts (idempotent), never re-signs — so the anti-double-pay
+        // invariant holds without keeping the file unbounded.
+        await this.pending?.remove(idempotencyKey).catch(() => {});
+        return {
+          withdrawalId: norm.withdrawalId,
+          txid,
+          feeCents: norm.feeCents,
+          feeAddress: norm.feeAddress,
+          netCents: norm.netCents,
+          grossCents: norm.grossCents,
+          payoutCents: norm.payoutCents
+        };
+      });
+    } catch (err) {
+      // A failure BEFORE signing (contract/guardrail/insufficient) is a
+      // deliberate refusal, not a crash — drop the still-"requested" record so
+      // resume never re-drives it. A failure AFTER signing (broadcast) leaves a
+      // "signed" record UNTOUCHED for resume to re-broadcast (same bytes).
+      await this.discardIfUnsigned(idempotencyKey);
+      throw err;
+    }
+  }
+
+  /**
+   * A withdraw POST failure is DEFINITIVE only when it is a 4xx other than 409:
+   * the server rejected the request and created nothing, so the still-unsigned
+   * record can be dropped. Network errors (DepixApiError status 0), any 5xx and
+   * a 409 (idempotency in-flight) are TRANSIENT — the withdrawal may exist
+   * server-side with the response lost, so the record is KEPT for an idempotent
+   * resume re-POST (§3.2.9). Single source of truth for both withdraw() and
+   * resumePendingWithdrawals().
+   */
+  private isPermanentApiRejection(err: unknown): boolean {
+    return (
+      err instanceof DepixApiError &&
+      err.status >= 400 &&
+      err.status < 500 &&
+      err.status !== 409
+    );
+  }
+
+  /** Remove a pending record only while it is still "requested" (unsigned). */
+  private async discardIfUnsigned(idempotencyKey: string): Promise<void> {
+    if (!this.pending) return;
+    try {
+      const record = await this.pending.get(idempotencyKey);
+      if (record && record.state === "requested") {
+        await this.pending.remove(idempotencyKey);
+      }
+    } catch {
+      // get() can throw PENDING_RECORD_TAMPERED — leave it for resume to discard.
+    }
+  }
+
+  /**
+   * Build ONE Liquid tx (Eulen output A + explicit fee output B when fee'd),
+   * re-pin its outputs (§3.2.5), sign with an ephemeral signer, account the
+   * GROSS at signing time and persist the signed bytes BEFORE the first
+   * broadcast (§3.2.9). Returns the signed tx hex. Callers hold opMutex.
+   */
+  private async buildSignPersistWithdraw(
+    norm: NormalizedWithdraw,
+    idempotencyKey: string
+  ): Promise<string> {
+    const wollet = await this.ensureWollet();
+    const network = mainnetNetwork();
+    const netSats = centsToDepixSats(norm.netCents);
+    const grossSats = centsToDepixSats(norm.grossCents);
+    const feeSats = norm.hasFee ? centsToDepixSats(norm.feeCents as number) : undefined;
+
+    // Capture the output scripts BEFORE building (frontend parity: addresses are
+    // not reused after addRecipient; not freed, matching send()).
+    const depositAddr = new Address(norm.depositAddress);
+    const depositScriptHex = depositAddr.scriptPubkey().toString();
+    let builder = new TxBuilder(network);
+    builder = builder.addRecipient(depositAddr, netSats, new AssetId(ASSETS.DEPIX.id));
+    let feeScriptHex: string | undefined;
+    if (norm.hasFee) {
+      const feeAddr = new Address(norm.feeAddress as string);
+      feeScriptHex = feeAddr.scriptPubkey().toString();
+      // EXPLICIT (ex1) fee output — readable asset+value on-chain so the F0.9 cron
+      // can verify the platform fee was paid (§3.2.5). LWK 0.18.0 splits the
+      // recipient methods strictly: addRecipient accepts CONFIDENTIAL addresses
+      // only (throws "Address must be confidential" on ex1), addExplicitRecipient
+      // accepts EXPLICIT addresses only. assertFeeAddressExplicit already required
+      // the fee_address be unblinded, so it MUST go through addExplicitRecipient —
+      // addRecipient here would throw on every fee'd withdraw (regression from the
+      // 0.17.x→0.18.0 bump, when a single addRecipient took both forms).
+      builder = builder.addExplicitRecipient(feeAddr, feeSats as bigint, new AssetId(ASSETS.DEPIX.id));
+    }
+
+    const pset = await this.finishWithdrawPset(builder, wollet, grossSats);
+
+    // Re-pin the built PSET (§3.2.5): Eulen output present; fee output EXPLICIT
+    // (readable asset+value) paying the fee script exactly.
+    assertWithdrawPsetOutputs(pset, { depositScriptHex, netSats, feeScriptHex, feeSats });
+
+    // Ephemeral signer, zeroed in finally (per-op auth §2.3).
+    let signed;
+    {
+      let mnemonic: InstanceType<typeof Mnemonic> | null = null;
+      let signer: InstanceType<typeof Signer> | null = null;
+      try {
+        mnemonic = new Mnemonic(await this.decryptMnemonic());
+        signer = new Signer(mnemonic, network);
+        signed = signer.sign(pset);
+      } finally {
+        try {
+          signer?.free();
+          mnemonic?.free();
+        } catch {
+          // best effort
+        }
+      }
+    }
+
+    const finalized = wollet.finalize(signed);
+    const tx = finalized.extractTx();
+    const signedTxHex = tx.toString();
+    const txid = tx.txid().toString();
+
+    // Account the GROSS at SIGNING time (§4.5), in the fail-closed direction: if
+    // a crash regresses to "requested", resume re-signs a FRESH tx (the original
+    // was never broadcast) and records again — over-counting blocks more, never
+    // a double-pay.
+    await this.guardrails.recordSpend(norm.grossCents, "withdraw");
+    // Persist the signed bytes BEFORE the first broadcast — the anti-double-pay
+    // checkpoint. Resume from "signed" re-broadcasts THESE bytes, never re-signs.
+    await this.requirePending().markSigned(idempotencyKey, {
+      withdrawalId: norm.withdrawalId,
+      signedTxHex,
+      txid
+    });
+    return signedTxHex;
+  }
+
+  private async finishWithdrawPset(
+    builder: InstanceType<typeof TxBuilder>,
+    wollet: Wollet,
+    grossSats: bigint
+  ): Promise<InstanceType<typeof Pset>> {
+    try {
+      return builder.finish(wollet);
+    } catch (err) {
+      // Reuse the send() classifier: INSUFFICIENT_FUNDS / INSUFFICIENT_LBTC_FOR_FEE.
+      throw await this.classifyFinishError(err, "DEPIX", grossSats);
+    }
+  }
+
+  private requireApi(): DepixApiClient {
+    if (!this.api) {
+      throw new WalletError(
+        "API_KEY_REQUIRED",
+        "Set apiKey (or $DEPIX_API_KEY) on open()/create() to use deposit(), withdraw() and the waiters."
+      );
+    }
+    return this.api;
+  }
+
+  private requirePending(): PendingWithdrawals {
+    if (!this.pending) {
+      throw new WalletError(
+        "WALLET_NOT_FOUND",
+        "This wallet has no seed material (view-only/wiped) — withdraw() is unavailable."
+      );
+    }
+    return this.pending;
+  }
+
+  private assertParseableLiquidAddress(address: string): void {
+    try {
+      const parsed = new Address(address);
+      try {
+        parsed.free();
+      } catch {
+        // best effort
+      }
+    } catch (err) {
+      throw new WalletError(
+        "INVALID_ADDRESS",
+        `withdraw response depositAddress is not a valid Liquid address: ${address}`,
+        { cause: err }
+      );
+    }
+  }
+
+  /** Selective wipe (§2.4): view-only survives, restore detects mismatch. */
+  async wipe(): Promise<void> {
+    this.assertOpen();
+    await this.seedStore.wipeSeed();
+    await this.refreshFile();
+  }
+
+  // ─── internals ─────────────────────────────────────────────────────────
+
+  /**
+   * Whether the CURRENT call runs as a legitimate multi-hop plan continuation
+   * (§4.3 count-once, PR-C). True only when ALL hold:
+   *   1. the call is inside the plan-continuation AsyncLocalStorage context —
+   *      enterable ONLY by the multi-hop executor (continuation.ts is not part
+   *      of the public surface, so no agent-driven call can mark itself);
+   *   2. the claimed plan AUTHENTICATES in the encrypted plan store (AES-GCM,
+   *      AAD = planId, seed-derived key — a forged/tampered record fails);
+   *   3. the plan's current leg is strictly PAST its first outflow leg — i.e.
+   *      the intent's value was already counted in full.
+   * Anything else falls back to the full choke point — fail closed.
+   */
+  private async isAuthorizedPlanContinuation(): Promise<boolean> {
+    const continuation = activePlanContinuation();
+    if (!continuation || !this.conversionPlanStore) return false;
+    try {
+      const plan = await this.conversionPlanStore.get(continuation.planId);
+      return isPlanContinuationAuthorized(plan);
+    } catch {
+      // Tampered plan record — never authorizes a guardrail skip.
+      return false;
+    }
+  }
+
+  /**
+   * Argon2id(passphrase, salt) → raw 32-byte key material, derived at most once
+   * per process (§4.5). The salt never changes across anchor advances, so this is
+   * safely memoized. Argon2id is deliberately expensive — it must never run per
+   * enforce()/recordSpend().
+   */
+  private rootKeyBytes(): Promise<Uint8Array> {
+    if (!this.rootKeyBytesPromise) {
+      this.rootKeyBytesPromise = (async () => {
+        const salt = this.file.salt;
+        if (!salt) {
+          // No seed → no key. A view-only/wiped wallet cannot have written any
+          // authenticated state, so this path is only reached on misuse.
+          throw new WalletError(
+            "WALLET_NOT_FOUND",
+            "Cannot derive the guardrail state key: this wallet has no seed (wiped or view-only)."
+          );
+        }
+        return deriveKeyBytes(this.requirePassphrase(), base64.decode(salt));
+      })();
+    }
+    return this.rootKeyBytesPromise;
+  }
+
+  /**
+   * The SEED root AES-256-GCM key — encrypts/decrypts the seed and re-encrypts it
+   * on each guardrail anchor advance (§4.5). Same raw bytes as the state subkey's
+   * HKDF input, so a single Argon2id derivation backs both.
+   */
+  private seedKey(): Promise<CryptoKey> {
+    if (!this.seedKeyPromise) {
+      this.seedKeyPromise = this.rootKeyBytes().then(importAesKey);
+    }
+    return this.seedKeyPromise;
+  }
+
+  /**
+   * The guardrails-state authentication key (§4.5) — an HKDF subkey of the seed
+   * root material (info='depix-sdk-guardrails-state-v1'), so the state file never
+   * shares raw AES-GCM keystream with the seed blob (review low, state-crypto.ts:14)
+   * while keeping a single passphrase / single Argon2id derivation ("mesma chave
+   * do seed-store" in spirit).
+   */
+  private guardrailStateKey(): Promise<CryptoKey> {
+    if (!this.guardrailKeyPromise) {
+      this.guardrailKeyPromise = this.rootKeyBytes().then(deriveStateSubkey);
+    }
+    return this.guardrailKeyPromise;
+  }
+
+  private async classifyFinishError(
+    err: unknown,
+    asset: AssetKey,
+    amountSats: bigint
+  ): Promise<WalletError> {
+    const message = String((err as Error)?.message ?? err ?? "").toLowerCase();
+    const insufficient = message.includes("insufficient") || message.includes("not enough");
+    if (!insufficient) {
+      return new WalletError("INVALID_AMOUNT", "Transaction build failed", { cause: err });
+    }
+    // Distinguish "not enough of the asset" from "enough asset, no L-BTC for
+    // the network fee" (frontend parity, wallet.js:1985-2040).
+    if (asset !== "LBTC") {
+      try {
+        const { balances } = await this.getBalances();
+        if (balances[asset] >= amountSats) {
+          return new WalletError(
+            "INSUFFICIENT_LBTC_FOR_FEE",
+            "Not enough L-BTC to pay the network fee — convert a little to L-BTC and retry",
+            { cause: err }
+          );
+        }
+      } catch {
+        // fall through to INSUFFICIENT_FUNDS
+      }
+    }
+    return new WalletError("INSUFFICIENT_FUNDS", "Insufficient funds for this send", {
+      cause: err
+    });
+  }
+
+  private async decryptMnemonic(): Promise<string> {
+    // Seed presence first: a wiped (view-only) wallet reports the truthful
+    // WALLET_NOT_FOUND instead of demanding a passphrase it cannot use.
+    if (!this.file.encryptedSeed) {
+      throw new WalletError(
+        "WALLET_NOT_FOUND",
+        `No wallet seed in ${this.dataDir} (wiped or view-only). Use DepixWallet.restore().`
+      );
+    }
+    // Do NOT registerSecret() the plaintext: that Set is module-level and never
+    // cleared, so it would pin the seed on the heap for the whole process —
+    // exactly what §2.3's per-op zeroing forbids. Callers use the return value
+    // within a tight scope and drop it; logs redact mnemonics by pattern.
+    return this.seedStore.decryptMnemonic(this.requirePassphrase());
+  }
+
+  private requirePassphrase(): string {
+    if (typeof this.passphrase !== "string") {
+      throw new WalletError(
+        "WEAK_PASSPHRASE",
+        "A passphrase is required for this operation (set DEPIX_WALLET_PASSPHRASE)"
+      );
+    }
+    return this.passphrase;
+  }
+
+  private requireDescriptor(): string {
+    const descriptor = this.file.descriptor;
+    if (!descriptor) {
+      throw new WalletError("WALLET_NOT_FOUND", "Wallet record has no descriptor");
+    }
+    return descriptor;
+  }
+
+  private assertOpen(): void {
+    if (!this.lock) {
+      throw new WalletError("WALLET_NOT_FOUND", "Wallet is closed — open() it again");
+    }
+  }
+
+  private async refreshFile(): Promise<void> {
+    const file = await this.seedStore.read();
+    if (file) this.file = file;
+  }
+
+  private async ensureWollet(): Promise<Wollet> {
+    if (this.wollet && this.wolletReady) return this.wollet;
+    // Dedup concurrent initialization (concurrent getReceiveAddress()/send()/
+    // getBalances() must not each build a Wollet and replay the chain in
+    // parallel) — join the single in-flight build, like the sync engine does.
+    if (!this.wolletPromise) {
+      this.wolletPromise = (async () => {
+        if (!this.wollet) {
+          this.wollet = buildWollet(this.requireDescriptor());
+        }
+        await this.syncEngine.loadPersisted(this.wollet);
+        this.wolletReady = true;
+        return this.wollet;
+      })().finally(() => {
+        this.wolletPromise = null;
+      });
+    }
+    return this.wolletPromise;
+  }
+}

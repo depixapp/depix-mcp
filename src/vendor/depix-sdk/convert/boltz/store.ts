@@ -1,0 +1,300 @@
+/*
+ * Copyright 2026 DePix App
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at http://www.apache.org/licenses/LICENSE-2.0 — see LICENSE.
+ *
+ * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
+ * Origin:    https://github.com/depixapp/depix-sdk
+ * Commit:    6216f6ca88104ad1c2e5d3ae45b357a59d315312
+ * Path:      src/convert/boltz/store.ts
+ * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
+ *
+ * DePix App owns this code and distributes THIS copy under Apache-2.0. The
+ * `@depixapp/sdk` lineage of the same source remains AGPL-3.0-only; nothing
+ * from that published tarball is reused here (spec §2.2).
+ */
+// Boltz in-flight swap store — durable, authenticated (spec §5.3 / §2.4).
+//
+// Holds every in-flight submarine (send) and reverse (receive) swap so a crashed
+// agent can resume claim/refund on next open(). Each record carries SWAP-SCOPED
+// private key material (the submarine refund key; the reverse claim key +
+// preimage) — sensitive (they authorize moving that swap's L-BTC), though NOT the
+// wallet seed. So records are AES-256-GCM authenticated with the SAME key derived
+// from the seed store (passphrase + wallet salt), AAD = swapId, one independent
+// encrypted envelope per record (mirrors pending-withdrawals.ts). An injected
+// agent that rewrites the file cannot forge the GCM tag → the record is discarded
+// (the swap expires / can still be refunded via its own persisted key elsewhere)
+// and nothing is claimed/refunded from tampered data.
+
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { base64 } from "@scure/base";
+import { ConversionError } from "../../errors.js";
+import { defaultLogger, type Logger } from "../../logger.js";
+import { Mutex } from "../../mutex.js";
+import { aesGcmDecrypt, aesGcmEncrypt, deriveKey, randomIv } from "../../store/crypto.js";
+import { ensureDir, writeFileDurable } from "../../store/fs-util.js";
+import type { ReverseSwapRecord } from "./reverse.js";
+
+export const BOLTZ_SWAPS_FILE = "boltz-swaps.json";
+
+// A stablecoin record's createdSwap/plan carry bigints (Boltz route amounts) —
+// plain JSON.stringify throws on those. Encode bigints as {__bigint:"…"} and
+// revive them on read so the resume material round-trips intact (parity with the
+// frontend's boltzStableReplacer/Reviver). Submarine/reverse records have no
+// bigints, so both hooks are no-ops for them.
+function bigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? { __bigint: value.toString() } : value;
+}
+function bigintReviver(_key: string, value: unknown): unknown {
+  return value !== null &&
+    typeof value === "object" &&
+    typeof (value as { __bigint?: unknown }).__bigint === "string"
+    ? BigInt((value as { __bigint: string }).__bigint)
+    : value;
+}
+
+export type SubmarineState =
+  | "prepared" // verified, lockup NOT yet broadcast
+  | "locked_up" // lockup broadcast — watching for payment
+  | "paid" // Boltz claimed the lockup (invoice paid)
+  | "refunded" // refunded on-chain
+  | "refund_pending"; // cooperative refund failed, timeout not reached
+
+export interface StoredSubmarineSwap {
+  type: "submarine";
+  swapId: string;
+  invoice: string;
+  lockupAddress: string;
+  expectedAmountSats: number;
+  invoiceSats: number;
+  swapTree: unknown;
+  claimPublicKey: string;
+  blindingKey?: string;
+  timeoutBlockHeight: number;
+  refundPrivateKeyHex: string;
+  refundPublicKeyHex: string;
+  lockupTxid?: string;
+  state: SubmarineState;
+  createdAt: number;
+}
+
+export type ReverseState = "awaiting_payment" | "claimed" | "failed";
+
+export interface StoredReverseSwap extends ReverseSwapRecord {
+  type: "reverse";
+  state: ReverseState;
+  createdAt: number;
+}
+
+export type StablecoinState =
+  | "prepared" // route verified, L-BTC lockup NOT yet broadcast
+  | "locked_up" // lockup broadcast — awaiting server lockup / execution
+  | "settled" // executed (claim → DEX → bridge delivered)
+  | "refunded" // L-BTC lockup swept back
+  | "refund_pending"; // cooperative refund failed, timeout not reached
+
+/**
+ * A persisted L-BTC -> stablecoin (chain) swap (spec §5.3, PR5b). Carries the
+ * crash-safe resume material: the refund key (the ONLY key that can sweep the
+ * lockup back), the swap preimage, the ephemeral EVM key (hex — encrypted at rest
+ * with the rest of the record), and the createdSwap/plan the executor re-runs. The
+ * `outcome` marker records a swap we've decided will refund so resume stops
+ * re-attempting execution (mirrors the frontend's record.outcome).
+ */
+export interface StoredStablecoinSwap {
+  type: "stablecoin";
+  swapId: string;
+  asset: "USDC" | "USDT";
+  networkId: string;
+  /** FINAL recipient (EVM/Tron) address. */
+  claimAddress: string;
+  lockupAddress: string;
+  lockAmountSats: number;
+  serverPublicKey: string;
+  swapTree: unknown;
+  blindingKey?: string;
+  timeoutBlockHeight: number;
+  refundPrivateKeyHex: string;
+  refundPublicKeyHex: string;
+  preimageHex: string;
+  /** Ephemeral EVM key (hex) — sensitive; encrypted at rest, zeroed once decoded. */
+  evmPrivateKeyHex: string;
+  /** Route material the executor re-runs after a crash (bigint-safe via the store's JSON). */
+  createdSwap: unknown;
+  plan: unknown;
+  lockupTxid?: string;
+  outcome?: "refund";
+  state: StablecoinState;
+  createdAt: number;
+}
+
+export type StoredBoltzSwap = StoredSubmarineSwap | StoredReverseSwap | StoredStablecoinSwap;
+
+interface Envelope {
+  /** swapId — stable record locator (plaintext; not secret). */
+  id: string;
+  iv: string; // base64
+  ct: string; // base64
+}
+
+interface BoltzSwapsFileV1 {
+  format: "depix-boltz-swaps";
+  version: 1;
+  records: Envelope[];
+}
+
+export interface BoltzSwapStoreReadAll {
+  records: StoredBoltzSwap[];
+  /** swapIds of records that FAILED GCM authentication (tampered/corrupt). */
+  tamperedIds: string[];
+}
+
+export interface BoltzSwapStoreOptions {
+  dataDir: string;
+  passphrase: string;
+  /** Wallet salt (base64) — same salt the seed store derived from. */
+  saltB64: string;
+  logger?: Logger;
+  now?: () => number;
+}
+
+export class BoltzSwapStore {
+  private readonly dataDir: string;
+  private readonly filePath: string;
+  private readonly passphrase: string;
+  private readonly salt: Uint8Array;
+  private readonly logger: Logger;
+  private readonly now: () => number;
+  private keyPromise: Promise<CryptoKey> | null = null;
+  private readonly mutex = new Mutex();
+
+  constructor(options: BoltzSwapStoreOptions) {
+    this.dataDir = options.dataDir;
+    this.filePath = join(options.dataDir, BOLTZ_SWAPS_FILE);
+    this.passphrase = options.passphrase;
+    this.salt = base64.decode(options.saltB64);
+    this.logger = options.logger ?? defaultLogger;
+    this.now = options.now ?? Date.now;
+  }
+
+  private key(): Promise<CryptoKey> {
+    if (!this.keyPromise) this.keyPromise = deriveKey(this.passphrase, this.salt);
+    return this.keyPromise;
+  }
+
+  private async encrypt(record: StoredBoltzSwap): Promise<Envelope> {
+    const iv = randomIv();
+    const plaintext = new TextEncoder().encode(JSON.stringify(record, bigintReplacer));
+    const ct = await aesGcmEncrypt(plaintext, await this.key(), iv, new TextEncoder().encode(record.swapId));
+    return { id: record.swapId, iv: base64.encode(iv), ct: base64.encode(ct) };
+  }
+
+  private async decrypt(env: Envelope): Promise<StoredBoltzSwap> {
+    const plaintext = await aesGcmDecrypt(
+      base64.decode(env.ct),
+      await this.key(),
+      base64.decode(env.iv),
+      new TextEncoder().encode(env.id)
+    );
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext), bigintReviver) as StoredBoltzSwap;
+  }
+
+  private async readEnvelopes(): Promise<Envelope[]> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+    try {
+      const parsed = JSON.parse(raw) as BoltzSwapsFileV1;
+      if (parsed.format !== "depix-boltz-swaps" || parsed.version !== 1) {
+        throw new Error("unknown format/version");
+      }
+      return Array.isArray(parsed.records) ? parsed.records : [];
+    } catch (err) {
+      this.logger.error("boltz-swaps.json is corrupt — discarding (in-flight swaps may expire)", {
+        error: String((err as Error)?.message ?? err)
+      });
+      return [];
+    }
+  }
+
+  private async writeEnvelopes(envelopes: Envelope[]): Promise<void> {
+    await ensureDir(this.dataDir);
+    const file: BoltzSwapsFileV1 = { format: "depix-boltz-swaps", version: 1, records: envelopes };
+    // Durable (fsync file + dir) — losing a refund/claim key material strands
+    // the lockup (§2.4).
+    await writeFileDurable(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
+  }
+
+  /** Insert or replace a record (located by swapId). */
+  async put(record: StoredBoltzSwap): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      const rec = { ...record, createdAt: record.createdAt || this.now() } as StoredBoltzSwap;
+      const envelopes = (await this.readEnvelopes()).filter((e) => e.id !== record.swapId);
+      envelopes.push(await this.encrypt(rec));
+      await this.writeEnvelopes(envelopes);
+    });
+  }
+
+  /** Read-modify-write ONE record. */
+  async patch(swapId: string, mutate: (record: StoredBoltzSwap) => void): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      const envelopes = await this.readEnvelopes();
+      const idx = envelopes.findIndex((e) => e.id === swapId);
+      if (idx === -1) return;
+      const record = await this.decrypt(envelopes[idx]!);
+      mutate(record);
+      envelopes[idx] = await this.encrypt(record);
+      await this.writeEnvelopes(envelopes);
+    });
+  }
+
+  async remove(swapId: string): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      const envelopes = await this.readEnvelopes();
+      const next = envelopes.filter((e) => e.id !== swapId);
+      if (next.length !== envelopes.length) await this.writeEnvelopes(next);
+    });
+  }
+
+  /** Decrypt one record by swapId. Throws PENDING_RECORD_TAMPERED-analog on auth failure. */
+  async get(swapId: string): Promise<StoredBoltzSwap | null> {
+    const envelopes = await this.readEnvelopes();
+    const env = envelopes.find((e) => e.id === swapId);
+    if (!env) return null;
+    try {
+      return await this.decrypt(env);
+    } catch (err) {
+      throw new ConversionError(
+        "SWAP_VALIDATION_FAILED",
+        `boltz swap ${swapId} failed authentication — discarded, not acted upon`,
+        { cause: err }
+      );
+    }
+  }
+
+  /** Decrypt every record; tampered ones are collected rather than aborting. */
+  async readAll(): Promise<BoltzSwapStoreReadAll> {
+    const envelopes = await this.readEnvelopes();
+    const records: StoredBoltzSwap[] = [];
+    const tamperedIds: string[] = [];
+    for (const env of envelopes) {
+      try {
+        records.push(await this.decrypt(env));
+      } catch {
+        tamperedIds.push(env.id);
+      }
+    }
+    return { records, tamperedIds };
+  }
+
+  async count(): Promise<number> {
+    return (await this.readEnvelopes()).length;
+  }
+}
