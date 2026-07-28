@@ -59,8 +59,26 @@ export function unifiedInstructions(opts: { walletConfigured: boolean }): string
       UNIFIED_RUN_COMMAND +
       "`). The 22 gateway tools are a pure client of the DePix App API; the 27 wallet_* tools are a NON-CUSTODIAL Liquid wallet " +
       "that signs in this process with a seed that never leaves this machine — the DePix App backend never sees it and cannot sign for it.",
-    walletMcpInstructions({ initCommand: UNIFIED_INIT_COMMAND, walletConfigured: opts.walletConfigured }),
+    withoutEngineLede(walletMcpInstructions({ initCommand: UNIFIED_INIT_COMMAND, walletConfigured: opts.walletConfigured })),
   ].join(" ");
+}
+
+/**
+ * The engine's instructions open by introducing THEMSELVES as a server: "DePix
+ * Wallet MCP — a NON-CUSTODIAL Liquid wallet that signs locally, in the agent's
+ * own environment." True when the engine serves its own `depix-wallet-mcp` bin;
+ * wrong here. Spliced mid-paragraph it reads as a SECOND server the model should
+ * go find, when the wallet tools are on the very server it is already talking to.
+ *
+ * The sentence immediately above already carries everything that lede says, so it
+ * is DROPPED rather than reworded — and dropped by MATCHING it, so an engine bump
+ * that rewrites the wording degrades to keeping one redundant sentence instead of
+ * silently eating a different one.
+ */
+const ENGINE_LEDE_RE = /^DePix Wallet MCP\b[^.]*\.\s*/;
+
+function withoutEngineLede(text: string): string {
+  return text.replace(ENGINE_LEDE_RE, "");
 }
 
 /**

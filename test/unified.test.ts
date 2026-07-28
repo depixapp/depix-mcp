@@ -168,6 +168,22 @@ describe("per-deployment instructions (§1.6)", () => {
     expect(text).toContain("wallet_send");
   });
 
+  it("unified: drops the engine's self-introduction — ONE server, not two", () => {
+    for (const walletConfigured of [true, false]) {
+      const text = unifiedInstructions({ walletConfigured });
+      // The engine's own lede ("DePix Wallet MCP — a NON-CUSTODIAL Liquid wallet
+      // that signs locally…") is true when the engine serves its own bin. Spliced
+      // mid-paragraph here it tells the model to go find a SECOND server, when the
+      // wallet tools are on the very server it is already connected to.
+      expect(text).not.toContain("DePix Wallet MCP");
+      // …while every substantive sentence that lede introduced is still present.
+      expect(text).toContain("The seed never leaves this machine");
+      expect(text).toContain("guardrails");
+      expect(text).toContain("wallet_convert is the PRIMARY conversion surface");
+      expect(text).toContain("There is no tool to export the seed");
+    }
+  });
+
   it("unified + no wallet: tells the model the tools answer wallet_not_configured until init", () => {
     const text = unifiedInstructions({ walletConfigured: false });
     expect(text).toContain("wallet_not_configured");
