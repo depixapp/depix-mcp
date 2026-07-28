@@ -54,9 +54,16 @@ A third change is behavioural rather than semver-visible but worth reading:
   notices must travel with the copy; `npm run licenses:check` keeps it current.
 - **Three CI guards**: `guard:hosted` (the hosted function has zero import path to
   the wallet engine — a static import-graph walk plus a `@vercel/nft` trace, with
-  a self-test that proves both reject a poisoned entry), `licenses:check`, and
-  `vendor:check` (the committed engine tree matches its pinned commit byte for
-  byte, verified against a fresh checkout).
+  a self-test that proves both reject poisoned entries at the top level *and* in a
+  subdirectory), `licenses:check`, and `vendor:check` (the committed engine tree
+  matches its pinned commit byte for byte, verified against a fresh checkout). All
+  three also run in the release workflow: `ci.yml` is not triggered by tags, so a
+  tag would otherwise publish with only `tsc` and `eslint` having looked at it.
+- **Vercel preview deploys are reachable.** A non-production deployment adds its
+  own `VERCEL_URL` / `VERCEL_BRANCH_URL` to the DNS-rebinding allowlist;
+  production widens by nothing. The allowlist is an exact match — `*.vercel.app`
+  in `MCP_ALLOWED_HOSTS` matched nothing, so previews were unverifiable before
+  production.
 
 ### Changed
 
@@ -66,11 +73,15 @@ A third change is behavioural rather than semver-visible but worth reading:
   `@scure/base`, `hash-wasm`, `viem`). All pinned exact. `@modelcontextprotocol/sdk`
   is pinned to a single `1.29.0` and `zod` to a single `3.25.76` — two copies of
   zod would break `instanceof` schema checks across the gateway/wallet boundary.
-- **`.npmrc` added** (`save-exact`, `legacy-peer-deps`), mirroring the engine
-  repo. `boltz-swaps@0.0.8` declares a stale `peerOptional boltz-core@^4.0.5`
-  against the pinned `5.0.0`; npm only raises ERESOLVE when both are ROOT
-  dependencies, i.e. in this repo and CI. Consumers installing `@depixapp/mcp` are
-  unaffected — the same pair already ships in `@depixapp/sdk@1.2.0`.
+- **`.npmrc` added** (`save-exact` only) plus a scoped `overrides` entry.
+  `boltz-swaps@0.0.8` declares a stale `peerOptional boltz-core@^4.0.5` against
+  the pinned `5.0.0`, which makes `npm ci` raise ERESOLVE when both are ROOT
+  dependencies (this repo, CI, Vercel). `overrides: { "boltz-swaps":
+  { "boltz-core": "5.0.0" } }` resolves the actual conflict — `npm ci` exits 0
+  with no advisory and the repo tree holds exactly one `boltz-core` — so the
+  blunt `legacy-peer-deps` flag, which would have silenced every future peer
+  conflict repo-wide, was dropped. **This does not fix the consumer graph** — see
+  Known issues.
 - **`@types/node` 22 → 26** (the engine needs the global `CryptoKey` type).
   `src/oauth.ts` now declares the `JsonWebKey` shape it reads locally, since
   `node:crypto` no longer re-exports it in those typings.
@@ -98,6 +109,17 @@ A third change is behavioural rather than semver-visible but worth reading:
   `5.0.0` is still latest on npm, so the intended bump could not be made. License
   scanners will flag this dependency until then. `THIRD_PARTY_LICENSES` states the
   discrepancy explicitly and reproduces the governing MIT text.
+- **A consumer install resolves TWO major versions of `boltz-core`.** Measured on
+  a real `npm install` of the packed tarball: `node_modules/boltz-core` is
+  **4.0.5** (hoisted to satisfy `boltz-swaps`' peer range) while
+  `node_modules/@depixapp/mcp/node_modules/boltz-core` is **5.0.0** (this
+  package's pin). So `boltz-swaps` runs against 4.x and the engine against 5.x —
+  two majors of a signing library in one process, on the swap path. npm
+  `overrides` are root-only and do **not** propagate to consumers, so the in-repo
+  fix above cannot reach this. It is **not a regression**: `@depixapp/sdk@1.2.0`
+  ships the identical pair today. The real fix is upstream (a `boltz-swaps`
+  release whose peer range admits 5.x) or dropping one of the two — a
+  post-launch item, deliberately not attempted in this release.
 - **`SIDESHIFT_AFFILIATE_ID` is not baked** into published builds unless it is set
   in the publish environment. When unset, the compiled engine keeps its runtime
   env read, so `wallet_shift_usdt` works for an operator who exports the variable
