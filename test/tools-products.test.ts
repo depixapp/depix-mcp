@@ -200,3 +200,163 @@ describe("list_product_checkouts has_more via stats.total (spec §4.3)", () => {
     expect(z.object(s.listProductCheckoutsOutput).safeParse(out).success).toBe(true);
   });
 });
+
+// ── Charges (kind='charge') ────────────────────────────────────────────────
+// A charge is a product with a due date and late fees. The backend models it as
+// the SAME resource with a discriminator, so these tools must carry it — an
+// agent that can create one but never see it again is worse than one that
+// cannot create it at all.
+
+describe("charges — create_product with kind='charge'", () => {
+  it("forwards every charge field on the wire", async () => {
+    const { client, requests } = makeClient([
+      {
+        status: 201,
+        json: {
+          product: {
+            id: "prd_chg1", slug: "aluguel-apto-12", name: "Aluguel Apto 12",
+            amount: 250000, description: null, image_url: null,
+            callback_url: null, redirect_url: null, metadata: null,
+            expires_in: 1200, active: true, is_live: true,
+            kind: "charge", due_date: "2026-08-05", recurrence: "monthly",
+            late_fine_bps: 200, late_interest_monthly_bps: 100,
+            payment_url: "https://pay.depixapp.com/c/prd_chg1",
+            created_at: "2026-07-29T12:00:00.000Z",
+          },
+        },
+      },
+    ]);
+
+    const out = await createProduct(client, {
+      name: "Aluguel Apto 12",
+      amount: 250000,
+      kind: "charge",
+      due_date: "2026-08-05",
+      recurrence: "monthly",
+      late_fine_bps: 200,
+      late_interest_monthly_bps: 100,
+    });
+
+    const body = JSON.parse(requests[0].body!);
+    expect(body).toMatchObject({
+      kind: "charge",
+      due_date: "2026-08-05",
+      recurrence: "monthly",
+      late_fine_bps: 200,
+      late_interest_monthly_bps: 100,
+    });
+    // The response must carry them back — the normalizer is curate-and-strip,
+    // so an agent that cannot read due_date cannot confirm what it created.
+    expect(out.product).toMatchObject({
+      kind: "charge",
+      due_date: "2026-08-05",
+      recurrence: "monthly",
+      late_fine_bps: 200,
+      late_interest_monthly_bps: 100,
+      payment_url: "https://pay.depixapp.com/c/prd_chg1",
+    });
+  });
+
+  it("omits kind entirely for a plain product — the product body stays byte-identical", async () => {
+    const { client, requests } = makeClient([
+      { status: 201, json: { product: { id: "prd_1", slug: "ebook", name: "Ebook", amount: 700, expires_in: 1200, active: true, is_live: true, payment_url: "u", created_at: "t" } } },
+    ]);
+    await createProduct(client, { name: "Ebook", amount: 700 });
+    const body = JSON.parse(requests[0].body!);
+    expect(body).not.toHaveProperty("kind");
+    expect(body).not.toHaveProperty("due_date");
+  });
+
+  it("refuses a charge without a due date before spending a request", async () => {
+    const { client, requests } = makeClient([]);
+    await expect(
+      createProduct(client, { name: "Aluguel", amount: 250000, kind: "charge" }),
+    ).rejects.toThrow(/due_date/i);
+    expect(requests).toHaveLength(0);
+  });
+});
+
+describe("charges — list_products", () => {
+  it("forwards kind so charges are reachable at all", async () => {
+    // The API defaults kind='product' precisely so pre-charges integrations
+    // keep their old result set. Without this parameter list_products can
+    // NEVER return a charge, and an agent concludes the one it just created
+    // does not exist.
+    const { client, requests } = makeClient([{ status: 200, json: { products: [], limit: 50, offset: 0 } }]);
+    await listProducts(client, { kind: "charge", limit: 50, offset: 0 });
+    expect(requests[0].url).toContain("kind=charge");
+  });
+
+  it("does not send kind when the caller did not ask — default stays the API's", async () => {
+    const { client, requests } = makeClient([{ status: 200, json: { products: [], limit: 50, offset: 0 } }]);
+    await listProducts(client, { limit: 50, offset: 0 });
+    expect(requests[0].url).not.toContain("kind=");
+  });
+
+  it("carries charge_state and the /c/ payment_url through the normalizer", async () => {
+    const { client } = makeClient([
+      {
+        status: 200,
+        json: {
+          products: [
+            {
+              id: "prd_chg1", slug: "aluguel", name: "Aluguel Apto 12", amount: 250000,
+              description: null, image_url: null, active: 1, is_live: 1, expires_in: 1200,
+              created_at: "2026-07-29 12:00:00", position: null,
+              kind: "charge", due_date: "2026-08-05", recurrence: "monthly",
+              late_fine_bps: 200, late_interest_monthly_bps: 100,
+              total_checkouts: 3, completed_checkouts: 1, completed_amount: 250000,
+              settled_count: 1, processing_count: 0,
+              payment_url: "https://pay.depixapp.com/c/prd_chg1",
+              charge_state: {
+                settled: false, cycle_due_date: "2026-09-05", days_late: 0,
+                base_cents: 250000, fine_cents: 0, interest_cents: 0,
+                total_today_cents: 250000, capped: false, status: "upcoming",
+                open_past_due_cycles: 0, in_flight: false,
+              },
+            },
+          ],
+          limit: 50, offset: 0,
+        },
+      },
+    ]);
+
+    const out = await listProducts(client, { kind: "charge", limit: 50, offset: 0 });
+    const row = out.products[0] as Record<string, unknown>;
+    expect(row.kind).toBe("charge");
+    expect(row.due_date).toBe("2026-08-05");
+    expect(row.payment_url).toBe("https://pay.depixapp.com/c/prd_chg1");
+    // charge_state is the whole point of listing charges: without it the agent
+    // cannot tell an overdue rent from one that is not due yet.
+    expect(row.charge_state).toMatchObject({ cycle_due_date: "2026-09-05", status: "upcoming" });
+  });
+});
+
+describe("charges — update_product", () => {
+  it("forwards the four mutable charge fields", async () => {
+    const { client, requests } = makeClient([{ status: 200, json: { success: true } }]);
+    await updateProduct(client, {
+      product_id: "prd_chg1",
+      due_date: "2026-09-10",
+      recurrence: null,
+      late_fine_bps: 1000,
+      late_interest_monthly_bps: 0,
+    });
+    const body = JSON.parse(requests[0].body!);
+    expect(body).toMatchObject({
+      due_date: "2026-09-10",
+      recurrence: null,
+      late_fine_bps: 1000,
+      late_interest_monthly_bps: 0,
+    });
+  });
+
+  it("a charge-only edit counts as a field — it must not trip the empty-body guard", async () => {
+    // buildUpdateProductBody throws locally when the body is empty. Before the
+    // charge fields were forwarded, editing ONLY the due date produced an empty
+    // body and never reached the API.
+    const { client, requests } = makeClient([{ status: 200, json: { success: true } }]);
+    await updateProduct(client, { product_id: "prd_chg1", due_date: "2026-09-10" });
+    expect(requests).toHaveLength(1);
+  });
+});

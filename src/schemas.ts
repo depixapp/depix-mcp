@@ -394,6 +394,51 @@ export function waitForCheckoutInput(maxWaitSeconds: number) {
 
 // ────────────────────────────── Products ──────────────────────────────
 
+// Recurrence values the API accepts; null (or omitted) = a one-time charge.
+export const CHARGE_RECURRENCES = ["weekly", "monthly", "quarterly", "semiannual", "yearly"] as const;
+
+// Late-fee bounds, in basis points, mirroring charge-policy.js on the backend.
+// Generous on purpose: what a contract may lawfully charge is the merchant's
+// responsibility, and these only stop typos like 300% a month.
+const MAX_FINE_BPS = 2000;
+const MAX_INTEREST_MONTHLY_BPS = 1000;
+
+// Fields shared by create and update. Fresh instances per call for the same
+// reason amountInputShape() is a factory: a reused zod object makes the JSON
+// Schema converter emit a $ref that some MCP hosts do not resolve.
+const chargeFieldsShape = () => ({
+  due_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe(
+      "REQUIRED when kind is `charge`. First due date, YYYY-MM-DD, and the anchor of the recurrence. May be in the past — a retroactive charge starts already overdue.",
+    ),
+  recurrence: z
+    .enum(CHARGE_RECURRENCES)
+    .nullable()
+    .optional()
+    .describe(
+      "Charges only. null or omitted = a one-time charge. Monthly and above anchor on the due day, clamping to the last day of shorter months (the 31st becomes Feb 28/29).",
+    ),
+  late_fine_bps: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_FINE_BPS)
+    .optional()
+    .describe(`Charges only. One-time late fine in basis points of the base amount (200 = 2%). Default 0, max ${MAX_FINE_BPS} (20%).`),
+  late_interest_monthly_bps: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_INTEREST_MONTHLY_BPS)
+    .optional()
+    .describe(
+      `Charges only. Monthly interest in basis points, accrued pro-rata per day late (100 = 1% a month). Default 0, max ${MAX_INTEREST_MONTHLY_BPS} (10%).`,
+    ),
+});
+
 export const createProductInput = {
   name: z.string().min(2).max(80).describe("Product name (2–80 chars)."),
   ...amountInputShape(),
@@ -404,6 +449,13 @@ export const createProductInput = {
   redirect_url: z.string().url().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   expires_in: z.number().int().min(300).max(1200).optional(),
+  kind: z
+    .enum(["product", "charge"])
+    .optional()
+    .describe(
+      "`product` (default) = a catalog item on the merchant's public store. `charge` = a payment link with a DUE DATE and optional late fees (rent, tuition, an instalment), served at pay.depixapp.com/c/{id}; it never appears on the store, the cart or the default product listing, and `due_date` becomes required. Immutable after creation.",
+    ),
+  ...chargeFieldsShape(),
 };
 
 const productCreateObject = z
@@ -420,7 +472,12 @@ const productCreateObject = z
     expires_in: z.number().int(),
     active: z.boolean(),
     is_live: z.boolean(),
-    payment_url: z.string(),
+    kind: z.string().describe("`product` or `charge`."),
+    due_date: z.string().nullable().describe("First due date (charges; null for products)."),
+    recurrence: z.string().nullable().describe("Recurrence (charges; null = one-time, and for products)."),
+    late_fine_bps: z.number().int().describe("One-time late fine in basis points (0 for products)."),
+    late_interest_monthly_bps: z.number().int().describe("Monthly interest in basis points (0 for products)."),
+    payment_url: z.string().describe("Public payment URL: the storefront product page, or pay.depixapp.com/c/{id} for a charge."),
     created_at: z.string(),
   })
   .passthrough();
@@ -430,6 +487,12 @@ export const createProductOutput = {
 };
 
 export const listProductsInput = {
+  kind: z
+    .enum(["product", "charge", "all"])
+    .optional()
+    .describe(
+      "Row kind. The API DEFAULTS to `product`, so charges are invisible unless you ask: pass `charge` to list charges (each row then carries `charge_state`) or `all` for both.",
+    ),
   active: z.boolean().optional().describe("Filter by active flag."),
   q: z.string().optional().describe("Substring search over slug, name and description."),
   // Max 99 (not 100): the API has no `total` for products, so has_more is
@@ -455,6 +518,29 @@ const productListItemOutput = z
     total_checkouts: z.number().int(),
     completed_checkouts: z.number().int(),
     completed_amount: z.number().int(),
+    kind: z.string().describe("`product` or `charge`."),
+    due_date: z.string().nullable(),
+    recurrence: z.string().nullable(),
+    late_fine_bps: z.number().int(),
+    late_interest_monthly_bps: z.number().int(),
+    charge_state: z
+      .object({
+        settled: z.boolean().describe("true = a one-time charge that is fully paid; the other fields are then absent."),
+        cycle_due_date: z.string().optional().describe("Due date of the current — oldest unpaid — cycle."),
+        days_late: z.number().int().optional(),
+        base_cents: z.number().int().optional(),
+        fine_cents: z.number().int().optional(),
+        interest_cents: z.number().int().optional(),
+        total_today_cents: z.number().int().optional().describe("What a QR created right now would charge."),
+        capped: z.boolean().optional().describe("true = base + late fees exceeded the per-transaction cap and was clamped."),
+        status: z.string().optional().describe("late | due_today | upcoming."),
+        open_past_due_cycles: z.number().int().optional().describe("More than 1 means cycles piled up."),
+        in_flight: z.boolean().optional().describe("A paid Pix for this charge is still settling."),
+      })
+      .passthrough()
+      .optional()
+      .describe("Derived payable state — charge rows only. Without it you cannot tell an overdue rent from one that is not due yet."),
+    payment_url: z.string().optional().describe("pay.depixapp.com/c/{id} — charge rows only."),
   })
   .passthrough();
 
@@ -501,6 +587,9 @@ export const updateProductInput = {
   redirect_url: z.string().nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
   expires_in: z.number().int().min(300).max(1200).optional(),
+  // `kind` is absent on purpose: the API answers 400 "kind é imutável", so
+  // offering it here would only manufacture a guaranteed error.
+  ...chargeFieldsShape(),
 };
 
 export const productActionInput = {

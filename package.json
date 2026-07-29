@@ -1,6 +1,6 @@
 {
   "name": "@depixapp/mcp",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "mcpName": "io.github.depixapp/depix-mcp",
   "type": "module",
   "description": "The DePix App MCP server — one MCP, two levels of access: hosted receive-only Pix gateway (22 tools), or local via npx with a non-custodial Liquid wallet that signs on your own machine (49 tools). Checkouts, products, status reads, support tickets, hold/send/convert, Lightning and gift cards.",

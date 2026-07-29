@@ -26,6 +26,14 @@ function normalizeCreatedProduct(raw: Record<string, unknown>) {
     expires_in: numOrNull(raw.expires_in) ?? 0,
     active: normalizeBool(raw.active),
     is_live: normalizeIsLive(raw),
+    // Charge fields. This normalizer is curate-and-strip — a field absent here
+    // never reaches the agent, whatever .passthrough() says on the schema — so
+    // an agent that created a charge could not read back what it created.
+    kind: str(raw.kind) || "product",
+    due_date: strOrNull(raw.due_date),
+    recurrence: strOrNull(raw.recurrence),
+    late_fine_bps: numOrNull(raw.late_fine_bps) ?? 0,
+    late_interest_monthly_bps: numOrNull(raw.late_interest_monthly_bps) ?? 0,
     payment_url: str(raw.payment_url),
     created_at: str(raw.created_at),
   };
@@ -47,6 +55,16 @@ function normalizeProductListItem(raw: Record<string, unknown>) {
     total_checkouts: numOrNull(raw.total_checkouts) ?? 0,
     completed_checkouts: numOrNull(raw.completed_checkouts) ?? 0,
     completed_amount: numOrNull(raw.completed_amount) ?? 0,
+    kind: str(raw.kind) || "product",
+    due_date: strOrNull(raw.due_date),
+    recurrence: strOrNull(raw.recurrence),
+    late_fine_bps: numOrNull(raw.late_fine_bps) ?? 0,
+    late_interest_monthly_bps: numOrNull(raw.late_interest_monthly_bps) ?? 0,
+    // Charge-only, forwarded verbatim: charge_state is derived server-side and
+    // is the only way to tell an overdue rent from one that is not due yet;
+    // payment_url is the /c/{id} link, which list rows carry only for charges.
+    ...(raw.charge_state !== undefined ? { charge_state: raw.charge_state } : {}),
+    ...(raw.payment_url !== undefined ? { payment_url: str(raw.payment_url) } : {}),
   };
 }
 
@@ -63,7 +81,7 @@ export async function createProduct(client: ApiClient, args: CreateProductArgs) 
 
 export async function listProducts(
   client: ApiClient,
-  args: { active?: boolean; q?: string; limit: number; offset: number },
+  args: { kind?: string; active?: boolean; q?: string; limit: number; offset: number },
 ) {
   // Exact has_more via limit+1 over-fetch (spec §4.3). The tool's input schema
   // caps limit at 99, so limit+1 always fits the API's 100 cap and has_more is
@@ -72,6 +90,11 @@ export async function listProducts(
     method: "GET",
     path: "/api/products",
     query: {
+      // The API defaults kind='product' so integrations written before charges
+      // keep their old result set — which also means a charge is UNREACHABLE
+      // without this parameter. Left undefined when the caller did not ask, so
+      // the default stays the API's rather than being restated here.
+      kind: args.kind,
       active: args.active === undefined ? undefined : args.active,
       q: args.q,
       limit: args.limit + 1,

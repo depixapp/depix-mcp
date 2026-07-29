@@ -218,7 +218,7 @@ export function createServer(opts: CreateServerOptions): McpServer {
     {
       title: "Create product",
       description:
-        "Create a reusable product (fixed-price checkout template with a public page). Requires scope `merchant_write`.",
+        "Create a reusable product (fixed-price checkout template with a public page), or — with kind=\"charge\" — a CHARGE: a payment link with a due date and optional late fine/interest, for rent, tuition or an instalment. A charge is served at pay.depixapp.com/c/{id} and never appears on the merchant's public store. NOTE: `create_checkout` makes a ONE-OFF Pix charge that is paid once and expires in minutes; this tool with kind=\"charge\" makes a STANDING one that has a due date and can recur. Requires scope `merchant_write`.",
       inputSchema: s.createProductInput,
       outputSchema: s.createProductOutput,
       annotations: write,
@@ -230,7 +230,8 @@ export function createServer(opts: CreateServerOptions): McpServer {
     "list_products",
     {
       title: "List products",
-      description: "List products with filters and pagination. Requires scope `merchant_read`.",
+      description:
+        "List products with filters and pagination. Charges are NOT included by default — pass kind=\"charge\" to list them (each row then carries `charge_state` with the current cycle, days late and today's total) or kind=\"all\" for both. Requires scope `merchant_read`.",
       inputSchema: s.listProductsInput,
       outputSchema: s.listProductsOutput,
       annotations: readOnly,
@@ -255,7 +256,7 @@ export function createServer(opts: CreateServerOptions): McpServer {
     {
       title: "Update product",
       description:
-        "Partially update a product (only provided fields change). Requires scope `merchant_write`.",
+        "Partially update a product or charge (only provided fields change). A charge's due_date, recurrence and late fees are editable here; `kind` is not — it is fixed at creation. Requires scope `merchant_write`.",
       inputSchema: s.updateProductInput,
       outputSchema: s.productActionOutput,
       annotations: write,

@@ -95,6 +95,13 @@ export interface CreateProductArgs {
   redirect_url?: string;
   metadata?: Record<string, unknown>;
   expires_in?: number;
+  // Charge fields. A charge is the SAME resource with a discriminator — the
+  // backend models it that way, so the tool does too (see schemas.ts).
+  kind?: "product" | "charge";
+  due_date?: string;
+  recurrence?: string | null;
+  late_fine_bps?: number;
+  late_interest_monthly_bps?: number;
 }
 
 /** Build the POST /api/products wire body (amount_cents → amount). */
@@ -113,6 +120,26 @@ export function buildCreateProductBody(args: CreateProductArgs): Record<string, 
   put(body, "redirect_url", args.redirect_url);
   put(body, "metadata", args.metadata);
   put(body, "expires_in", args.expires_in);
+  // `kind` is omitted when absent so a plain-product body stays byte-identical
+  // to what it was before charges existed.
+  put(body, "kind", args.kind);
+  if (args.kind === "charge") {
+    // Caught here, not by zod: the field is only required for one value of a
+    // sibling field, and a conditional zod refine on a tool input degrades the
+    // JSON Schema every MCP host reads. Failing locally also saves the agent a
+    // round trip to learn something we already know.
+    if (!args.due_date) {
+      throw new ToolError(
+        "A charge needs `due_date` (YYYY-MM-DD) — the first due date, which anchors the recurrence.",
+        "validation_error",
+        { data: { details: { field: "due_date" } } },
+      );
+    }
+    put(body, "due_date", args.due_date);
+    if (args.recurrence !== undefined) body.recurrence = args.recurrence;
+    put(body, "late_fine_bps", args.late_fine_bps);
+    put(body, "late_interest_monthly_bps", args.late_interest_monthly_bps);
+  }
   return body;
 }
 
@@ -128,6 +155,13 @@ export interface UpdateProductArgs {
   redirect_url?: string | null;
   metadata?: Record<string, unknown> | null;
   expires_in?: number;
+  // Charge fields that may change after creation. `kind` is deliberately NOT
+  // here: the API rejects it with 400 "kind é imutável", so accepting it would
+  // only manufacture a guaranteed error.
+  due_date?: string;
+  recurrence?: string | null;
+  late_fine_bps?: number;
+  late_interest_monthly_bps?: number;
 }
 
 /** Build the PATCH /api/products/:id wire body (amount_cents → amount). */
@@ -144,9 +178,16 @@ export function buildUpdateProductBody(args: UpdateProductArgs): Record<string, 
   if (args.redirect_url !== undefined) body.redirect_url = args.redirect_url;
   if (args.metadata !== undefined) body.metadata = args.metadata;
   put(body, "expires_in", args.expires_in);
+  // Charge fields count as fields: before they were forwarded, an edit that
+  // touched ONLY the due date produced an empty body and died locally without
+  // ever reaching the API.
+  put(body, "due_date", args.due_date);
+  if (args.recurrence !== undefined) body.recurrence = args.recurrence;
+  put(body, "late_fine_bps", args.late_fine_bps);
+  put(body, "late_interest_monthly_bps", args.late_interest_monthly_bps);
   if (Object.keys(body).length === 0) {
     throw new ToolError(
-      "Provide at least one field to update (name/description/amount/image_url/metadata/…).",
+      "Provide at least one field to update (name/description/amount/due_date/late fees/…).",
       "validation_error",
     );
   }
