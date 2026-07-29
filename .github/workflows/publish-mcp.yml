@@ -61,13 +61,18 @@ jobs:
           echo "ref=$(node -p "require('./vendor/engine.pin.json').ref")" >> "$GITHUB_OUTPUT"
           echo "repo=$(node -p "new URL(require('./vendor/engine.pin.json').repository).pathname.slice(1)")" >> "$GITHUB_OUTPUT"
 
-      # TODO(P5): depix-sdk goes private at the end of the program — swap this for
-      # a deploy key / PAT (`token:` input) when it does. Public today, no secret.
+      # depix-sdk is PRIVATE: authenticate over SSH with a read-only deploy key
+      # (secret DEPIX_SDK_DEPLOY_KEY, installed on depixapp/depix-sdk). The key
+      # grants read on that one repo and nothing else. If this step ever fails
+      # with a permission error, the key was rotated or removed — re-add it
+      # rather than dropping the check: without it a tag can publish a
+      # hand-edited engine, and an npm version is immutable forever.
       - name: Checkout the engine at the pinned commit
         uses: actions/checkout@v5
         with:
           repository: ${{ steps.pin.outputs.repo }}
           ref: ${{ steps.pin.outputs.ref }}
+          ssh-key: ${{ secrets.DEPIX_SDK_DEPLOY_KEY }}
           path: .vendor-src
           fetch-depth: 0
 
