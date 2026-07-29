@@ -25,6 +25,10 @@ interface RailRules {
   expires_in: { minimum: number; maximum: number };
   required: string[];
 }
+interface Bounds {
+  minimum: number;
+  maximum: number;
+}
 interface Fixture {
   info_version: string;
   scopes: string[];
@@ -34,7 +38,12 @@ interface Fixture {
   paymentMethods: string[];
   requestBodies: Record<
     string,
-    { required: string[]; properties: string[]; railConditional?: { pix: RailRules; depix: RailRules } }
+    {
+      required: string[];
+      properties: string[];
+      railConditional?: { pix: RailRules; depix: RailRules };
+      fieldBounds?: Record<string, Bounds>;
+    }
   >;
   responseFields: Record<string, string[]>;
   depixPaymentRequired: string[];
@@ -148,6 +157,45 @@ describe("contract: request bodies use the wire field names", () => {
     expect(
       buildCreateCheckoutBody({ amount: 1500, payment_method: "depix", expires_in: rails.pix.expires_in.maximum + 1 }).expires_in,
     ).toBe(rails.pix.expires_in.maximum + 1);
+  });
+
+  // The `amount` ceiling drifted once already: the backend raised it to
+  // R$ 6.000 and this schema stayed at R$ 3.000, so every charge above the old
+  // cap died in a client-side zod error the API would have accepted — the exact
+  // failure this file exists to catch, except nothing pinned the NUMBER, only
+  // the field name. These assertions read the bounds from the fixture so the
+  // next raise fails here instead of in production.
+  describe("amount bounds are pinned to the document, not hardcoded", () => {
+    const AMOUNT_ENDPOINTS: Array<[string, Record<string, z.ZodTypeAny>, Record<string, unknown>]> = [
+      [CHECKOUTS, schemas.createCheckoutInput, { payment_method: "depix" }],
+      ["POST /api/products", schemas.createProductInput, { name: "Ebook" }],
+      ["PATCH /api/products/{id}", schemas.updateProductInput, { product_id: "prd_1" }],
+    ];
+
+    it.each(AMOUNT_ENDPOINTS)("%s accepts the documented range and nothing beyond it", (endpoint, input, extra) => {
+      const bounds = fixture.requestBodies[endpoint].fieldBounds?.amount;
+      expect(bounds, `${endpoint}: fixture must pin the amount bounds`).toBeDefined();
+      const shape = z.object(input);
+
+      // Both wire aliases carry the same ceiling — `amount_cents` is the one
+      // agents reach for, and it used to be just as stale.
+      for (const key of ["amount", "amount_cents"]) {
+        expect(shape.safeParse({ ...extra, [key]: bounds!.maximum }).success, `${endpoint}: ${key} must accept the documented maximum`).toBe(true);
+        expect(shape.safeParse({ ...extra, [key]: bounds!.maximum + 1 }).success, `${endpoint}: ${key} must reject above the maximum`).toBe(false);
+        expect(shape.safeParse({ ...extra, [key]: bounds!.minimum }).success, `${endpoint}: ${key} must accept the documented minimum`).toBe(true);
+        expect(shape.safeParse({ ...extra, [key]: bounds!.minimum - 1 }).success, `${endpoint}: ${key} must reject below the minimum`).toBe(false);
+      }
+    });
+
+    it("states the real range in the field description an agent reads", () => {
+      const described = z.object(schemas.createCheckoutInput).shape.amount.description ?? "";
+      const { minimum, maximum } = fixture.requestBodies[CHECKOUTS].fieldBounds!.amount;
+      // An agent picks the amount from this string, so a stale ceiling here
+      // makes it self-censor below what the merchant can actually charge —
+      // invisible to any assertion that only checks the zod bounds.
+      expect(described).toContain(String(maximum / 100));
+      expect(described).toContain(String(minimum / 100));
+    });
   });
 
   it("POST /api/products maps amount_cents alias → amount", () => {

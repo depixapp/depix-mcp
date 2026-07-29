@@ -73,13 +73,26 @@ const paymentMethod = z.enum(PAYMENT_METHODS);
 const withdrawalStatus = z.enum([...WITHDRAWAL_STATUSES, SANDBOX_WITHDRAWAL_STATUS]);
 const depositStatus = z.enum(DEPOSIT_STATUSES);
 
+// Transaction ceiling, mirroring the backend's single source (limits.js
+// MIN/MAX_TX_AMOUNT_CENTS) as documented on CheckoutCreateRequest,
+// MerchantCheckoutRequest, ProductCreateRequest and ProductUpdateRequest —
+// all four carry the same range. A stale copy here does not fail loudly: it
+// rejects, client-side and before any request, a charge the API would have
+// accepted. test/contract.test.ts pins both numbers against the fixture so the
+// next raise breaks CI here instead of surfacing as "the agent refuses to
+// bill R$ 4.000".
 const AMOUNT_MIN = 500;
-const AMOUNT_MAX = 300000;
+const AMOUNT_MAX = 600000;
 // Factory (not a shared instance): reusing ONE zod object for both `amount` and
 // `amount_cents` makes the JSON Schema converter emit a `$ref` for the second
 // occurrence — hosts that don't resolve $ref then break, and the sibling
 // description is dropped. Fresh chains per field keep the schema inline.
 const amountField = () => z.number().int().min(AMOUNT_MIN).max(AMOUNT_MAX);
+
+// Derived, never typed by hand: the previous literal said R$3000.00 long after
+// the cap doubled, and an agent reading it self-censors below what the merchant
+// can actually charge.
+const AMOUNT_RANGE_TEXT = `R$${AMOUNT_MIN / 100}.00–R$${AMOUNT_MAX / 100}.00`;
 
 // Money field appears in different wire keys per endpoint (spec §4.0); the
 // serialization boundary (requestMap.ts) maps amount_cents (input alias) → the
@@ -87,7 +100,7 @@ const amountField = () => z.number().int().min(AMOUNT_MIN).max(AMOUNT_MAX);
 const amountInputShape = () => ({
   amount: amountField()
     .optional()
-    .describe("Amount in BRL cents (R$5.00–R$3000.00). Wire field is `amount`."),
+    .describe(`Amount in BRL cents (${AMOUNT_RANGE_TEXT}). Wire field is \`amount\`.`),
   amount_cents: amountField()
     .optional()
     .describe("Alias of `amount` (BRL cents). Provide either `amount` or `amount_cents`."),

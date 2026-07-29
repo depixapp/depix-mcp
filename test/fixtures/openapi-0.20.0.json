@@ -1,5 +1,5 @@
 {
-  "_note": "Pinned facts from the DePix OpenAPI 0.20.0 contract (the 'Pagar com DePix' train: payment_method rail, the depix payment object, rail-conditional expires_in / payer_tax_number). Refresh from api/_lib/openapi.js on the backend when the contract bumps. The contract test (test/contract.test.ts) fails CI if src/schemas.ts or src/requestMap.ts drift from this.",
+  "_note": "Pinned facts from the DePix OpenAPI 0.20.0 contract (the 'Pagar com DePix' train: payment_method rail, the depix payment object, rail-conditional expires_in / payer_tax_number). Refresh from api/_lib/openapi.js on the backend when the contract bumps. The contract test (test/contract.test.ts) fails CI if src/schemas.ts or src/requestMap.ts drift from this. Numeric bounds (fieldBounds) are pinned per endpoint so a cap raised on the backend fails this test instead of silently rejecting valid charges client-side.",
   "info_version": "0.20.0",
   "scopes": [
     "merchant_read",
@@ -102,6 +102,12 @@
             "payer_tax_number"
           ]
         }
+      },
+      "fieldBounds": {
+        "amount": {
+          "minimum": 500,
+          "maximum": 600000
+        }
       }
     },
     "POST /api/products": {
@@ -124,7 +130,13 @@
         "recurrence",
         "late_fine_bps",
         "late_interest_monthly_bps"
-      ]
+      ],
+      "fieldBounds": {
+        "amount": {
+          "minimum": 500,
+          "maximum": 600000
+        }
+      }
     },
     "PATCH /api/products/{id}": {
       "required": [],
@@ -142,7 +154,13 @@
         "recurrence",
         "late_fine_bps",
         "late_interest_monthly_bps"
-      ]
+      ],
+      "fieldBounds": {
+        "amount": {
+          "minimum": 500,
+          "maximum": 600000
+        }
+      }
     },
     "POST /api/products/featured": {
       "required": [
