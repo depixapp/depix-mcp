@@ -373,6 +373,51 @@ describe("list_checkouts (spec §4.1)", () => {
     expect(out.checkouts[0].metadata).toEqual({ order_id: "123" });
     expect(z.object(s.listCheckoutsOutput).safeParse(out).success).toBe(true);
   });
+
+  // A listing that hides the rail forces the agent to re-read every checkout
+  // one by one just to reconcile sales, and silently mixes the two rails when
+  // it doesn't.
+  it("carries payment_method per item, and omits it when the API doesn't report one", async () => {
+    const item = (over: Record<string, unknown>) => ({
+      id: "chk_1",
+      status: "completed",
+      amount: 1500,
+      description: null,
+      created_at: "2026-07-01 12:00:00",
+      expires_at: "2026-07-01 12:20:00",
+      is_live: 1,
+      processing_at: null,
+      approved_at: null,
+      metadata: null,
+      product_name: null,
+      rejection_reasons: [],
+      ...over,
+    });
+    const { client } = makeClient([
+      {
+        status: 200,
+        json: {
+          checkouts: [
+            item({ id: "chk_pix", payment_method: "pix" }),
+            item({ id: "chk_depix", payment_method: "depix" }),
+            item({ id: "chk_old" }),
+            item({ id: "chk_junk", payment_method: "carrier_pigeon" }),
+          ],
+          stats: { total: 4, pending: 0, completed: 4, completed_amount: 6000 },
+          limit: 50,
+          offset: 0,
+        },
+      },
+    ]);
+    const out = await listCheckouts(client, { limit: 50, offset: 0 });
+    expect(out.checkouts[0].payment_method).toBe("pix");
+    expect(out.checkouts[1].payment_method).toBe("depix");
+    // Absent upstream (pre-0.20.0) and unrecognized values are both dropped
+    // rather than defaulted — guessing "pix" here would misreport a sale.
+    expect(out.checkouts[2]).not.toHaveProperty("payment_method");
+    expect(out.checkouts[3]).not.toHaveProperty("payment_method");
+    expect(z.object(s.listCheckoutsOutput).safeParse(out).success).toBe(true);
+  });
 });
 
 describe("simulate_checkout_payment (spec §4.1)", () => {

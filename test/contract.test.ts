@@ -1,13 +1,15 @@
 // Contract test (spec §4.8). Fails CI if src/schemas.ts (enums / terminal sets)
-// or src/requestMap.ts (wire field names) drift from the pinned OpenAPI 0.20.0
+// or src/requestMap.ts (wire field names) drift from the pinned OpenAPI 0.20.2
 // fixture. This is the guard that catches the amount_cents↔amount and
 // product_ids↔productIds class of bug before it 400s in production.
 //
-// 0.20.0 is the "Pagar com DePix" contract: `payment_method` selects the rail,
+// The rail contract ("Pagar com DePix") landed in 0.20.0: `payment_method` selects the rail,
 // the `depix` object replaces `pix` on the direct-Liquid rail, and both
 // `expires_in` and `payer_tax_number` became RAIL-CONDITIONAL. The fixture pins
 // those conditional bounds so the MCP can never reject client-side what the API
-// accepts (or the reverse).
+// accepts (or the reverse). 0.20.1/0.20.2 only moved charge semantics, which
+// this server exposes no tool for — every fact below was re-derived from the
+// 0.20.2 document and is unchanged.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -50,16 +52,16 @@ interface Fixture {
 }
 
 const fixture = JSON.parse(
-  readFileSync(new URL("./fixtures/openapi-0.20.0.json", import.meta.url), "utf8"),
+  readFileSync(new URL("./fixtures/openapi-0.20.2.json", import.meta.url), "utf8"),
 ) as Fixture;
 
 const CHECKOUTS = "POST /api/checkouts";
 const rails = fixture.requestBodies[CHECKOUTS].railConditional!;
 const TAX = "52998224725";
 
-describe("contract: pinned to OpenAPI 0.20.0", () => {
+describe("contract: pinned to OpenAPI 0.20.2", () => {
   it("pins the version", () => {
-    expect(fixture.info_version).toBe("0.20.0");
+    expect(fixture.info_version).toBe("0.20.2");
   });
 
   it("scopes match the closed set", () => {
@@ -247,6 +249,19 @@ describe("contract: output shapes stay within the response schema", () => {
   });
   it("get_withdrawal_status ⊆ WithdrawalStatusResponse (+derived)", () => {
     assertOutputSubset(schemas.getWithdrawalStatusOutput, "WithdrawalStatusResponse");
+  });
+
+  // EXACT, not a subset, unlike the reads above: a list item the MCP silently
+  // truncates is invisible: `list_checkouts` dropped `payment_method` for a
+  // whole release and every subset assertion still passed, leaving agents
+  // unable to tell a Pix settlement from a wallet-to-wallet one without
+  // re-reading each checkout. A field this server deliberately does not
+  // surface has to be named here, so the omission is a decision on the record.
+  it("list_checkouts item == CheckoutListItem (no field silently dropped)", () => {
+    const deliberatelyOmitted: string[] = [];
+    expect(Object.keys(schemas.checkoutListItemShape).sort()).toEqual(
+      fixture.responseFields.CheckoutListItem.filter((f) => !deliberatelyOmitted.includes(f)).sort(),
+    );
   });
 
   it("the depix payment object mirrors DepixPayment EXACTLY (every field is required upstream)", () => {

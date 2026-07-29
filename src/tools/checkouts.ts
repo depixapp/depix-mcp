@@ -81,7 +81,7 @@ function normalizeCheckoutDetail(raw: Record<string, unknown>): Record<string, u
 }
 
 function normalizeCheckoutListItem(raw: Record<string, unknown>) {
-  return {
+  const out: Record<string, unknown> = {
     id: str(raw.id),
     status: str(raw.status),
     amount: numOrNull(raw.amount) ?? 0,
@@ -95,6 +95,12 @@ function normalizeCheckoutListItem(raw: Record<string, unknown>) {
     product_name: strOrNull(raw.product_name),
     rejection_reasons: stringArray(raw.rejection_reasons),
   };
+  // Same emit-only-when-reported rule as the single-checkout read. Without the
+  // field the two rails are indistinguishable in a listing: an agent
+  // reconciling sales cannot tell a Pix settlement from a wallet-to-wallet one.
+  const rail = normalizePaymentMethod(raw.payment_method);
+  if (rail !== null) out.payment_method = rail;
+  return out;
 }
 
 export async function createCheckout(client: ApiClient, args: CreateCheckoutArgs) {
