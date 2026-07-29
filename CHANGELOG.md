@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.1 — re-publish with the affiliate id baked
+
+Re-publish with the SideShift affiliate id baked at build time. 2.0.0 shipped
+with the runtime env read only, so `wallet_shift_usdt`'s affiliate share required
+every operator to export `SIDESHIFT_AFFILIATE_ID` themselves — the secret was not
+visible to this repo when 2.0.0 was published, so `scripts/postbuild.mjs` took its
+skip path and left the compiled module reading `process.env`.
+
+**No code changes.** Identical tree to 2.0.0 apart from the version strings; the
+difference is entirely in the published artifact.
+
 ## 2.0.0 — the unified MCP (49 tools)
 
 **BREAKING.** `@depixapp/mcp` becomes ONE MCP with two levels of access: the
