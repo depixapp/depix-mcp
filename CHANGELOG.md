@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.1.0 — charges (cobranças) through the product tools
+
+A **charge** is a product with `kind: "charge"`: a payment link with a **due
+date** and optional late fine / pro-rata monthly interest — rent, tuition, an
+instalment. It is served at `pay.depixapp.com/c/{id}`, never appears on the
+merchant's public store, and its amount is recomputed on each visit (base +
+fine + interest for the current cycle). With `recurrence` the same link keeps
+working month after month, settling the oldest unpaid cycle first.
+
+It is the SAME resource with a discriminator, as the backend models it, so no
+tool was added: `get_product`, `update_product`, `activate_product`,
+`deactivate_product` and `list_product_checkouts` already work on charges.
+**Tool count is unchanged (22 gateway / 49 full.)**
+
+- `create_product` accepts `kind`, `due_date` (required for a charge),
+  `recurrence` (`null` | weekly | monthly | quarterly | semiannual | yearly),
+  `late_fine_bps` (0–2000) and `late_interest_monthly_bps` (0–1000). Passing a
+  charge field WITHOUT `kind: "charge"` is now an error rather than silently
+  creating a storefront product.
+- `list_products` accepts `kind` (`product` | `charge` | `all`). **The API
+  defaults to `product`, so charges do not appear unless you ask for them** —
+  pre-charges integrations keep exactly the result set they had.
+- `update_product` accepts the four mutable charge fields. `kind` is immutable.
+- Responses carry the charge fields, the `/c/{id}` `payment_url`, and
+  `charge_state` on list rows — current cycle, days late, today's total, and
+  whether a payment is already settling.
+
+Requires DePix API 0.20.2 or later.
+
 ## 2.0.1 — re-publish with the affiliate id baked
 
 Re-publish with the SideShift affiliate id baked at build time. 2.0.0 shipped

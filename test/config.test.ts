@@ -24,6 +24,21 @@ describe("server identity ↔ package.json (release-drift tripwire)", () => {
     expect(resolveServerVersion({} as NodeJS.ProcessEnv)).toBe(pkg.version);
   });
 
+  // registry/server.json carries the version TWICE, and only one copy was
+  // checked anywhere. The unchecked one — the top level — is what
+  // `mcp-publisher publish` submits: bumping only packages[0] passed the
+  // release workflow, made the registry 409 on an already-published version,
+  // and that 409 was swallowed as an idempotent no-op. npm would end up on the
+  // new version while the listing an agent discovers stayed on the old one,
+  // with a green run and no test to notice. CI fails on push now, not at tag.
+  it("both registry/server.json versions equal package.json", async () => {
+    const { createRequire } = await import("node:module");
+    const require_ = createRequire(import.meta.url);
+    const server = require_("../registry/server.json");
+    expect(server.version, "registry/server.json top-level version (submitted to the MCP Registry)").toBe(pkg.version);
+    expect(server.packages[0].version, "registry/server.json packages[0].version (the npm entry)").toBe(pkg.version);
+  });
+
   it("honors the MCP_SERVER_VERSION override", () => {
     expect(resolveServerVersion({ MCP_SERVER_VERSION: "9.9.9" } as NodeJS.ProcessEnv)).toBe("9.9.9");
   });

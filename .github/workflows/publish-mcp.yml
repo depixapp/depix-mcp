@@ -94,8 +94,18 @@ jobs:
         run: |
           PKG=$(node -p "require('./package.json').version")
           NESTED=$(node -p "require('./registry/server.json').packages[0].version")
+          TOP=$(node -p "require('./registry/server.json').version")
           if [ "$NESTED" != "$PKG" ]; then
             echo "::error::registry/server.json npm version ($NESTED) != package.json ($PKG)"; exit 1
+          fi
+          # The TOP-LEVEL version is what `mcp-publisher publish` submits. It was
+          # unchecked, so bumping only packages[0] satisfied this step, the
+          # registry 409'd on the already-published version, and the 409 filter
+          # below swallowed it as an idempotent no-op — leaving npm on the new
+          # version and the registry listing an agent discovers on the old one,
+          # with a green run.
+          if [ "$TOP" != "$PKG" ]; then
+            echo "::error::registry/server.json top-level version ($TOP) != package.json ($PKG) — this is the field submitted to the MCP Registry"; exit 1
           fi
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME#v}"
