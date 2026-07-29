@@ -175,8 +175,9 @@ DEPIX_API_KEY=sk_test_YOUR_KEY npx -y @depixapp/mcp
 Always test with an `sk_test_` key before `sk_live_`. Sandbox QRs are
 non-payable placeholders (`SANDBOX-…-DO-NOT-PAY`).
 
-1. **`create_checkout`** — `amount` and `payer_tax_number` are both required (the
-   CPF/CNPJ is required even in sandbox). Use a test CPF like `52998224725`:
+1. **`create_checkout`** — `amount` is always required; on the default **Pix**
+   rail `payer_tax_number` is too (the CPF/CNPJ is required even in sandbox).
+   Use a test CPF like `52998224725`:
 
    ```json
    { "amount": 1500, "payer_tax_number": "52998224725" }
@@ -194,6 +195,30 @@ non-payable placeholders (`SANDBOX-…-DO-NOT-PAY`).
 
 You can also read a synthetic deposit: **`get_deposit_status`** with a
 `sandbox_…` id returns `depix_sent`.
+
+### Charging on the DePix rail instead of Pix
+
+`create_checkout` takes `payment_method`. The default `"pix"` is the flow above.
+With `"depix"` the payer sends DePix **wallet-to-wallet on Liquid** to the
+merchant's dedicated address — there is no Pix QR and no payer document:
+
+```json
+{ "amount": 9990, "payment_method": "depix", "expected_discount_pct": 10 }
+```
+
+The response carries `depix` instead of `pix`: `address`, the **exact**
+`amount_cents` to send (face amount minus the merchant's discount, minus a
+sub-cent-window adjustment that makes the value unique — that uniqueness is how
+the payment is matched), the decimal `amount` a wallet signs, `asset_id` and a
+ready-to-scan `uri`. Send any other amount or any other asset and the payment
+cannot be credited automatically, and an on-chain payment is irreversible.
+
+Settlement is observed on-chain: `approved` at the first confirmation (~1 min),
+`completed` at the second. `expires_in` accepts 300–3600 s here (default 1800)
+instead of the Pix rail's 300–1200. The rail must be enabled by the merchant —
+otherwise the API answers `depix_not_enabled`. Sandbox DePix checkouts are
+deliberately unpayable (placeholder address, `uri: null`); drive them with
+`simulate_checkout_payment`.
 
 ## Tools
 

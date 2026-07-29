@@ -11,6 +11,7 @@
 // wire `amount`.
 
 import { ToolError } from "./errors.js";
+import { createCheckoutInputSchema, type PaymentMethod } from "./schemas.js";
 
 /** Resolve the money value from either `amount` or the `amount_cents` alias. */
 function resolveAmount(args: { amount?: number; amount_cents?: number }): number | undefined {
@@ -27,13 +28,32 @@ export interface CreateCheckoutArgs {
   amount?: number;
   amount_cents?: number;
   description?: string;
-  payer_tax_number: string;
+  payment_method?: PaymentMethod;
+  payer_tax_number?: string;
+  expected_discount_pct?: number;
   image_url?: string;
   callback_url?: string;
   redirect_url?: string;
   metadata?: Record<string, unknown>;
   expires_in?: number;
   idempotency_key?: string;
+}
+
+/**
+ * Enforce the rail-conditional rules (schemas.ts) here rather than at
+ * registerTool, so a violation reaches the agent as a typed `validation_error`
+ * result instead of a protocol-level InvalidParams. Re-parsing what the SDK
+ * already checked per-field is cheap and keeps this function correct for direct
+ * callers too.
+ */
+function assertRailRules(args: CreateCheckoutArgs): void {
+  const parsed = createCheckoutInputSchema.safeParse(args);
+  if (parsed.success) return;
+  const issue = parsed.error.issues[0];
+  const field = issue.path.length > 0 ? String(issue.path[0]) : undefined;
+  throw new ToolError(issue.message, "validation_error", {
+    data: field !== undefined ? { details: { field } } : {},
+  });
 }
 
 /** Build the POST /api/checkouts wire body (amount_cents → amount). */
@@ -44,7 +64,16 @@ export function buildCreateCheckoutBody(args: CreateCheckoutArgs): Record<string
       data: { details: { field: "amount" } },
     });
   }
-  const body: Record<string, unknown> = { amount, payer_tax_number: args.payer_tax_number };
+  assertRailRules(args);
+
+  const body: Record<string, unknown> = { amount };
+  put(body, "payment_method", args.payment_method);
+  // The depix rail carries NO payer identity (spec §4, decision 9): the field is
+  // not just optional there, it is dropped — a payer document has no purpose
+  // on a wallet-to-wallet transfer, and sending PII the API ignores is worse
+  // than sending nothing.
+  if (args.payment_method !== "depix") put(body, "payer_tax_number", args.payer_tax_number);
+  put(body, "expected_discount_pct", args.expected_discount_pct);
   put(body, "description", args.description);
   put(body, "image_url", args.image_url);
   put(body, "callback_url", args.callback_url);

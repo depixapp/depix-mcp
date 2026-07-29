@@ -132,7 +132,7 @@ export function createServer(opts: CreateServerOptions): McpServer {
     {
       title: "Create checkout",
       description:
-        "Create a Pix charge (checkout) with a hosted payment page. Requires scope `merchant_write`. Amount is BRL cents.",
+        "Create a charge (checkout) with a hosted payment page, on either settlement rail. Default `payment_method: \"pix\"` — the payer pays a Pix QR in any bank app, and `payer_tax_number` (their CPF/CNPJ) is required. `payment_method: \"depix\"` — the payer sends DePix wallet-to-wallet on the Liquid network to the merchant's dedicated address: there is no Pix QR (the response carries `depix` instead of `pix`), no payer document is used, the merchant may grant a discount, and the payment is confirmed on-chain — `approved` at the first confirmation (~1 minute) and `completed` at the second (~2 minutes). The depix rail requires the merchant to have it enabled, otherwise the API answers `depix_not_enabled`. Requires scope `merchant_write`. Amount is BRL cents (the face value, before any DePix discount).",
       inputSchema: s.createCheckoutInput,
       outputSchema: s.checkoutCreateOutput,
       annotations: write,
@@ -144,7 +144,8 @@ export function createServer(opts: CreateServerOptions): McpServer {
     "get_checkout",
     {
       title: "Get checkout",
-      description: "Fetch a checkout by id (owner view). Requires scope `merchant_read`.",
+      description:
+        "Fetch a checkout by id (owner view). `payment_method` tells you which rail it settles on; a still-payable depix checkout also carries its `depix` payment instructions (address, exact amount, URI). Requires scope `merchant_read`.",
       inputSchema: s.getCheckoutInput,
       outputSchema: s.checkoutDetailOutput,
       annotations: readOnly,

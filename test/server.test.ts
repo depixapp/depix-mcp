@@ -78,6 +78,24 @@ describe("tool catalog (16 gateway tools + 6 support-ticket tools, no cancel_che
     expect(props.amount.type).toBe("integer");
     expect(props.amount_cents.type).toBe("integer");
   });
+
+  it("advertises both settlement rails on create_checkout, with no unconditional payer document", async () => {
+    const { fetchImpl } = makeFetch([]);
+    const { client } = await connect(new ApiClient({ apiKey: KEY, apiBase: BASE, fetchImpl }));
+    const { tools } = await client.listTools();
+    const schema = tools.find((t) => t.name === "create_checkout")?.inputSchema as {
+      properties: Record<string, { type?: string; enum?: string[]; maximum?: number }>;
+      required?: string[];
+    };
+    expect(schema.properties.payment_method.enum).toEqual(["pix", "depix"]);
+    expect(schema.properties.expected_discount_pct.type).toBe("integer");
+    // Rail-conditional now: a depix charge carries no payer document, so the
+    // advertised schema must not demand one from every caller.
+    expect(schema.required ?? []).not.toContain("payer_tax_number");
+    // The advertised ceiling spans the WIDEST rail; the pix ceiling is enforced
+    // by the rail-conditional refine at the call boundary.
+    expect(schema.properties.expires_in.maximum).toBe(3600);
+  });
 });
 
 describe("tool call error surfacing", () => {
