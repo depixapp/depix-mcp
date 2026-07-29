@@ -44,8 +44,8 @@ export const LEVEL_TWO_SIGNPOST =
 /** Catalog sentence, per deployment: the counts differ, everything else does not. */
 function catalogSentence(deployment: "hosted" | "unified"): string {
   const base =
-    "DePix App MCP — receive Pix payments (checkouts/products), read transaction status, and manage support tickets " +
-    "(open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
+    "DePix App MCP — receive payments on either rail (a Pix QR, or DePix sent directly on Liquid) via checkouts/products, " +
+    "read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
   return deployment === "hosted"
     ? `${base} 22 tools total: 16 gateway + 6 support-ticket.`
     : `${base} 49 tools total: 16 gateway + 6 support-ticket + 27 local wallet_* tools.`;

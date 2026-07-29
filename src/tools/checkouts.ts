@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ApiClient } from "../apiClient.js";
 import { buildCreateCheckoutBody, type CreateCheckoutArgs } from "../requestMap.js";
 import { deriveHasMore, normalizeIsLive, parseMetadata, unwrap } from "../normalize.js";
-import { TERMINAL_CHECKOUT_STATUSES } from "../schemas.js";
+import { PAYMENT_METHODS, TERMINAL_CHECKOUT_STATUSES } from "../schemas.js";
 import { arr, numOrNull, rec, str, strOrNull, stringArray } from "./access.js";
 
 export interface CheckoutStatusSnapshot {
@@ -13,9 +13,44 @@ export interface CheckoutStatusSnapshot {
   is_live: boolean;
 }
 
-/** Normalized full checkout detail (curate + strip). */
-function normalizeCheckoutDetail(raw: Record<string, unknown>) {
+/**
+ * The settlement rail, or null when the API reports none / one we do not know.
+ * Dropping an unrecognized rail is deliberate: the field is advertised as a
+ * closed enum, and emitting a value outside it would fail the tool's own output
+ * validation and turn a perfectly readable checkout into a protocol error.
+ */
+function normalizePaymentMethod(value: unknown): string | null {
+  return typeof value === "string" && (PAYMENT_METHODS as readonly string[]).includes(value)
+    ? value
+    : null;
+}
+
+/**
+ * The `depix` payment instructions, or null when this checkout has none (the
+ * pix rail, or a depix checkout past the payable window). The address is the
+ * discriminator: without a destination there is nothing to pay, and emitting a
+ * half-filled object would advertise a payable charge that is not payable.
+ */
+function normalizeDepixPayment(value: unknown): Record<string, unknown> | null {
+  const d = rec(value);
+  const address = strOrNull(d.address);
+  if (address === null) return null;
   return {
+    address,
+    amount_cents: numOrNull(d.amount_cents) ?? 0,
+    amount: str(d.amount),
+    asset_id: str(d.asset_id),
+    // Null in sandbox — there is no payable destination to build a URI from.
+    uri: strOrNull(d.uri),
+    discount_pct: numOrNull(d.discount_pct) ?? 0,
+    original_amount_cents: numOrNull(d.original_amount_cents) ?? 0,
+    detected: d.detected === true,
+  };
+}
+
+/** Normalized full checkout detail (curate + strip). */
+function normalizeCheckoutDetail(raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
     id: str(raw.id),
     status: str(raw.status),
     amount: numOrNull(raw.amount) ?? 0,
@@ -35,6 +70,14 @@ function normalizeCheckoutDetail(raw: Record<string, unknown>) {
     blockchain_tx_id: strOrNull(raw.blockchain_tx_id),
     rejection_reasons: stringArray(raw.rejection_reasons),
   };
+  // Rail-specific keys are emitted only when the API actually reported them:
+  // both are absent on API versions older than 0.20.0, and `depix` is absent on
+  // every pix checkout.
+  const rail = normalizePaymentMethod(raw.payment_method);
+  if (rail !== null) out.payment_method = rail;
+  const depix = normalizeDepixPayment(raw.depix);
+  if (depix !== null) out.depix = depix;
+  return out;
 }
 
 function normalizeCheckoutListItem(raw: Record<string, unknown>) {
@@ -67,7 +110,6 @@ export async function createCheckout(client: ApiClient, args: CreateCheckoutArgs
     tool: "create_checkout",
   });
   const d = rec(data);
-  const pix = rec(d.pix);
   const out: Record<string, unknown> = {
     id: str(d.id),
     status: str(d.status),
@@ -77,8 +119,17 @@ export async function createCheckout(client: ApiClient, args: CreateCheckoutArgs
     expires_at: strOrNull(d.expires_at),
     is_live: normalizeIsLive(d),
     payment_url: str(d.payment_url),
-    pix: { qr_code: str(pix.qr_code) },
   };
+  const rail = normalizePaymentMethod(d.payment_method);
+  if (rail !== null) out.payment_method = rail;
+  // Exactly one rail answers, so each payload is emitted only when it exists.
+  // Unconditionally building `pix` would hand a depix checkout an empty
+  // qr_code:"" — an integrator would render a blank "Pix QR" for a charge that
+  // has no Pix leg at all, instead of reading the `depix` instructions.
+  const pixQrCode = strOrNull(rec(d.pix).qr_code);
+  if (pixQrCode !== null) out.pix = { qr_code: pixQrCode };
+  const depix = normalizeDepixPayment(d.depix);
+  if (depix !== null) out.depix = depix;
   if (replayed) out.replayed = true;
   return out;
 }

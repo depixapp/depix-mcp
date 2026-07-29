@@ -59,18 +59,40 @@ export const TERMINAL_WITHDRAWAL_STATUSES = [
 export const SANDBOX_DEPOSIT_STATUS = "depix_sent" as const;
 export const SANDBOX_WITHDRAWAL_STATUS = "confirmed" as const;
 
+// Settlement rails (OpenAPI 0.20.0 `PaymentMethod`). `pix`: the payer pays a
+// Pix QR and the provider delivers DePix to the merchant. `depix`: the payer
+// sends DePix wallet-to-wallet on Liquid to an address dedicated to the
+// merchant, and settlement is observed on-chain — there is no Pix QR, and no
+// payer document, on that rail.
+export const PAYMENT_METHODS = ["pix", "depix"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
 const checkoutStatus = z.enum(CHECKOUT_STATUSES);
+const paymentMethod = z.enum(PAYMENT_METHODS);
 // Withdrawal reads may carry the sandbox-only synthetic "confirmed" (spec §4.5).
 const withdrawalStatus = z.enum([...WITHDRAWAL_STATUSES, SANDBOX_WITHDRAWAL_STATUS]);
 const depositStatus = z.enum(DEPOSIT_STATUSES);
 
+// Transaction ceiling, mirroring the backend's single source (limits.js
+// MIN/MAX_TX_AMOUNT_CENTS) as documented on CheckoutCreateRequest,
+// MerchantCheckoutRequest, ProductCreateRequest and ProductUpdateRequest —
+// all four carry the same range. A stale copy here does not fail loudly: it
+// rejects, client-side and before any request, a charge the API would have
+// accepted. test/contract.test.ts pins both numbers against the fixture so the
+// next raise breaks CI here instead of surfacing as "the agent refuses to
+// bill R$ 4.000".
 const AMOUNT_MIN = 500;
-const AMOUNT_MAX = 300000;
+const AMOUNT_MAX = 600000;
 // Factory (not a shared instance): reusing ONE zod object for both `amount` and
 // `amount_cents` makes the JSON Schema converter emit a `$ref` for the second
 // occurrence — hosts that don't resolve $ref then break, and the sibling
 // description is dropped. Fresh chains per field keep the schema inline.
 const amountField = () => z.number().int().min(AMOUNT_MIN).max(AMOUNT_MAX);
+
+// Derived, never typed by hand: the previous literal said R$3000.00 long after
+// the cap doubled, and an agent reading it self-censors below what the merchant
+// can actually charge.
+const AMOUNT_RANGE_TEXT = `R$${AMOUNT_MIN / 100}.00–R$${AMOUNT_MAX / 100}.00`;
 
 // Money field appears in different wire keys per endpoint (spec §4.0); the
 // serialization boundary (requestMap.ts) maps amount_cents (input alias) → the
@@ -78,7 +100,7 @@ const amountField = () => z.number().int().min(AMOUNT_MIN).max(AMOUNT_MAX);
 const amountInputShape = () => ({
   amount: amountField()
     .optional()
-    .describe("Amount in BRL cents (R$5.00–R$3000.00). Wire field is `amount`."),
+    .describe(`Amount in BRL cents (${AMOUNT_RANGE_TEXT}). Wire field is \`amount\`.`),
   amount_cents: amountField()
     .optional()
     .describe("Alias of `amount` (BRL cents). Provide either `amount` or `amount_cents`."),
@@ -90,12 +112,38 @@ const metadataOutput = z
 
 // ────────────────────────────── Checkouts ──────────────────────────────
 
+// Lifetime bounds per rail (OpenAPI 0.20.0 CheckoutCreateRequest.allOf). The
+// FIELD carries the widest window so the tool never rejects client-side what
+// the API accepts; the narrower pix ceiling is a cross-field rule, because it
+// only applies once you know the rail (see createCheckoutInputSchema).
+const MIN_EXPIRES_IN = 300;
+const PIX_MAX_EXPIRES_IN = 1200;
+const DEPIX_MAX_EXPIRES_IN = 3600;
+const MAX_DISCOUNT_PCT = 90;
+
 export const createCheckoutInput = {
   ...amountInputShape(),
   description: z.string().max(500).optional().describe("Description shown to the payer."),
+  payment_method: paymentMethod
+    .optional()
+    .describe(
+      "Settlement rail; defaults to `pix`. `pix`: the payer pays a Pix QR in any bank app. `depix`: the payer sends DePix wallet-to-wallet on Liquid to the merchant's dedicated address — no Pix QR, no payer document, an optional merchant discount, and settlement observed on-chain. `depix` requires the merchant to have the direct DePix rail enabled, otherwise the API answers `depix_not_enabled`.",
+    ),
   payer_tax_number: z
     .string()
-    .describe("Payer CPF/CNPJ (digits). Required in all modes, including sandbox, while the platform tax-number gate is on."),
+    .optional()
+    .describe(
+      "Payer CPF/CNPJ (digits). REQUIRED on the `pix` rail — in all modes, including sandbox, while the platform tax-number gate is on. IGNORED on the `depix` rail: that rail has no payer identity by design, so this MCP does not even send the field.",
+    ),
+  expected_discount_pct: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_DISCOUNT_PCT)
+    .optional()
+    .describe(
+      "`depix` rail only: the discount percentage (0–90) you already showed the payer. When it no longer matches the merchant's current discount the API answers 409 `discount_changed` with the fresh values, instead of silently charging a different price.",
+    ),
   image_url: z.string().url().optional().describe("Optional image on the hosted payment page."),
   callback_url: z.string().url().optional().describe("Optional per-checkout webhook URL."),
   redirect_url: z.string().url().optional().describe("Optional post-payment redirect URL."),
@@ -106,10 +154,12 @@ export const createCheckoutInput = {
   expires_in: z
     .number()
     .int()
-    .min(300)
-    .max(1200)
+    .min(MIN_EXPIRES_IN)
+    .max(DEPIX_MAX_EXPIRES_IN)
     .optional()
-    .describe("QR lifetime in seconds (300–1200, default 1200)."),
+    .describe(
+      "Payment lifetime in seconds, per rail: `pix` accepts 300–1200 (default 1200); `depix` accepts 300–3600 (default 1800), because paying on-chain means opening a wallet.",
+    ),
   idempotency_key: z
     .string()
     .min(1)
@@ -118,18 +168,110 @@ export const createCheckoutInput = {
     .describe("Optional. If omitted, the server generates one. Reuse to safely retry."),
 };
 
+/**
+ * The RAIL-CONDITIONAL rules of create_checkout, which a per-field raw shape
+ * cannot express (OpenAPI 0.20.0 states them as an if/then/else on
+ * `payment_method`).
+ *
+ * It is applied at the serialization boundary (requestMap.ts), not handed to
+ * registerTool: the SDK enforces an input schema by THROWING McpError
+ * InvalidParams, a protocol-level failure the agent reads as a broken tool,
+ * whereas every other bad-input case in this server surfaces as a typed
+ * `validation_error` tool result it can act on. Same reason the
+ * `amount`/`amount_cents` rule lives there.
+ */
+export const createCheckoutInputSchema = z.object(createCheckoutInput).superRefine((v, ctx) => {
+  // Absent payment_method means the pix rail (the API's default), so the pix
+  // rules must fire for it too — never only for an explicit "pix".
+  if (v.payment_method === "depix") return;
+  if (v.payer_tax_number === undefined || v.payer_tax_number.trim() === "") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["payer_tax_number"],
+      message:
+        "`payer_tax_number` (the payer's CPF/CNPJ) is required on the `pix` rail. Pass it, or charge on the DePix rail with payment_method:\"depix\", which needs no payer document.",
+    });
+  }
+  if (v.expires_in !== undefined && v.expires_in > PIX_MAX_EXPIRES_IN) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expires_in"],
+      message: `\`expires_in\` must be ${MIN_EXPIRES_IN}–${PIX_MAX_EXPIRES_IN} seconds on the \`pix\` rail; only the \`depix\` rail accepts up to ${DEPIX_MAX_EXPIRES_IN}.`,
+    });
+  }
+});
+
+// Payment instructions for the depix rail (OpenAPI 0.20.0 `DepixPayment`).
+// Factory, like `amountField()`: the object appears in two tool schemas, and a
+// single shared instance would make the JSON-Schema converter emit a `$ref` the
+// day both land in one document.
+const depixPaymentOutput = () =>
+  z.object({
+    address: z
+      .string()
+      .describe(
+        "Confidential Liquid address (lq1…) dedicated to this merchant's direct DePix receipts. In sandbox it is a non-payable placeholder — never send funds to it.",
+      ),
+    amount_cents: z
+      .number()
+      .int()
+      .describe(
+        "EXACT amount to send, in BRL cents: the face amount minus the merchant's discount, minus a per-checkout adjustment of at most 99 cents (always downwards) that makes the value unique among the merchant's open checkouts. That uniqueness is how the payment is matched — any other value stays unattributed and is NOT credited automatically.",
+      ),
+    amount: z
+      .string()
+      .describe(
+        'The same amount as the decimal string a wallet signs (e.g. "89.91"). Transmit it verbatim; never round it.',
+      ),
+    asset_id: z
+      .string()
+      .describe(
+        "Liquid asset id of DePix. Sending any other asset to this address loses the funds — they cannot be returned.",
+      ),
+    uri: z
+      .string()
+      .nullable()
+      .describe(
+        "BIP21-style Liquid payment URI carrying address, amount and asset — hand it to a wallet instead of asking the payer to type anything. Null in sandbox, which has no payable destination.",
+      ),
+    discount_pct: z
+      .number()
+      .int()
+      .describe("Merchant discount applied on this rail, 0–90 (0 when the merchant offers none)."),
+    original_amount_cents: z
+      .number()
+      .int()
+      .describe("Face amount in cents before discount and uniqueness adjustment — the checkout's `amount`."),
+    detected: z
+      .boolean()
+      .describe(
+        "true once a matching payment has been SEEN on the network but not yet confirmed. Informational only: the status stays `pending` and no webhook fires until the first confirmation.",
+      ),
+  });
+
 export const checkoutCreateOutput = {
   id: z.string().describe("Checkout id (chk_…)."),
   status: checkoutStatus.describe("Always `pending` at creation."),
-  amount: z.number().int().describe("Charge amount in BRL cents."),
+  amount: z.number().int().describe("Charge amount in BRL cents (face value, before any DePix discount)."),
   description: z.string().nullable(),
   image_url: z.string().nullable(),
-  expires_at: z.string().nullable().describe("QR expiry timestamp (UTC)."),
+  expires_at: z.string().nullable().describe("Expiry timestamp (UTC)."),
   is_live: z.boolean().describe("false when created with sk_test_."),
   payment_url: z.string().describe("Hosted payment page URL to hand to the payer."),
+  payment_method: paymentMethod
+    .optional()
+    .describe("The rail this checkout settles on. Absent on API versions older than 0.20.0 (read it as `pix`)."),
+  // Exactly one of pix / depix is present, matching the rail — so neither can be
+  // required. A depix checkout has no Pix QR at all.
   pix: z
     .object({ qr_code: z.string().describe("PIX copy-and-paste (BR Code) payload.") })
-    .describe("PIX payload; present while pending."),
+    .optional()
+    .describe("PIX payload — present on the `pix` rail only, while pending."),
+  depix: depixPaymentOutput()
+    .optional()
+    .describe(
+      "DePix (Liquid) payment instructions — present on the `depix` rail only, while the checkout is still payable. An on-chain payment is irreversible.",
+    ),
   replayed: z
     .boolean()
     .optional()
@@ -144,7 +286,15 @@ export const checkoutDetailOutput = {
   amount: z.number().int(),
   description: z.string().nullable(),
   image_url: z.string().nullable(),
-  pix_payload: z.string().nullable().describe("PIX payload; present only while pending."),
+  payment_method: paymentMethod
+    .optional()
+    .describe("The rail this checkout settles on. Absent on API versions older than 0.20.0 (read it as `pix`)."),
+  depix: depixPaymentOutput()
+    .optional()
+    .describe(
+      "DePix (Liquid) payment instructions — present on the `depix` rail only, while the checkout is still payable.",
+    ),
+  pix_payload: z.string().nullable().describe("PIX payload; present only while pending on the `pix` rail."),
   callback_url: z.string().nullable(),
   redirect_url: z.string().nullable(),
   metadata: metadataOutput,

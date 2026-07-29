@@ -68,6 +68,8 @@ interface ApiErrorDetails {
   used_cents?: unknown;
   min_cents?: unknown;
   max_cents?: unknown;
+  discount_pct?: unknown;
+  amount_cents?: unknown;
 }
 interface ApiErrorObject {
   code?: unknown;
@@ -145,6 +147,11 @@ export function mapApiError(
   const usedCents = asInt(details.used_cents);
   const windowMinutes = asInt(details.window_minutes);
   const maxPerWindow = asInt(details.max_per_window);
+  // discount_changed only becomes actionable through these two: they are the
+  // merchant's CURRENT values, which the caller must re-price from before
+  // retrying. Structured numbers, so they pass the anti-injection boundary.
+  const discountPct = asInt(details.discount_pct);
+  const dueCents = asInt(details.amount_cents);
 
   let message: string;
   switch (code) {
@@ -222,6 +229,23 @@ export function mapApiError(
             ? `Spending limit reached (limit ${limitCents} cents).`
             : "Spending limit reached for this key/account.";
       break;
+    case "depix_not_enabled":
+      message =
+        "This merchant does not accept direct DePix payments. Create the checkout without `payment_method` (the Pix rail), or ask the merchant to enable the DePix rail in their dashboard.";
+      break;
+    case "depix_busy":
+      // 409, not 429: the rail ran out of unique amounts (or the merchant has
+      // too many open DePix checkouts), so retrying the identical call in a
+      // loop is not the fix — falling back to Pix is.
+      message =
+        "The DePix rail cannot issue this charge right now (no free unique amount, or too many open DePix checkouts for this merchant). Retry in a moment, or create the checkout on the Pix rail instead.";
+      break;
+    case "discount_changed":
+      message =
+        discountPct !== undefined
+          ? `The merchant's DePix discount changed to ${discountPct}%${dueCents !== undefined ? ` (${dueCents} cents would be due)` : ""}. Re-read the price and retry with expected_discount_pct: ${discountPct}, or omit expected_discount_pct to accept the current one.`
+          : "The merchant's DePix discount changed under this request. Re-read the price and retry.";
+      break;
     case "not_found":
       message = "Resource not found (or not owned by this key).";
       break;
@@ -282,6 +306,8 @@ export function mapApiError(
   if (usedCents !== undefined) safeDetails.used_cents = usedCents;
   if (windowMinutes !== undefined) safeDetails.window_minutes = windowMinutes;
   if (maxPerWindow !== undefined) safeDetails.max_per_window = maxPerWindow;
+  if (discountPct !== undefined) safeDetails.discount_pct = discountPct;
+  if (dueCents !== undefined) safeDetails.amount_cents = dueCents;
   if (Object.keys(safeDetails).length > 0) data.details = safeDetails;
 
   const apiMessage = truncate(err.message) ?? truncate(body?.response?.errorMessage);
