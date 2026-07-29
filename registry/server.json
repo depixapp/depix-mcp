@@ -3,7 +3,7 @@
   "name": "io.github.depixapp/depix-mcp",
   "title": "DePix App MCP",
   "description": "One MCP, two levels: hosted Pix receive (22 tools), or local npx + non-custodial wallet (49).",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "websiteUrl": "https://depixapp.com",
   "repository": {
     "url": "https://github.com/depixapp/depix-mcp",
@@ -27,7 +27,7 @@
     {
       "registryType": "npm",
       "identifier": "@depixapp/mcp",
-      "version": "2.1.0",
+      "version": "2.1.1",
       "transport": {
         "type": "stdio"
       },

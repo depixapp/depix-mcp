@@ -16,7 +16,7 @@ export default function handler(_req: VercelRequest, res: VercelResponse): void 
     // with 27 more. A descriptor that only said "22 tools" left every reader of
     // this document unable to discover that the wallet exists at all.
     description:
-      "The DePix App MCP — one MCP, two levels of access. THIS hosted endpoint is level 1: receive Pix (checkouts/products), read transaction status, and support tickets — 22 tools, no seed, holds nothing. Level 2 runs locally (`npx -y @depixapp/mcp`, first run `npx -y @depixapp/mcp init`) and adds 27 wallet_* tools — a non-custodial Liquid wallet that signs on the operator's own machine — for 49 in total.",
+      "The DePix App MCP — one MCP, two levels of access. THIS hosted endpoint is level 1: receive Pix (checkouts, products and dated charges), read transaction status, and support tickets — 22 tools, no seed, holds nothing. Level 2 runs locally (`npx -y @depixapp/mcp`, first run `npx -y @depixapp/mcp init`) and adds 27 wallet_* tools — a non-custodial Liquid wallet that signs on the operator's own machine — for 49 in total.",
     version: resolveServerVersion(),
     transports: [{ type: "streamable-http", url: "https://mcp.depixapp.com/mcp" }],
     levels: {

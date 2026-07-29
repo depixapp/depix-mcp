@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.1.1 — make charges findable from the word merchants actually use
+
+**No API change, no new tool, no schema change.** 2.1.0 shipped charges
+correctly and an agent that read `create_product` routed to them reliably — but
+only if it got that far.
+
+The merchants this serves speak Portuguese, where *cobrança* means both the
+one-off QR and the dated payment link. Two things pointed the word at the wrong
+tool:
+
+- The handshake `instructions` — what a host puts in front of the model before
+  any tool description — listed "checkouts/products" and never mentioned charges
+  at all. Same omission in `/.well-known/mcp.json`.
+- `create_checkout`'s description opened with "Create a **charge** (checkout)",
+  claiming the term, while the correction lived only inside `create_product`. A
+  host that pre-filters tools by similarity to "cobrança" surfaces the one-off
+  and never shows the model the note that would have redirected it.
+
+So the disambiguation now works from both sides: the handshake states where a
+cobrança goes (and that `list_products` hides charges unless asked),
+`create_checkout` says it is the one-off and names `create_product` with
+`kind="charge"` for the dated one, and `create_product` carries the Portuguese
+word so retrieval on it lands somewhere true.
+
 ## 2.1.0 — charges (cobranças) through the product tools
 
 A **charge** is a product with `kind: "charge"`: a payment link with a **due

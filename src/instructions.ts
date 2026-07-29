@@ -44,12 +44,33 @@ export const LEVEL_TWO_SIGNPOST =
 /** Catalog sentence, per deployment: the counts differ, everything else does not. */
 function catalogSentence(deployment: "hosted" | "unified"): string {
   const base =
-    "DePix App MCP — receive payments on either rail (a Pix QR, or DePix sent directly on Liquid) via checkouts/products, " +
+    "DePix App MCP — receive payments on either rail (a Pix QR, or DePix sent directly on Liquid) via checkouts, products and dated charges, " +
     "read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
   return deployment === "hosted"
     ? `${base} 22 tools total: 16 gateway + 6 support-ticket.`
     : `${base} 49 tools total: 16 gateway + 6 support-ticket + 27 local wallet_* tools.`;
 }
+
+/**
+ * Where a "cobrança" goes.
+ *
+ * The merchants this serves speak Portuguese, and *cobrança* covers BOTH the
+ * one-off QR and the dated payment link. Nothing in the handshake said the
+ * second one existed, and `create_checkout` — whose description opened by
+ * calling itself "a charge" — was the tool the word pointed at. So the routing
+ * rested entirely on a note inside `create_product`, which a host that
+ * pre-filters tools by similarity may never put in front of the model.
+ *
+ * This sentence closes it from the front: both spellings of the intent, the
+ * tool that serves each, and the default that otherwise returns an empty list
+ * to an agent looking for the charge it just created.
+ */
+export const CHARGES_SENTENCE =
+  'A dated charge — "cobrança" in Portuguese: rent, tuition, an instalment — is `create_product` with kind="charge": ' +
+  "a payment link with a DUE DATE, optional late fine and monthly interest, and optional recurrence, served at " +
+  "pay.depixapp.com/c/{id} and never shown on the merchant's public store. `create_checkout` is the OTHER thing a " +
+  "merchant may call a cobrança: a one-off amount paid once, expiring in minutes. `list_products` omits charges " +
+  'unless you pass kind="charge" (or kind="all").';
 
 /**
  * The gateway sentences both deployments share. `HOSTED_ONLY_CUSTODY_SENTENCE` is
@@ -58,6 +79,7 @@ function catalogSentence(deployment: "hosted" | "unified"): string {
 export function gatewaySentences(deployment: "hosted" | "unified"): string[] {
   return [
     catalogSentence(deployment),
+    CHARGES_SENTENCE,
     "Authentication is a DePix App API key (sk_test_… for sandbox, sk_live_… for production), configured on the connection itself: over HTTP it is the `Authorization: Bearer sk_…` header; in local stdio mode it is the DEPIX_API_KEY environment variable.",
     "Tools cannot set the key — if a tool reports a missing key, ask the user to reconnect with their key configured.",
     "Always test with an sk_test_ key first. `get_account` is the recommended connection test.",

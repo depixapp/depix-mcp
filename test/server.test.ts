@@ -96,6 +96,40 @@ describe("tool catalog (16 gateway tools + 6 support-ticket tools, no cancel_che
     // by the rail-conditional refine at the call boundary.
     expect(schema.properties.expires_in.maximum).toBe(3600);
   });
+
+  // The two tools a Portuguese-speaking merchant's "cobrança" could route to.
+  // Blind routing tests put an agent on create_product 4/4, but only because
+  // create_product's own text disambiguates. create_checkout said nothing back,
+  // so a host that filters tools by similarity to "cobrança" would surface the
+  // one-off and never read the note that corrects it.
+  describe("cobrança routes to the right tool from EITHER side", () => {
+    const descriptionOf = async (name: string) => {
+      const { fetchImpl } = makeFetch([]);
+      const { client } = await connect(new ApiClient({ apiKey: KEY, apiBase: BASE, fetchImpl }));
+      const { tools } = await client.listTools();
+      return tools.find((t) => t.name === name)?.description ?? "";
+    };
+
+    it("create_checkout points at the charge path instead of just claiming the word", async () => {
+      const d = await descriptionOf("create_checkout");
+      expect(d).toMatch(/create_product/);
+      expect(d).toMatch(/kind\s*[:=]?\s*"charge"/);
+      expect(d).toMatch(/one-?off|paid once/i);
+      // It must not open by calling ITSELF "a charge" — that is the collision.
+      expect(d).not.toMatch(/^Create a charge/i);
+    });
+
+    it("create_product still names the case in the merchant's own word", async () => {
+      const d = await descriptionOf("create_product");
+      expect(d).toMatch(/cobran[çc]a/i);
+      expect(d).toMatch(/kind\s*[:=]?\s*"charge"/);
+    });
+
+    it("list_products still warns that charges are hidden by default", async () => {
+      const d = await descriptionOf("list_products");
+      expect(d).toMatch(/not included by default|NOT included|omits charges/i);
+    });
+  });
 });
 
 describe("tool call error surfacing", () => {

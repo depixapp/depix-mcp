@@ -146,6 +146,27 @@ describe("per-deployment instructions (§1.6)", () => {
     expect(text).toMatch(/seed never leaves|never leaves the operator|never leaves that machine/i);
   });
 
+  // The handshake is what a host shows the model BEFORE it reads any tool
+  // description — and it listed "checkouts/products", so an agent whose user
+  // asked for a cobrança had no signal from it that dated charges exist at all.
+  // Both deployments serve the same 22 gateway tools, so both must say it.
+  it("both deployments announce dated charges, and name the tool that makes one", () => {
+    const texts = [
+      hostedInstructions(),
+      unifiedInstructions({ walletConfigured: true }),
+      unifiedInstructions({ walletConfigured: false }),
+    ];
+    for (const text of texts) {
+      expect(text).toMatch(/charges/i);
+      expect(text).toMatch(/cobran[çc]a/i);
+      expect(text).toContain('kind="charge"');
+      expect(text).toContain("create_product");
+      // The gotcha that silently returns an empty list to an agent looking for
+      // the charge it just created.
+      expect(text).toMatch(/list_products/);
+    }
+  });
+
   it("hosted: does NOT describe wallet tools it does not have", () => {
     const text = hostedInstructions();
     expect(text).not.toContain("49 tools");
