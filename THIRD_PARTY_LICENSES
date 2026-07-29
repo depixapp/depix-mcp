@@ -1,10 +1,13 @@
 THIRD-PARTY SOFTWARE NOTICES AND LICENSES
-@depixapp/mcp@2.0.0
+@depixapp/mcp
 
 @depixapp/mcp is licensed under Apache-2.0 (see LICENSE / NOTICE). It EMBEDS the DePix
 App wallet engine (relicensed Apache-2.0 by its owner; see src/vendor/) and INSTALLS
 the third-party packages inventoried below. Their licenses require that their
 copyright and permission notices travel with every copy — this file is that notice.
+
+This inventory is VERSION-AGNOSTIC by design: it tracks the dependency tree, not
+releases of @depixapp/mcp, so it changes only when a dependency does.
 
 Inventory: the 172 installed packages of this package's PRODUCTION
 dependency tree (`npm ls --omit=dev --all --long`), every transitive dependency included

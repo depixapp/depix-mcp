@@ -158,13 +158,26 @@ for (const { name, version, path: nodePath } of deps) {
   );
 }
 
+// The header deliberately does NOT carry this package's own version.
+//
+// It used to (`${pkg.name}@${pkg.version}`), which coupled a THIRD-PARTY inventory
+// to OUR release number: every version bump changed one line, `licenses:check`
+// went red, and — because that check is a release gate — the tag failed to
+// publish for a reason with nothing to do with licensing. That is exactly what
+// happened on v2.0.1. The file now changes if and only if the DEPENDENCY TREE
+// changes, which is the only thing it actually documents. The version it belongs
+// to is not lost: this file ships inside a versioned tarball, and git history has
+// the rest.
 const header = `THIRD-PARTY SOFTWARE NOTICES AND LICENSES
-${pkg.name}@${pkg.version}
+${pkg.name}
 
 ${pkg.name} is licensed under Apache-2.0 (see LICENSE / NOTICE). It EMBEDS the DePix
 App wallet engine (relicensed Apache-2.0 by its owner; see src/vendor/) and INSTALLS
 the third-party packages inventoried below. Their licenses require that their
 copyright and permission notices travel with every copy — this file is that notice.
+
+This inventory is VERSION-AGNOSTIC by design: it tracks the dependency tree, not
+releases of ${pkg.name}, so it changes only when a dependency does.
 
 Inventory: the ${deps.length} installed package${deps.length === 1 ? "" : "s"} of this package's PRODUCTION
 dependency tree (\`npm ls --omit=dev --all --long\`), every transitive dependency included
