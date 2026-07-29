@@ -123,6 +123,29 @@ export function buildCreateProductBody(args: CreateProductArgs): Record<string, 
   // `kind` is omitted when absent so a plain-product body stays byte-identical
   // to what it was before charges existed.
   put(body, "kind", args.kind);
+
+  // A charge field without the discriminator is a mistake with a nasty shape:
+  // dropping it would create a PLAIN product, which lands on the merchant's
+  // PUBLIC storefront — the exact leak charges exist to avoid — silently, with
+  // a 201, and a model asked to "bill the tenant on the 5th" is very likely to
+  // send due_date and forget kind. The API answers 400 for the same body; say
+  // so here, before the request, instead of quietly building something else.
+  const CHARGE_ONLY: (keyof CreateProductArgs)[] = [
+    "due_date",
+    "recurrence",
+    "late_fine_bps",
+    "late_interest_monthly_bps",
+  ];
+  const strayCharge = CHARGE_ONLY.filter((f) => args[f] !== undefined);
+  if (args.kind !== "charge" && strayCharge.length > 0) {
+    throw new ToolError(
+      `${strayCharge.join(", ")} ${strayCharge.length > 1 ? "are" : "is"} only accepted with kind="charge". ` +
+        `Pass kind="charge" to create a dated payment link, or drop the field to create a catalog product.`,
+      "validation_error",
+      { data: { details: { field: "kind" } } },
+    );
+  }
+
   if (args.kind === "charge") {
     // Caught here, not by zod: the field is only required for one value of a
     // sibling field, and a conditional zod refine on a tool input degrades the

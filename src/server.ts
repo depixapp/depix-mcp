@@ -281,7 +281,7 @@ export function createServer(opts: CreateServerOptions): McpServer {
     {
       title: "Deactivate product",
       description:
-        "Hide a product from the public page and block new checkouts. Requires scope `merchant_write`.",
+        "Hide a product from the public page and block new checkouts. On a CHARGE this also kills its live pay.depixapp.com/c/{id} link — anyone holding it sees \"cobrança indisponível\" and cannot pay. Reversible with activate_product. Requires scope `merchant_write`.",
       inputSchema: s.productActionInput,
       outputSchema: s.productActionOutput,
       annotations: write,

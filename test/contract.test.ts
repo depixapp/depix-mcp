@@ -198,6 +198,56 @@ describe("contract: request bodies use the wire field names", () => {
     });
   });
 
+  it("a charge body only carries fields the document accepts", () => {
+    // The fixture listed the charge properties, but no test ever ran a charge
+    // body through assertBody — so the pins guarded nothing. This is the whole
+    // charge surface on the wire, in one assertion.
+    const body = buildCreateProductBody({
+      name: "Aluguel Apto 12",
+      amount: 250000,
+      kind: "charge",
+      due_date: "2026-08-05",
+      recurrence: "monthly",
+      late_fine_bps: 200,
+      late_interest_monthly_bps: 100,
+    });
+    expect(body).toMatchObject({ kind: "charge", due_date: "2026-08-05", recurrence: "monthly" });
+    assertBody("POST /api/products", body);
+  });
+
+  it("a charge PATCH only carries fields the document accepts, and never kind", () => {
+    const body = buildUpdateProductBody({
+      product_id: "prd_chg1",
+      due_date: "2026-09-05",
+      recurrence: null,
+      late_fine_bps: 0,
+      late_interest_monthly_bps: 500,
+    });
+    // `kind` is immutable server-side (400 "kind é imutável"), and the fixture
+    // says so by omitting it from the PATCH properties.
+    expect(body).not.toHaveProperty("kind");
+    assertBody("PATCH /api/products/{id}", body);
+  });
+
+  it("late-fee caps are pinned to the document, not hardcoded in schemas.ts", () => {
+    // AMOUNT_MAX sat at R$3.000 through an entire cap raise because only the
+    // field NAME was pinned. Same shape of failure, same fix: read the bound
+    // from the fixture so the next backend change fails here.
+    for (const [endpoint, input, extra] of [
+      ["POST /api/products", schemas.createProductInput, { name: "Aluguel", amount: 250000, kind: "charge", due_date: "2026-08-05" }],
+      ["PATCH /api/products/{id}", schemas.updateProductInput, { product_id: "prd_1" }],
+    ] as Array<[string, Record<string, z.ZodTypeAny>, Record<string, unknown>]>) {
+      const shape = z.object(input);
+      for (const field of ["late_fine_bps", "late_interest_monthly_bps"]) {
+        const bounds = fixture.requestBodies[endpoint].fieldBounds?.[field];
+        expect(bounds, `${endpoint}: fixture must pin ${field}`).toBeDefined();
+        expect(shape.safeParse({ ...extra, [field]: bounds!.maximum }).success, `${endpoint}: ${field} must accept the documented maximum`).toBe(true);
+        expect(shape.safeParse({ ...extra, [field]: bounds!.maximum + 1 }).success, `${endpoint}: ${field} must reject above it`).toBe(false);
+        expect(shape.safeParse({ ...extra, [field]: bounds!.minimum }).success, `${endpoint}: ${field} must accept the documented minimum`).toBe(true);
+      }
+    }
+  });
+
   it("POST /api/products maps amount_cents alias → amount", () => {
     const body = buildCreateProductBody({ name: "Ebook", amount_cents: 700 });
     expect(body.amount).toBe(700);

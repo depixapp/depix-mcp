@@ -135,6 +135,14 @@
         "amount": {
           "minimum": 500,
           "maximum": 600000
+        },
+        "late_fine_bps": {
+          "minimum": 0,
+          "maximum": 2000
+        },
+        "late_interest_monthly_bps": {
+          "minimum": 0,
+          "maximum": 1000
         }
       }
     },
@@ -159,6 +167,14 @@
         "amount": {
           "minimum": 500,
           "maximum": 600000
+        },
+        "late_fine_bps": {
+          "minimum": 0,
+          "maximum": 2000
+        },
+        "late_interest_monthly_bps": {
+          "minimum": 0,
+          "maximum": 1000
         }
       }
     },

@@ -267,6 +267,31 @@ describe("charges — create_product with kind='charge'", () => {
     expect(body).not.toHaveProperty("due_date");
   });
 
+  it("refuses charge fields without kind='charge' instead of silently creating a store product", async () => {
+    // The dangerous direction. A model asked to "bill the tenant on the 5th"
+    // will very plausibly send due_date and forget the discriminator. Dropping
+    // the field creates a PLAIN product — which lands on the merchant's public
+    // storefront, the exact leak the whole feature exists to prevent, silently
+    // and with a 201. Mirror the backend, which answers 400 for the same body.
+    const { client, requests } = makeClient([]);
+    await expect(
+      createProduct(client, { name: "Aluguel Apto 12", amount: 250000, due_date: "2026-08-05" }),
+    ).rejects.toThrow(/kind/i);
+    expect(requests).toHaveLength(0);
+
+    const { client: c2, requests: r2 } = makeClient([]);
+    await expect(
+      createProduct(c2, { name: "Aluguel", amount: 250000, recurrence: "monthly" }),
+    ).rejects.toThrow(/kind/i);
+    expect(r2).toHaveLength(0);
+
+    const { client: c3, requests: r3 } = makeClient([]);
+    await expect(
+      createProduct(c3, { name: "Aluguel", amount: 250000, late_fine_bps: 200 }),
+    ).rejects.toThrow(/kind/i);
+    expect(r3).toHaveLength(0);
+  });
+
   it("refuses a charge without a due date before spending a request", async () => {
     const { client, requests } = makeClient([]);
     await expect(
