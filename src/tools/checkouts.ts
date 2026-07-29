@@ -100,6 +100,17 @@ function normalizeCheckoutListItem(raw: Record<string, unknown>) {
   // reconciling sales cannot tell a Pix settlement from a wallet-to-wallet one.
   const rail = normalizePaymentMethod(raw.payment_method);
   if (rail !== null) out.payment_method = rail;
+  // The rail alone is not enough to reconcile it. `amount` is the FACE price;
+  // on the DePix rail the payer sends `depix_due_cents` — the discounted,
+  // cent-jittered value that attribution matches exactly — so an agent summing
+  // `amount` over discounted sales overstates every one of them by the
+  // discount. Emitted only when the API reports them, same rule as the rail:
+  // an older deployment simply omits the keys instead of reporting a zero
+  // discount it never made.
+  const duePct = numOrNull(raw.depix_discount_pct);
+  if (duePct !== null) out.depix_discount_pct = duePct;
+  const dueCents = numOrNull(raw.depix_due_cents);
+  if (dueCents !== null) out.depix_due_cents = dueCents;
   return out;
 }
 

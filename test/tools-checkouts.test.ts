@@ -418,6 +418,65 @@ describe("list_checkouts (spec §4.1)", () => {
     expect(out.checkouts[3]).not.toHaveProperty("payment_method");
     expect(z.object(s.listCheckoutsOutput).safeParse(out).success).toBe(true);
   });
+
+  // Knowing the rail is not enough to reconcile the sale. `amount` is the FACE
+  // price; a DePix-rail payer sends `depix_due_cents` — discounted and
+  // cent-jittered, and the only value attribution matches. An agent adding up
+  // `amount` over discounted sales overstates every one of them, which is
+  // exactly the bug the backend added these two fields to close: the fix landed
+  // in the API and this normalizer's allowlist silently dropped both.
+  it("carries the DePix money fields, so a discounted sale reconciles to what was paid", async () => {
+    const item = (over: Record<string, unknown>) => ({
+      id: "chk_1",
+      status: "completed",
+      amount: 10000,
+      description: null,
+      created_at: "2026-07-01 12:00:00",
+      expires_at: "2026-07-01 12:20:00",
+      is_live: 1,
+      processing_at: null,
+      approved_at: null,
+      metadata: null,
+      product_name: null,
+      rejection_reasons: [],
+      ...over,
+    });
+    const { client } = makeClient([
+      {
+        status: 200,
+        json: {
+          checkouts: [
+            item({ id: "chk_dpx", payment_method: "depix", depix_discount_pct: 10, depix_due_cents: 8999 }),
+            // A DePix sale with no discount configured still reports a due value.
+            item({ id: "chk_dpx0", payment_method: "depix", depix_discount_pct: 0, depix_due_cents: 9998 }),
+            item({ id: "chk_pix", payment_method: "pix" }),
+          ],
+          stats: { total: 3, pending: 0, completed: 3, completed_amount: 30000 },
+          limit: 50,
+          offset: 0,
+        },
+      },
+    ]);
+    const out = await listCheckouts(client, { limit: 50, offset: 0 });
+
+    // The face price and the paid amount are BOTH visible and they differ —
+    // this is the assertion an agent's reconciliation depends on.
+    expect(out.checkouts[0].amount).toBe(10000);
+    expect(out.checkouts[0].depix_due_cents).toBe(8999);
+    expect(out.checkouts[0].depix_discount_pct).toBe(10);
+
+    // Zero is a reported value, not an absent one: `if (x)` here would drop it
+    // and make a no-discount DePix sale indistinguishable from a pix sale.
+    expect(out.checkouts[1].depix_discount_pct).toBe(0);
+    expect(out.checkouts[1].depix_due_cents).toBe(9998);
+
+    // A pix sale has no such thing; inventing 0 would assert a discount that
+    // does not exist on that rail.
+    expect(out.checkouts[2]).not.toHaveProperty("depix_discount_pct");
+    expect(out.checkouts[2]).not.toHaveProperty("depix_due_cents");
+
+    expect(z.object(s.listCheckoutsOutput).safeParse(out).success).toBe(true);
+  });
 });
 
 describe("simulate_checkout_payment (spec §4.1)", () => {

@@ -343,6 +343,14 @@ export const checkoutListItemShape = {
   // required key here would turn every list call against an older deployment
   // into an output-validation error instead of a usable answer.
   payment_method: paymentMethod.nullable().optional(),
+  // Same "optional, not required" reasoning as payment_method: these arrived in
+  // OpenAPI 0.20.5. They are what makes a DePix-rail sale reconcilable — the
+  // face price is `amount`, but the amount the payer actually sends (and the
+  // only one attribution matches) is `depix_due_cents`, the discounted,
+  // cent-jittered value. An agent adding up `amount` over a discounted rail
+  // overstates every sale by the discount.
+  depix_discount_pct: z.number().int().nullable().optional(),
+  depix_due_cents: z.number().int().nullable().optional(),
   rejection_reasons: z.array(z.string()),
 };
 const checkoutListItemOutput = z.object(checkoutListItemShape);

@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.2.0 — a discounted DePix sale now reconciles to what was actually paid
+
+`list_checkouts` carried the rail from 2.1.1 on, but not the two numbers that
+make a DePix-rail sale add up. `amount` is the FACE price. The payer of a
+DePix-rail charge sends `depix_due_cents` — the discounted amount, moved down by
+a few cents so the watcher can tell two identical sales apart, and the only
+value attribution will match. So an agent listing sales to reconcile them read
+R$ 100,00 for a sale that paid R$ 90,00, and had no way to know.
+
+The API fixed this in 0.20.5 by adding `depix_discount_pct` and
+`depix_due_cents` to the list item. This server's list normalizer is an
+allowlist, and silently dropped both — the same shape of bug as the missing
+`payment_method` in 2.1.1, one field deeper.
+
+Both are now emitted, and only when the API reports them: an older deployment
+omits the keys rather than claiming a 0% discount it never applied, and a pix
+sale gets neither (a zero there would assert a discount the rail does not have).
+`get_checkout` was already correct — it passes the whole `depix` object through.
+
+The contract fixture moves to OpenAPI 0.20.5. Every other pinned fact was
+re-derived from the live document and came back unchanged.
+
+Requires DePix API 0.20.5 or later for these two fields; older APIs keep working
+and simply omit them.
+
 ## 2.1.1 — make charges findable from the word merchants actually use
 
 **No new tool; the discovery work below changes descriptive text only.** One

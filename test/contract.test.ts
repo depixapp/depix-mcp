@@ -1,5 +1,5 @@
 // Contract test (spec §4.8). Fails CI if src/schemas.ts (enums / terminal sets)
-// or src/requestMap.ts (wire field names) drift from the pinned OpenAPI 0.20.2
+// or src/requestMap.ts (wire field names) drift from the pinned OpenAPI 0.20.5
 // fixture. This is the guard that catches the amount_cents↔amount and
 // product_ids↔productIds class of bug before it 400s in production.
 //
@@ -10,6 +10,15 @@
 // accepts (or the reverse). 0.20.1/0.20.2 moved only charge semantics (the
 // `charge_state` read and the cycle rules); every rail fact below was
 // re-derived from the 0.20.2 document and came back unchanged.
+//
+// 0.20.5 added `depix_discount_pct` and `depix_due_cents` to the LIST item, and
+// they matter for money: `amount` is the face price, while the payer of a
+// DePix-rail sale sends `depix_due_cents` (discounted and cent-jittered, the
+// only value attribution matches). A listing that drops them makes an agent
+// reconciling sales read R$ 100,00 for a sale that paid R$ 90,00 — which is the
+// bug the backend field was added to close. Every other pinned fact was
+// re-derived from the live 0.20.5 document and came back unchanged, including
+// the oneOf unions of the deposit/withdrawal status reads.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -52,16 +61,16 @@ interface Fixture {
 }
 
 const fixture = JSON.parse(
-  readFileSync(new URL("./fixtures/openapi-0.20.2.json", import.meta.url), "utf8"),
+  readFileSync(new URL("./fixtures/openapi-0.20.5.json", import.meta.url), "utf8"),
 ) as Fixture;
 
 const CHECKOUTS = "POST /api/checkouts";
 const rails = fixture.requestBodies[CHECKOUTS].railConditional!;
 const TAX = "52998224725";
 
-describe("contract: pinned to OpenAPI 0.20.2", () => {
+describe("contract: pinned to OpenAPI 0.20.5", () => {
   it("pins the version", () => {
-    expect(fixture.info_version).toBe("0.20.2");
+    expect(fixture.info_version).toBe("0.20.5");
   });
 
   it("scopes match the closed set", () => {
