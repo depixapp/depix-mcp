@@ -325,7 +325,9 @@ export const listCheckoutsInput = {
   offset: z.number().int().min(0).default(0),
 };
 
-const checkoutListItemOutput = z.object({
+// Exported as a raw shape (like the other output schemas) so the contract test
+// can compare its keys field-by-field against the documented list item.
+export const checkoutListItemShape = {
   id: z.string(),
   status: checkoutStatus,
   amount: z.number().int(),
@@ -337,8 +339,13 @@ const checkoutListItemOutput = z.object({
   approved_at: z.string().nullable(),
   metadata: metadataOutput,
   product_name: z.string().nullable(),
+  // Optional, not required: the field only exists from OpenAPI 0.20.0 on, and a
+  // required key here would turn every list call against an older deployment
+  // into an output-validation error instead of a usable answer.
+  payment_method: paymentMethod.nullable().optional(),
   rejection_reasons: z.array(z.string()),
-});
+};
+const checkoutListItemOutput = z.object(checkoutListItemShape);
 
 const checkoutStats = z
   .object({
