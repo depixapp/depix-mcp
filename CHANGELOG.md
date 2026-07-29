@@ -2,9 +2,11 @@
 
 ## 2.1.1 — make charges findable from the word merchants actually use
 
-**No API change, no new tool, no schema change.** 2.1.0 shipped charges
-correctly and an agent that read `create_product` routed to them reliably — but
-only if it got that far.
+**No new tool; the discovery work below changes descriptive text only.** One
+non-wording change also rides in this release and is called out at the end:
+`list_checkouts` now carries `payment_method`. 2.1.0 shipped charges correctly
+and an agent that read `create_product` routed to them reliably — but only if it
+got that far.
 
 The merchants this serves speak Portuguese, where *cobrança* means both the
 one-off QR and the dated payment link. Two things pointed the word at the wrong
@@ -22,7 +24,19 @@ So the disambiguation now works from both sides: the handshake states where a
 cobrança goes (and that `list_products` hides charges unless asked),
 `create_checkout` says it is the one-off and names `create_product` with
 `kind="charge"` for the dated one, and `create_product` carries the Portuguese
-word so retrieval on it lands somewhere true.
+word so retrieval on it lands somewhere true. The word also lands in the two
+surfaces a registry/npm search actually indexes — the `package.json` and
+`registry/server.json` descriptions — which the first pass had left silent.
+
+The handshake places charges on the Pix rail, matching the backend: a charge's
+`pay.depixapp.com/c/{id}` page is Pix-only today. Checkouts and products still
+take either rail.
+
+**Also in this release (not part of the discovery work): `list_checkouts` now
+returns `payment_method`** (`pix` | `depix` | `null`) on each row, so an agent
+listing a merchant's checkouts can tell which rail each one settled on without a
+per-row `get_checkout`. Output-schema addition only; the field is optional, so
+older clients are unaffected.
 
 ## 2.1.0 — charges (cobranças) through the product tools
 

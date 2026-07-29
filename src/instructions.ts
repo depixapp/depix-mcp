@@ -44,8 +44,8 @@ export const LEVEL_TWO_SIGNPOST =
 /** Catalog sentence, per deployment: the counts differ, everything else does not. */
 function catalogSentence(deployment: "hosted" | "unified"): string {
   const base =
-    "DePix App MCP — receive payments on either rail (a Pix QR, or DePix sent directly on Liquid) via checkouts, products and dated charges, " +
-    "read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
+    "DePix App MCP — receive payments on either rail (a Pix QR, or DePix sent directly on Liquid) via checkouts and products, " +
+    "plus dated charges (cobranças, Pix), read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
   return deployment === "hosted"
     ? `${base} 22 tools total: 16 gateway + 6 support-ticket.`
     : `${base} 49 tools total: 16 gateway + 6 support-ticket + 27 local wallet_* tools.`;
@@ -67,10 +67,9 @@ function catalogSentence(deployment: "hosted" | "unified"): string {
  */
 export const CHARGES_SENTENCE =
   'A dated charge — "cobrança" in Portuguese: rent, tuition, an instalment — is `create_product` with kind="charge": ' +
-  "a payment link with a DUE DATE, optional late fine and monthly interest, and optional recurrence, served at " +
-  "pay.depixapp.com/c/{id} and never shown on the merchant's public store. `create_checkout` is the OTHER thing a " +
-  "merchant may call a cobrança: a one-off amount paid once, expiring in minutes. `list_products` omits charges " +
-  'unless you pass kind="charge" (or kind="all").';
+  "a payment link with a DUE DATE, optional late fine and monthly interest, and optional recurrence, paid by Pix, served at " +
+  "pay.depixapp.com/c/{id} and never shown on the merchant's public store. For a one-off amount paid once (not dated, not " +
+  "recurring), use `create_checkout` instead. `list_products` omits charges unless you pass kind=\"charge\" (or kind=\"all\").";
 
 /**
  * The gateway sentences both deployments share. `HOSTED_ONLY_CUSTODY_SENTENCE` is

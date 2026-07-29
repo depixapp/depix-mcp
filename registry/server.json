@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.depixapp/depix-mcp",
   "title": "DePix App MCP",
-  "description": "One MCP, two levels: hosted Pix receive (22 tools), or local npx + non-custodial wallet (49).",
+  "description": "One MCP: hosted Pix receive + dated charges (22 tools), or local npx non-custodial wallet (49).",
   "version": "2.1.1",
   "websiteUrl": "https://depixapp.com",
   "repository": {
@@ -16,7 +16,7 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "DePix App API key: Bearer sk_test_ (sandbox) or sk_live_ (production). Get one in the dashboard at depixapp.com, or self-onboard autonomously with no human via POST https://api.depixapp.com/api/agents/register (see https://depixapp.com/docs/en/). This hosted endpoint holds no seed and therefore serves the 22 receive/status/support tools only — the 27 wallet_* tools require the npm package below, run locally.",
+          "description": "DePix App API key: Bearer sk_test_ (sandbox) or sk_live_ (production). Get one in the dashboard at depixapp.com, or self-onboard autonomously with no human via POST https://api.depixapp.com/api/agents/register (see https://depixapp.com/docs/en/). This hosted endpoint holds no seed and therefore serves the 22 receive tools only (checkouts, products, dated charges/cobranças, status reads, support tickets) — the 27 wallet_* tools require the npm package below, run locally.",
           "isRequired": true,
           "isSecret": true
         }

@@ -251,7 +251,7 @@ deliberately unpayable (placeholder address, `uri: null`); drive them with
 
 **Charges (cobranças).** `create_product` with `kind: "charge"` creates a payment link with a **due date** and optional late fine/interest — rent, tuition, an instalment. It is served at `pay.depixapp.com/c/{id}`, never appears on the merchant's public store, and the amount is recomputed on each visit (base + fine + pro-rata interest for the current cycle). With `recurrence` the same link keeps working month after month, settling the oldest unpaid cycle first. `list_products` does **not** return charges unless you pass `kind: "charge"` (or `"all"`); charge rows then carry `charge_state` — current cycle, days late, today's total.
 
-Do not confuse it with `create_checkout`, which mints a **one-off** Pix charge that is paid once and expires in minutes. A charge is the standing one.
+Do not confuse it with `create_checkout`, which mints a **one-off** payment that is paid once and is short-lived. A charge is the standing one.
 
 The last six are the support channel: open a ticket, poll for the human reply,
 reply back, attach a screenshot or diagnostic/log file (base64, ~3 MB), or close
