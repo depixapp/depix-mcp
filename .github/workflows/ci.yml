@@ -27,10 +27,10 @@ jobs:
         node: ["22", "24"] # the engine's floor + current
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
 
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Read the engine pin
         id: pin
@@ -79,7 +79,7 @@ jobs:
       # job cannot run from a fork PR — forks get no secrets — which is fine: the
       # engine is first-party and the repo takes no external contributions today.
       - name: Checkout the engine at the pinned commit
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ steps.pin.outputs.repo }}
           ref: ${{ steps.pin.outputs.ref }}
@@ -88,7 +88,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
