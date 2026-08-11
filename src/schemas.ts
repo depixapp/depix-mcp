@@ -17,6 +17,10 @@ export const CHECKOUT_STATUSES = [
 ] as const;
 export const TERMINAL_CHECKOUT_STATUSES = ["completed", "expired", "cancelled"] as const;
 
+// Order follows the API's own enum (0.37.0), which groups the still-open statuses
+// before the terminal ones. Nothing here depends on order — these are membership
+// checks and zod enums — but keeping it faithful is what lets the next
+// re-derivation from a live document be a no-op instead of a surprise diff.
 export const DEPOSIT_STATUSES = [
   "pending",
   "under_review",
@@ -24,10 +28,10 @@ export const DEPOSIT_STATUSES = [
   "approved",
   "delayed",
   "will_refund",
+  "error",
   "depix_sent",
   "refunded",
   "canceled",
-  "error",
   "expired",
 ] as const;
 // `error` is NOT terminal (API 0.37.0). It never described a finished payment:
@@ -44,10 +48,10 @@ export const TERMINAL_DEPOSIT_STATUSES = [
 export const WITHDRAWAL_STATUSES = [
   "unsent",
   "sending",
+  "error",
   "sent",
   "refunded",
   "cancelled",
-  "error",
   "expired",
 ] as const;
 // Same correction, and this is the side it was measured on: 25 production

@@ -48,6 +48,8 @@ interface Bounds {
 }
 interface Fixture {
   info_version: string;
+  /** Which document the status enums / terminal sets were re-derived against. */
+  status_facts_derived_from: string;
   scopes: string[];
   statusEnums: { checkout: string[]; deposit: string[]; withdrawal: string[] };
   terminal: { checkout: string[]; deposit: string[]; withdrawal: string[] };
@@ -77,6 +79,11 @@ const TAX = "52998224725";
 describe("contract: pinned to OpenAPI 0.20.5", () => {
   it("pins the version", () => {
     expect(fixture.info_version).toBe("0.20.5");
+    // The fixture is deliberately MIXED: the status enums and terminal sets were
+    // re-derived against a later document, everything else is still the 0.20.5
+    // snapshot. Pinned here so that is a stated fact rather than a silent one — a
+    // reader comparing this file to 0.20.5 needs to know which half moved.
+    expect(fixture.status_facts_derived_from).toBe("0.37.0");
   });
 
   it("scopes match the closed set", () => {

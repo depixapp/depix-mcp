@@ -23,19 +23,19 @@
       "approved",
       "delayed",
       "will_refund",
+      "error",
       "depix_sent",
       "refunded",
       "canceled",
-      "error",
       "expired"
     ],
     "withdrawal": [
       "unsent",
       "sending",
+      "error",
       "sent",
       "refunded",
       "cancelled",
-      "error",
       "expired"
     ]
   },
@@ -286,5 +286,6 @@
     "discount_pct",
     "original_amount_cents",
     "detected"
-  ]
+  ],
+  "status_facts_derived_from": "0.37.0"
 }
