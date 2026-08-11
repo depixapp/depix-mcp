@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    6216f6ca88104ad1c2e5d3ae45b357a59d315312
+ * Commit:    20b0765ca529f9e38b0de20b0c3265a5c9a8dc58
  * Path:      src/wallet.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -2003,9 +2003,18 @@ export class DepixWallet {
       );
     }
 
+    // Where the provider returns the DePix if the Pix payout can't be
+    // completed. Our own receive address, so a refused payout comes back to
+    // the wallet that funded it instead of waiting on a support ticket.
+    // Derived BEFORE the record is persisted below, so a crash-resumed
+    // re-POST replays the SAME address — a body that differs from the one the
+    // Idempotency-Key was minted for is a 422, not a retry.
+    const refundAddress = await this.getReceiveAddress();
+
     const request: WithdrawRequestBody = {
       pixKey: params.pixKey,
-      taxNumber: params.recipientTaxNumber
+      taxNumber: params.recipientTaxNumber,
+      refundAddress
     };
     if (params.mode === "send") request.depositAmountInCents = params.amountCents;
     else request.payoutAmountInCents = params.amountCents;

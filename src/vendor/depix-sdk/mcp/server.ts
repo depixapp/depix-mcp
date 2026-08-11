@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    6216f6ca88104ad1c2e5d3ae45b357a59d315312
+ * Commit:    20b0765ca529f9e38b0de20b0c3265a5c9a8dc58
  * Path:      src/mcp/server.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -526,8 +526,9 @@ export function registerWalletTools(
       description:
         "Withdraw to a Pix key: build ONE Liquid transaction (Eulen output + explicit fee output), sign and broadcast. " +
         "amount_cents is BRL cents; mode `send` = the DePix you send, `payout` = the BRL the recipient receives; " +
-        "recipient_tax_number is the DESTINATION Pix key holder's CPF/CNPJ. MOVES MONEY: passes through guardrails on " +
-        "the GROSS before signing. Irreversible once broadcast.",
+        "recipient_tax_number is the DESTINATION Pix key holder's CPF/CNPJ. A fresh receive address of THIS wallet is " +
+        "sent as the refund address, so a Pix the provider cannot complete comes back here — no parameter to pass. " +
+        "MOVES MONEY: passes through guardrails on the GROSS before signing. Irreversible once broadcast.",
       inputSchema: s.createWithdrawalInput,
       outputSchema: s.createWithdrawalOutput,
       annotations: money,
