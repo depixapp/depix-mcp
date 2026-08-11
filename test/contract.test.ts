@@ -11,6 +11,12 @@
 // `charge_state` read and the cycle rules); every rail fact below was
 // re-derived from the 0.20.2 document and came back unchanged.
 //
+// The `terminal` block was corrected against API 0.37.0, which dropped `error`
+// from both terminal sets — an errored row means the provider is holding money
+// that still owes settlement or a refund, so `terminal: true` was telling agents
+// to stop waiting on money still in motion. That ONE fact was re-derived; every
+// other fact below remains pinned at 0.20.5 and was not revisited.
+//
 // 0.20.5 added `depix_discount_pct` and `depix_due_cents` to the LIST item, and
 // they matter for money: `amount` is the face price, while the payer of a
 // DePix-rail sale sends `depix_due_cents` (discounted and cent-jittered, the

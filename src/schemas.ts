@@ -30,11 +30,14 @@ export const DEPOSIT_STATUSES = [
   "error",
   "expired",
 ] as const;
+// `error` is NOT terminal (API 0.37.0). It never described a finished payment:
+// the provider is holding money that still owes settlement or a refund, and both
+// stay reachable. `terminal` is what tells an agent it may stop waiting, so
+// listing it here told agents to walk away from money still in motion.
 export const TERMINAL_DEPOSIT_STATUSES = [
   "depix_sent",
   "refunded",
   "canceled",
-  "error",
   "expired",
 ] as const;
 
@@ -47,11 +50,13 @@ export const WITHDRAWAL_STATUSES = [
   "error",
   "expired",
 ] as const;
+// Same correction, and this is the side it was measured on: 25 production
+// withdrawals sat in `error` holding R$ 9.593,08 of DePix the provider had
+// received, none of them with a Pix receipt. See TERMINAL_DEPOSIT_STATUSES.
 export const TERMINAL_WITHDRAWAL_STATUSES = [
   "sent",
   "refunded",
   "cancelled",
-  "error",
   "expired",
 ] as const;
 

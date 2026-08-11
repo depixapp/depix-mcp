@@ -49,14 +49,12 @@
       "depix_sent",
       "refunded",
       "canceled",
-      "error",
       "expired"
     ],
     "withdrawal": [
       "sent",
       "refunded",
       "cancelled",
-      "error",
       "expired"
     ]
   },
