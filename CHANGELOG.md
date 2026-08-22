@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.3.0 — a held sale now says it is held, and until when
+
+A sale waiting out a vault hold and one settling in the next few seconds read
+identically through this server: `processing`, nothing else. The API separates
+them with `delay_until` (the release date, the provider's own ISO-8601 string
+with an offset) and `vault_hours` (the wait the sale was booked for) — on list
+items since 0.31.0, on the single-checkout read since 0.39.0. Both normalizers
+here are allowlists, and both dropped the pair: the same shape of bug as 2.2.0
+(`depix_due_cents`) and 2.1.1 (`payment_method`), one release later. An agent
+polling the one order it was waiting on had no date to wait for, and no sign a
+hold existed at all.
+
+Both tools now emit the pair — by KEY PRESENCE, not by value, which is new for
+this file and deliberate: null is an answer ("no hold decision recorded" —
+sandbox, or the DePix rail, which creates no paired deposit) and is a different
+fact from `vault_hours: 0` ("looked at, not held"). The value-based emit the
+neighbouring fields use would erase exactly that distinction.
+
+The contract fixture gains the two fields on CheckoutDetail and
+CheckoutListItem, re-derived from the live 0.39.0 document
+(`hold_fields_derived_from`) — the list-side gap survived two releases
+precisely because the pinned fixture could not see it.
+
+Requires DePix API 0.31.0+ (list) / 0.39.0+ (detail) for the fields; older
+APIs keep working and simply omit them.
+
+## 2.2.1 — release the terminal-status correction
+
+`terminal` is the field an agent reads to decide it may stop waiting, and it
+was true for `error`, which sent agents away from money still in motion. The
+fix landed in 2.2.0's tree; this release is what put it in operators' hands.
+Patch: enum unchanged, no field added or removed.
+
 ## 2.2.0 — a discounted DePix sale now reconciles to what was actually paid
 
 `list_checkouts` carried the rail from 2.1.1 on, but not the two numbers that

@@ -277,6 +277,67 @@ describe("get_checkout (spec §4.1)", () => {
     expect(out.rejection_reasons).toEqual([]);
     expect(z.object(s.checkoutDetailOutput).safeParse(out).success).toBe(true);
   });
+
+  // The hold pair is what separates a sale waiting out a 14-day hold from one
+  // settling in the next few seconds — both read `processing`. This allowlist
+  // dropped the pair (the exact bug 2.2.0 fixed for the DePix money fields),
+  // so an agent polling the one order it was waiting on had no date to wait
+  // for. Null must SURVIVE, not be treated as absence: null answers "no hold
+  // decision recorded", a different fact from vault_hours 0.
+  it("carries the hold pair through, null included, and omits it only when the API does", async () => {
+    const detail = (over: Record<string, unknown>) => ({
+      checkout: {
+        id: "chk_1",
+        status: "processing",
+        amount: 5990,
+        description: null,
+        image_url: null,
+        pix_payload: null,
+        callback_url: null,
+        redirect_url: null,
+        metadata: null,
+        expires_at: "2026-07-30 12:20:00",
+        is_live: 1,
+        created_at: "2026-07-30 12:00:00",
+        processing_at: "2026-07-30 12:03:00",
+        approved_at: null,
+        completed_at: null,
+        cancelled_at: null,
+        blockchain_tx_id: null,
+        rejection_reasons: [],
+        ...over,
+      },
+    });
+    const { client } = makeClient([
+      { status: 200, json: detail({ delay_until: "2026-08-13T09:03:00-03:00", vault_hours: 336 }) },
+      { status: 200, json: detail({ delay_until: null, vault_hours: 0 }) },
+      { status: 200, json: detail({ delay_until: null, vault_hours: null }) },
+      { status: 200, json: detail({}) },
+    ]);
+
+    const held = await getCheckout(client, { checkout_id: "chk_1" });
+    // Verbatim, offset and all — the provider's string is the contract.
+    expect(held.delay_until).toBe("2026-08-13T09:03:00-03:00");
+    expect(held.vault_hours).toBe(336);
+
+    const unheld = await getCheckout(client, { checkout_id: "chk_1" });
+    expect(unheld).toHaveProperty("delay_until", null);
+    expect(unheld).toHaveProperty("vault_hours", 0);
+
+    // Sandbox / DePix rail: no paired deposit, both null — still an answer.
+    const noRecord = await getCheckout(client, { checkout_id: "chk_1" });
+    expect(noRecord).toHaveProperty("delay_until", null);
+    expect(noRecord).toHaveProperty("vault_hours", null);
+
+    // Pre-0.39.0 deployment: keys absent upstream stay absent, never invented.
+    const old = await getCheckout(client, { checkout_id: "chk_1" });
+    expect(old).not.toHaveProperty("delay_until");
+    expect(old).not.toHaveProperty("vault_hours");
+
+    for (const out of [held, unheld, noRecord, old]) {
+      expect(z.object(s.checkoutDetailOutput).safeParse(out).success).toBe(true);
+    }
+  });
 });
 
 describe("get_checkout — depix rail (SPEC_PAGAR_COM_DEPIX §4/§9)", () => {
@@ -474,6 +535,65 @@ describe("list_checkouts (spec §4.1)", () => {
     // does not exist on that rail.
     expect(out.checkouts[2]).not.toHaveProperty("depix_discount_pct");
     expect(out.checkouts[2]).not.toHaveProperty("depix_due_cents");
+
+    expect(z.object(s.listCheckoutsOutput).safeParse(out).success).toBe(true);
+  });
+
+  // The API has carried the hold pair on list items since 0.31.0; this
+  // allowlist dropped both for that whole stretch, so "which of my sales are
+  // held, and when do they land" — the question the list exists to answer —
+  // was unanswerable through this server. Null must survive normalization
+  // (it answers "no hold decision recorded"); absent stays absent.
+  it("carries the hold pair per item, null included, and omits it only when the API does", async () => {
+    const item = (over: Record<string, unknown>) => ({
+      id: "chk_1",
+      status: "processing",
+      amount: 5990,
+      description: null,
+      created_at: "2026-07-30 12:00:00",
+      expires_at: "2026-07-30 12:20:00",
+      is_live: 1,
+      processing_at: "2026-07-30 12:03:00",
+      approved_at: null,
+      metadata: null,
+      product_name: null,
+      rejection_reasons: [],
+      ...over,
+    });
+    const { client } = makeClient([
+      {
+        status: 200,
+        json: {
+          checkouts: [
+            item({ id: "chk_held", delay_until: "2026-08-13T09:03:00-03:00", vault_hours: 336 }),
+            item({ id: "chk_free", delay_until: null, vault_hours: 0 }),
+            item({ id: "chk_norec", delay_until: null, vault_hours: null }),
+            item({ id: "chk_old" }),
+          ],
+          stats: { total: 4, pending: 0, completed: 0, completed_amount: 0 },
+          limit: 50,
+          offset: 0,
+        },
+      },
+    ]);
+    const out = await listCheckouts(client, { limit: 50, offset: 0 });
+
+    // Verbatim, offset and all — the provider's string is the contract.
+    expect(out.checkouts[0].delay_until).toBe("2026-08-13T09:03:00-03:00");
+    expect(out.checkouts[0].vault_hours).toBe(336);
+
+    // "Looked at, not held" — a real answer, not an absence.
+    expect(out.checkouts[1]).toHaveProperty("delay_until", null);
+    expect(out.checkouts[1]).toHaveProperty("vault_hours", 0);
+
+    // "No decision recorded" (sandbox, DePix rail) — null survives; a
+    // value-based emit would erase exactly this distinction.
+    expect(out.checkouts[2]).toHaveProperty("delay_until", null);
+    expect(out.checkouts[2]).toHaveProperty("vault_hours", null);
+
+    // Pre-0.31.0 deployment: keys absent upstream stay absent.
+    expect(out.checkouts[3]).not.toHaveProperty("delay_until");
+    expect(out.checkouts[3]).not.toHaveProperty("vault_hours");
 
     expect(z.object(s.listCheckoutsOutput).safeParse(out).success).toBe(true);
   });

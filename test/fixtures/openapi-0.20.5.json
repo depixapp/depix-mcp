@@ -1,5 +1,5 @@
 {
-  "_note": "Pinned facts from the DePix OpenAPI 0.20.5 contract (the 'Pagar com DePix' train: payment_method rail, the depix payment object, rail-conditional expires_in / payer_tax_number). Refresh from api/_lib/openapi.js on the backend when the contract bumps. The contract test (test/contract.test.ts) fails CI if src/schemas.ts or src/requestMap.ts drift from this. Numeric bounds (fieldBounds) are pinned per endpoint so a cap raised on the backend fails this test instead of silently rejecting valid charges client-side.",
+  "_note": "Pinned facts from the DePix OpenAPI 0.20.5 contract (the 'Pagar com DePix' train: payment_method rail, the depix payment object, rail-conditional expires_in / payer_tax_number). Refresh from api/_lib/openapi.js on the backend when the contract bumps. The contract test (test/contract.test.ts) fails CI if src/schemas.ts or src/requestMap.ts drift from this. Numeric bounds (fieldBounds) are pinned per endpoint so a cap raised on the backend fails this test instead of silently rejecting valid charges client-side. MIXED, second refresh: `delay_until`/`vault_hours` on CheckoutDetail and CheckoutListItem were re-derived from the live 0.39.0 document (hold_fields_derived_from) — the list has carried them since 0.31.0 and this fixture's silence is how the drop went unnoticed.",
   "info_version": "0.20.5",
   "scopes": [
     "merchant_read",
@@ -219,7 +219,9 @@
       "approved_at",
       "completed_at",
       "cancelled_at",
-      "blockchain_tx_id"
+      "blockchain_tx_id",
+      "delay_until",
+      "vault_hours"
     ],
     "CheckoutListItem": [
       "id",
@@ -236,7 +238,9 @@
       "payment_method",
       "depix_discount_pct",
       "depix_due_cents",
-      "rejection_reasons"
+      "rejection_reasons",
+      "delay_until",
+      "vault_hours"
     ],
     "MeResponse": [
       "merchant_id",
@@ -287,5 +291,6 @@
     "original_amount_cents",
     "detected"
   ],
-  "status_facts_derived_from": "0.37.0"
+  "status_facts_derived_from": "0.37.0",
+  "hold_fields_derived_from": "0.39.0"
 }

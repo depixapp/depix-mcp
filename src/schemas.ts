@@ -318,6 +318,26 @@ export const checkoutDetailOutput = {
   rejection_reasons: z
     .array(z.string())
     .describe("Provider reason codes when the underlying payment was refused/held; [] otherwise."),
+  // Optional, not required — the pair only exists from OpenAPI 0.39.0 on
+  // (0.31.0 on the list), and a required key would fail every read against an
+  // older deployment. Null is MEANINGFUL here and must survive: null means "no
+  // hold decision recorded" (sandbox, DePix rail), which is a different fact
+  // from 0 ("looked at, not held").
+  delay_until: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "When this sale's money is released, if it is being held. Relayed verbatim from the settlement provider as ISO-8601 WITH an offset (\"2026-08-13T09:03:00-03:00\") — unlike every other timestamp here, which is naive UTC. Null while no release date exists (not held, or the provider has not answered yet). A sale still waiting sits in `processing`.",
+    ),
+  vault_hours: z
+    .number()
+    .int()
+    .nullable()
+    .optional()
+    .describe(
+      "Hours this sale was booked to wait at creation. 0 = the hold policy imposed no wait. Null = no decision recorded (sandbox, or the DePix rail). Answers WHETHER, never WHEN: `created_at + vault_hours` is not the release date — `delay_until` is the only date.",
+    ),
 };
 
 export const getCheckoutInput = {
@@ -361,6 +381,11 @@ export const checkoutListItemShape = {
   depix_discount_pct: z.number().int().nullable().optional(),
   depix_due_cents: z.number().int().nullable().optional(),
   rejection_reasons: z.array(z.string()),
+  // Same optionality reasoning (these arrived in OpenAPI 0.31.0), same null
+  // semantics as the detail read: null is an answer ("no hold decision
+  // recorded"), not a missing value — see checkoutDetailOutput.
+  delay_until: z.string().nullable().optional(),
+  vault_hours: z.number().int().nullable().optional(),
 };
 const checkoutListItemOutput = z.object(checkoutListItemShape);
 

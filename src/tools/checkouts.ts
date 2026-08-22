@@ -77,6 +77,13 @@ function normalizeCheckoutDetail(raw: Record<string, unknown>): Record<string, u
   if (rail !== null) out.payment_method = rail;
   const depix = normalizeDepixPayment(raw.depix);
   if (depix !== null) out.depix = depix;
+  // The hold pair (OpenAPI 0.39.0 here, 0.31.0 on the list). Emitted by KEY
+  // PRESENCE, not by value, unlike the rail above: null is an answer the agent
+  // needs ("no hold decision recorded" — sandbox, DePix rail), a different
+  // fact from vault_hours 0 ("looked at, not held"). A value-based emit would
+  // erase exactly that distinction; an older API simply omits the keys.
+  if ("delay_until" in raw) out.delay_until = strOrNull(raw.delay_until);
+  if ("vault_hours" in raw) out.vault_hours = numOrNull(raw.vault_hours);
   return out;
 }
 
@@ -111,6 +118,13 @@ function normalizeCheckoutListItem(raw: Record<string, unknown>) {
   if (duePct !== null) out.depix_discount_pct = duePct;
   const dueCents = numOrNull(raw.depix_due_cents);
   if (dueCents !== null) out.depix_due_cents = dueCents;
+  // The hold pair — the API has carried it on list items since 0.31.0 and this
+  // allowlist silently dropped both, so a held sale was indistinguishable from
+  // one settling in seconds (same `processing`, no date). Key-presence emit,
+  // not value-based: null is the "no hold decision recorded" answer and must
+  // reach the agent — see normalizeCheckoutDetail.
+  if ("delay_until" in raw) out.delay_until = strOrNull(raw.delay_until);
+  if ("vault_hours" in raw) out.vault_hours = numOrNull(raw.vault_hours);
   return out;
 }
 

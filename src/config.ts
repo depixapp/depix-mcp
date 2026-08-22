@@ -78,7 +78,7 @@ export function resolveMaxWaitSeconds(env: NodeJS.ProcessEnv = process.env): num
  * /.well-known descriptor stale.
  */
 export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MCP_SERVER_VERSION?.trim() || "2.2.1";
+  return env.MCP_SERVER_VERSION?.trim() || "2.3.0";
 }
 
 // ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────
