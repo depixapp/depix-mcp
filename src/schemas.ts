@@ -328,7 +328,7 @@ export const checkoutDetailOutput = {
     .nullable()
     .optional()
     .describe(
-      "When this sale's money is released, if it is being held. Relayed verbatim from the settlement provider as ISO-8601 WITH an offset (\"2026-08-13T09:03:00-03:00\") — unlike every other timestamp here, which is naive UTC. Null while no release date exists (not held, or the provider has not answered yet). A sale still waiting sits in `processing`.",
+      "When this sale's money is released, if it is being held. Since API 0.40.0 this is the same RFC 3339 UTC instant as every other timestamp (\"2026-08-13T12:03:00.000Z\"); older API versions relayed the provider's -03:00 offset here, and this server passes either through untouched. Null while no release date exists (not held, or the provider has not answered yet). A sale still waiting sits in `processing`.",
     ),
   vault_hours: z
     .number()

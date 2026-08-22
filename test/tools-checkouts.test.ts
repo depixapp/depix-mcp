@@ -316,7 +316,10 @@ describe("get_checkout (spec §4.1)", () => {
     ]);
 
     const held = await getCheckout(client, { checkout_id: "chk_1" });
-    // Verbatim, offset and all — the provider's string is the contract.
+    // Passthrough, byte for byte — this server never reformats the API's
+    // string. Since API 0.40.0 the wire sends RFC 3339 UTC; the offset fixture
+    // stays because a pre-0.40.0 deployment still answers this shape, and the
+    // passthrough contract must hold for both.
     expect(held.delay_until).toBe("2026-08-13T09:03:00-03:00");
     expect(held.vault_hours).toBe(336);
 
@@ -578,7 +581,10 @@ describe("list_checkouts (spec §4.1)", () => {
     ]);
     const out = await listCheckouts(client, { limit: 50, offset: 0 });
 
-    // Verbatim, offset and all — the provider's string is the contract.
+    // Passthrough, byte for byte — this server never reformats the API's
+    // string. Since API 0.40.0 the wire sends RFC 3339 UTC; the offset fixture
+    // stays because a pre-0.40.0 deployment still answers this shape, and the
+    // passthrough contract must hold for both.
     expect(out.checkouts[0].delay_until).toBe("2026-08-13T09:03:00-03:00");
     expect(out.checkouts[0].vault_hours).toBe(336);
 

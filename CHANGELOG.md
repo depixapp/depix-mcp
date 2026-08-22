@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.1 — the hold date now reads like every other timestamp
+
+Text only, no behavior change. API 0.40.0 moved every timestamp it emits to
+one shape, RFC 3339 UTC — `delay_until` included, which until then was the
+one field carrying the settlement provider's -03:00 offset. The `get_checkout`
+description taught that exception; it now teaches the rule, and notes that a
+pre-0.40.0 deployment still answers the offset shape, which this server passes
+through untouched either way (passthrough is the contract, and it is what
+makes this a text-only release).
+
 ## 2.3.0 — a held sale now says it is held, and until when
 
 A sale waiting out a vault hold and one settling in the next few seconds read
