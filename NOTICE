@@ -7,6 +7,10 @@ non-custodial Liquid wallet.
 Licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
 
-This product embeds the DePix App wallet engine (src/vendor/), owned by DePix App
-and distributed here under Apache-2.0, and installs third-party packages whose
-licenses are reproduced in THIRD_PARTY_LICENSES.
+This product contains the DePix App wallet engine (src/wallet-engine/), owned by
+DePix App and distributed here under Apache-2.0, and installs third-party
+packages whose licenses are reproduced in THIRD_PARTY_LICENSES.
+
+DePix App owns the engine source and distributes THIS copy under Apache-2.0. The
+`@depixapp/sdk` lineage of the same source, published on npm, remains
+AGPL-3.0-only; nothing from that published tarball is reused here.

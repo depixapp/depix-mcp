@@ -1,20 +1,3 @@
-/*
- * Copyright 2026 DePix App
- *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not
- * use this file except in compliance with the License. You may obtain a copy of
- * the License at http://www.apache.org/licenses/LICENSE-2.0 — see LICENSE.
- *
- * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
- * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    88228a10ca5fa275d64de9b3150bc75cc6a0bb8c
- * Path:      src/index.ts
- * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
- *
- * DePix App owns this code and distributes THIS copy under Apache-2.0. The
- * `@depixapp/sdk` lineage of the same source remains AGPL-3.0-only; nothing
- * from that published tarball is reused here (spec §2.2).
- */
 // @depixapp/sdk — non-custodial Liquid wallet SDK for AI agents (F3).
 // Public surface of PR1 (wallet core) + PR2 (Pix flows: deposit/withdraw,
 // idempotent resume, API client, webhook verification). Conversions, gift
