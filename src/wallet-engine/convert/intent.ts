@@ -39,6 +39,7 @@ import {
   boltzRouteAvailability,
   noSwapProviderError,
   stablecoinProviderUnavailableError,
+  type BoltzRail,
   type BoltzRouteAvailability
 } from "./boltz/providers.js";
 import { estimateReverseReceive, getReverseLimits } from "./boltz/reverse.js";
@@ -499,16 +500,14 @@ async function estimateLeg(leg: RouteLeg, amountIn: bigint, deps: IntentDeps): P
  * EXISTING swap never asks — a backend that stopped creating swaps still claims
  * and refunds the ones it holds.
  */
-function boltzRailOf(leg: RouteLeg): keyof Pick<BoltzRouteAvailability, "lightning" | "stablecoin"> | null {
+function boltzRailOf(leg: RouteLeg): BoltzRail | null {
   if (leg.provider !== "boltz") return null;
   return leg.method === "toStablecoin" ? "stablecoin" : "lightning";
 }
 
 /** The typed refusal for a leg whose backend is not creating swaps. */
 function routeUnavailableError(leg: RouteLeg): ConversionError {
-  return boltzRailOf(leg) === "stablecoin"
-    ? stablecoinProviderUnavailableError()
-    : noSwapProviderError(`${leg.provider}.${leg.method}`);
+  return boltzRailOf(leg) === "stablecoin" ? stablecoinProviderUnavailableError() : noSwapProviderError();
 }
 
 /**

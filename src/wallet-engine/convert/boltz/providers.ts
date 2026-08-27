@@ -291,6 +291,9 @@ export async function assertStablecoinProviderLive(options: SelectProviderOption
 
 // ─── what the route table may honestly offer right now ────────────────────────
 
+/** The two rails a route can be created on; they fail independently. */
+export type BoltzRail = "lightning" | "stablecoin";
+
 /** Which provider-backed rails can be CREATED right now. Recovery is unaffected. */
 export interface BoltzRouteAvailability {
   /** Lightning send + receive — follows the provider list. */

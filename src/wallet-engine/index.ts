@@ -104,6 +104,7 @@ export {
   getSelectedProvider,
   probeProvider,
   selectSwapProvider,
+  type BoltzRail,
   type BoltzRouteAvailability,
   type SwapProvider,
   type SwapProviderId,

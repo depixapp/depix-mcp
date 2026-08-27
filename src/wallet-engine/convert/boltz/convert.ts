@@ -823,6 +823,7 @@ export class BoltzConvert {
 
     let resolveInvoice!: (v: { invoice: string; record: ReverseSwapRecord }) => void;
     let rejectInvoice!: (e: unknown) => void;
+    let invoiceSurfaced = false;
     const invoiceReady = new Promise<{ invoice: string; record: ReverseSwapRecord }>((res, rej) => {
       resolveInvoice = res;
       rejectInvoice = rej;
@@ -853,7 +854,10 @@ export class BoltzConvert {
           });
         }
       },
-      onInvoice: (invoice, record) => resolveInvoice({ invoice, record }),
+      onInvoice: (invoice, record) => {
+        invoiceSurfaced = true;
+        resolveInvoice({ invoice, record });
+      },
       ...(this.deps.reverseClaim ? { claim: this.deps.reverseClaim } : {}),
       ...(this.deps.reverseBroadcast ? { broadcast: this.deps.reverseBroadcast } : {}),
       ...(this.deps.reverseGetLockupTx ? { getLockupTx: this.deps.reverseGetLockupTx } : {}),
@@ -868,7 +872,9 @@ export class BoltzConvert {
       }
     );
     completion.catch((err) => {
-      invalidateSelectionOnCreationFailure(err);
+      // Only a failure BEFORE the invoice existed can blame swap CREATION; a
+      // later claim error says nothing about whether the backend takes new swaps.
+      if (!invoiceSurfaced) invalidateSelectionOnCreationFailure(err);
       rejectInvoice(err);
     });
     // Don't leak an unhandled rejection when the caller only awaits the invoice.

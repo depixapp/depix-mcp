@@ -99,6 +99,7 @@ export {
   isStablecoinProviderLive,
   probeProvider,
   selectSwapProvider,
+  type BoltzRail,
   type BoltzRouteAvailability,
   type SwapProvider,
   type SwapProviderId
