@@ -43,7 +43,7 @@ export const SERVER_NAME = "io.github.depixapp/depix-mcp";
 export const SERVER_TITLE = "DePix App Gateway";
 
 /**
- * Handshake title of the UNIFIED local deployment (`npx -y @depixapp/mcp`, 58
+ * Handshake title of the UNIFIED local deployment (`npx -y @depixapp/mcp`, 59
  * tools). This string ships inside the npm tarball, so it is fixed here and not
  * at a later surface pass: a server that holds the operator's seed and signs
  * Liquid transactions must not introduce itself to the model as a "Gateway".
@@ -78,7 +78,7 @@ export function resolveMaxWaitSeconds(env: NodeJS.ProcessEnv = process.env): num
  * /.well-known descriptor stale.
  */
 export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MCP_SERVER_VERSION?.trim() || "2.6.0";
+  return env.MCP_SERVER_VERSION?.trim() || "2.7.0";
 }
 
 // ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────

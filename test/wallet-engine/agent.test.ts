@@ -260,3 +260,86 @@ describe("DepixAgent.verifyDomain", () => {
     );
   });
 });
+
+describe("DepixAgent.configureDepixRail (§3.9)", () => {
+  it("enable: POSTs a signed body with the address, blinding key + index, maps the response", async () => {
+    const { agent, calls } = await makeAgent([
+      {
+        status: 200,
+        json: {
+          response: {
+            depix_pay_enabled: true,
+            depix_pay_address: "lq1qdedicated",
+            depix_derivation_index: 7,
+            depix_discount_pct: 1.5,
+          },
+        },
+      },
+    ]);
+
+    const res = await agent.configureDepixRail({
+      enabled: true,
+      address: "lq1qDEDICATED",
+      blindingKey: "ab".repeat(32),
+      derivationIndex: 7,
+    });
+
+    const req = calls[0]!;
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe("https://api.test/api/agents/depix-pay");
+    assertSigned(req);
+    const body = JSON.parse(req.body!);
+    expect(body).toEqual({
+      enabled: true,
+      address: "lq1qDEDICATED",
+      blinding_key: "ab".repeat(32),
+      derivation_index: 7,
+    });
+    // The signed hash is over EXACTLY the bytes we sent.
+    expect(req.body).toBe(JSON.stringify(body));
+
+    expect(res).toEqual({
+      enabled: true,
+      address: "lq1qdedicated",
+      derivationIndex: 7,
+      discountPct: 1.5,
+    });
+  });
+
+  it("disable: POSTs { enabled: false } with NO key, maps the response", async () => {
+    const { agent, calls } = await makeAgent([
+      {
+        status: 200,
+        json: { response: { depix_pay_enabled: false, view_key_deleted: true, pending_addresses: 0 } },
+      },
+    ]);
+
+    const res = await agent.configureDepixRail({ enabled: false });
+
+    const body = JSON.parse(calls[0]!.body!);
+    expect(body).toEqual({ enabled: false });
+    // No key material of any kind on the disable wire.
+    expect(calls[0]!.body).not.toContain("blinding");
+    expect(res).toEqual({ enabled: false, viewKeyDeleted: true, pendingAddresses: 0 });
+  });
+
+  it("omits derivation_index when it is not supplied", async () => {
+    const { calls } = await makeAgent([
+      { status: 200, json: { response: { depix_pay_enabled: true, depix_pay_address: "lq1q", depix_derivation_index: null, depix_discount_pct: 0 } } },
+    ]).then(async (h) => {
+      await h.agent.configureDepixRail({ enabled: true, address: "lq1q", blindingKey: "cd".repeat(32) });
+      return h;
+    });
+    const body = JSON.parse(calls[0]!.body!);
+    expect(body).not.toHaveProperty("derivation_index");
+  });
+
+  it("surfaces a backend rejection as a DepixApiError (branch on err.code)", async () => {
+    const { agent } = await makeAgent([
+      { status: 403, json: { response: { errorMessage: "not verified" }, error: { code: "verification_required" } } },
+    ]);
+    await expect(
+      agent.configureDepixRail({ enabled: true, address: "lq1q", blindingKey: "ef".repeat(32) })
+    ).rejects.toSatisfy((e) => isDepixSdkError(e, "verification_required"));
+  });
+});

@@ -4,7 +4,7 @@
 //
 //   hosted  (mcp.depixapp.com)  — 26 tools, no seed, receive-only. "It never
 //                                 signs, never holds funds" is TRUE here.
-//   unified (npx @depixapp/mcp) — 58 tools, the operator's seed, local signing.
+//   unified (npx @depixapp/mcp) — 59 tools, the operator's seed, local signing.
 //                                 That same sentence is FALSE here, and shipping
 //                                 it would tell the model the wallet cannot pay.
 //
@@ -17,7 +17,7 @@
 // separation (§2.1). The unified half — which merges the engine's own wallet
 // instructions — lives in src/unified.ts, reachable only from the stdio bin.
 
-/** Canonical run command for the full (58-tool) local deployment. */
+/** Canonical run command for the full (59-tool) local deployment. */
 export const UNIFIED_RUN_COMMAND = "npx -y @depixapp/mcp";
 /** The first-run ceremony. A human act at a terminal — never an MCP tool (§1.5). */
 export const UNIFIED_INIT_COMMAND = "npx -y @depixapp/mcp init";
@@ -35,7 +35,7 @@ export const HOSTED_ONLY_CUSTODY_SENTENCE =
  * closed with WORDS, not code: no wallet symbol enters the hosted bundle.
  */
 export const LEVEL_TWO_SIGNPOST =
-  "This is the HOSTED, receive-only level of the DePix App MCP. The same MCP has a second level with 32 more tools — " +
+  "This is the HOSTED, receive-only level of the DePix App MCP. The same MCP has a second level with 33 more tools — " +
   `a non-custodial Liquid wallet (hold, send, convert, pay Lightning invoices, buy gift cards) plus local account setup — which runs LOCALLY via \`${UNIFIED_RUN_COMMAND}\` ` +
   "on the operator's own machine, because signing happens in-process and the seed never leaves that machine. " +
   `First run is a human ceremony at a terminal: \`${UNIFIED_INIT_COMMAND}\`. If the user asks this server to hold, send or convert funds, ` +
@@ -48,7 +48,7 @@ function catalogSentence(deployment: "hosted" | "unified"): string {
     "plus dated charges (cobranças, Pix), read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
   return deployment === "hosted"
     ? `${base} 26 tools total: 20 gateway + 6 support-ticket.`
-    : `${base} 58 tools total: 20 gateway + 6 support-ticket + 29 local wallet_* tools + 3 account tools.`;
+    : `${base} 59 tools total: 20 gateway + 6 support-ticket + 29 local wallet_* tools + 4 account tools.`;
 }
 
 /**

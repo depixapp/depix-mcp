@@ -13,7 +13,7 @@ depends only on whether the running instance has a seed:
 |---|---|---|
 | How | `https://mcp.depixapp.com/mcp` (Streamable HTTP) | `npx -y @depixapp/mcp` (stdio) |
 | Runs on | DePix App's servers | **your** machine |
-| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **58** — the 26 **plus** 29 `wallet_*` and 3 account tools |
+| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **59** — the 26 **plus** 29 `wallet_*` and 4 account tools |
 | Seed | none, ever | yours, never leaves the machine |
 | Install | zero (claude.ai, ChatGPT) | Node.js ≥ 22.4 |
 
@@ -98,7 +98,7 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=depix&config=<base64 from th
 > surface is feature-flagged (`AUTHKIT_DOMAIN`): with it unset, only the `sk_`
 > header/stdio paths above are active. Terminal clients keep using `sk_` keys.
 
-## Quickstart 2 — Local stdio, 58 tools (Claude Desktop / Claude Code / Cursor)
+## Quickstart 2 — Local stdio, 59 tools (Claude Desktop / Claude Code / Cursor)
 
 Requires **Node.js ≥ 22.4**. The only official npm package is `@depixapp/mcp` —
 the `@depixapp` scope is organization-owned; do not install any similarly-named
@@ -120,7 +120,7 @@ Exactly the 26 tools of level 1, running locally:
 }
 ```
 
-All 58 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
+All 59 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
 `wallet_not_configured` error telling the agent to ask you to run `init`. That is
 deliberate: MCP hosts snapshot the tool list when they connect, so a catalog that
 grew later would mean "restart your client".
@@ -217,9 +217,12 @@ cannot be credited automatically, and an on-chain payment is irreversible.
 Settlement is observed on-chain: `approved` at the first confirmation (~1 min),
 `completed` at the second. `expires_in` accepts 300–3600 s here (default 1800)
 instead of the Pix rail's 300–1200. The rail must be enabled by the merchant —
-otherwise the API answers `depix_not_enabled`. Sandbox DePix checkouts are
-deliberately unpayable (placeholder address, `uri: null`); drive them with
-`simulate_checkout_payment`.
+otherwise the API answers `depix_not_enabled`. On the local level, a registered
+agent account turns it on with **`configure_depix_rail`** (`{ "enabled": true }`):
+the tool derives a dedicated address from your own wallet and registers it, so
+you keep custody and the backend only gains a per-address viewing key. Sandbox
+DePix checkouts are deliberately unpayable (placeholder address, `uri: null`);
+drive them with `simulate_checkout_payment`.
 
 ## Tools
 

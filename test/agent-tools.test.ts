@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerAgentTools, type AgentLike, type AgentToolDeps, type KeyActivation } from "../src/agent-tools.js";
+import { AGENT_TOOL_NAMES, registerAgentTools, type AgentLike, type AgentToolDeps, type KeyActivation } from "../src/agent-tools.js";
 import type { RegisterResult } from "../src/wallet-engine/agent.js";
 
 const REGISTER_RESULT: RegisterResult = {
@@ -46,12 +46,34 @@ class FakeAgent implements AgentLike {
     if (options?.confirm) return { verifiedDomain: domain };
     return { recordName: `_depix-verify.${domain}`, recordValue: "depix-verify=abc123" };
   }
+  configuredRail?: Record<string, unknown>;
+  configureDepixRail(input: { enabled: true; address: string; blindingKey: string; derivationIndex?: number | null }): Promise<{ enabled: true; address: string; derivationIndex: number | null; discountPct: number }>;
+  configureDepixRail(input: { enabled: false }): Promise<{ enabled: false; viewKeyDeleted: boolean; pendingAddresses: number }>;
+  async configureDepixRail(
+    input:
+      | { enabled: true; address: string; blindingKey: string; derivationIndex?: number | null }
+      | { enabled: false },
+  ) {
+    this.configuredRail = { ...input };
+    if (!input.enabled) return { enabled: false as const, viewKeyDeleted: true, pendingAddresses: 0 };
+    return { enabled: true as const, address: input.address.toLowerCase(), derivationIndex: input.derivationIndex ?? null, discountPct: 1.5 };
+  }
 }
+
+/** A sentinel view key the tool must NEVER echo back into the transcript or a log. */
+const SECRET_BLINDING_KEY = "SENTINEL_BLINDING_KEY_DEADBEEFCAFE";
 
 function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
   const activation: KeyActivation = { activeMode: "test", source: "store", envOverride: false };
   return {
-    getWallet: async () => ({ getReceiveAddress: async () => "lq1qpayout" }),
+    getWallet: async () => ({
+      getReceiveAddress: async () => "lq1qpayout",
+      deriveDepixPayCredential: async (opts?: { index?: number }) => ({
+        address: "lq1qdedicated",
+        blindingKey: SECRET_BLINDING_KEY,
+        derivationIndex: opts?.index ?? 12,
+      }),
+    }),
     openAgent: async () => new FakeAgent(),
     createAgent: async () => new FakeAgent(),
     persistKeys: async () => activation,
@@ -174,5 +196,70 @@ describe("agent_status / verify_domain (§3.2/§3.3)", () => {
     const p2 = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
     expect(p2.phase).toBe("confirm");
     expect(p2.verified_domain).toBe("acme.com");
+  });
+});
+
+describe("configure_depix_rail (§3.9)", () => {
+  it("S3.9a: the tool is one of the agent-local catalog (now 4)", () => {
+    expect(AGENT_TOOL_NAMES).toContain("configure_depix_rail");
+    expect(AGENT_TOOL_NAMES.length).toBe(4);
+  });
+
+  it("S3.9b: enable returns PUBLIC facts only — the blinding key NEVER reaches the transcript", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const result = await client.callTool({ name: "configure_depix_rail", arguments: { enabled: true } });
+
+    expect(result.isError).toBeFalsy();
+    const out = structured(result);
+    expect(out.enabled).toBe(true);
+    expect(out.depix_pay_enabled).toBe(true);
+    expect(out.depix_pay_address).toBe("lq1qdedicated");
+    expect(out.derivation_index).toBe(12);
+    expect(out.discount_pct).toBe(1.5);
+
+    // THE proof: the whole serialized result (message text + structured JSON)
+    // carries no trace of the derived view key.
+    const whole = payloadText(result) + JSON.stringify(out);
+    expect(whole).not.toContain(SECRET_BLINDING_KEY);
+    expect(whole).not.toMatch(/blinding/i);
+
+    // …and yet the key DID reach the signed backend call (it transits by design).
+    expect(agent.configuredRail).toMatchObject({ enabled: true, address: "lq1qdedicated", blindingKey: SECRET_BLINDING_KEY, derivationIndex: 12 });
+  });
+
+  it("S3.9c: forwards an explicit derivation_index to the derivation", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "configure_depix_rail", arguments: { enabled: true, derivation_index: 5 } }));
+    expect(out.derivation_index).toBe(5);
+    expect(agent.configuredRail).toMatchObject({ derivationIndex: 5 });
+  });
+
+  it("S3.9d: disable needs no wallet and sends no key", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent, getWallet: async () => null }));
+    const out = structured(await client.callTool({ name: "configure_depix_rail", arguments: { enabled: false } }));
+    expect(out.enabled).toBe(false);
+    expect(out.depix_pay_enabled).toBe(false);
+    expect(out.view_key_deleted).toBe(true);
+    expect(out.pending_addresses).toBe(0);
+    expect(agent.configuredRail).toEqual({ enabled: false });
+  });
+
+  it("S3.9e: enable without a wallet → wallet_not_configured", async () => {
+    const client = await connect(baseDeps({ getWallet: async () => null }));
+    const result = await client.callTool({ name: "configure_depix_rail", arguments: { enabled: true } });
+    expect(result.isError).toBe(true);
+    expect(payloadText(result)).toContain("wallet_not_configured");
+  });
+
+  it("S3.9f: no agent account → agent_not_initialized pointing at register_account", async () => {
+    const client = await connect(baseDeps({ openAgent: async () => null }));
+    const result = await client.callTool({ name: "configure_depix_rail", arguments: { enabled: true } });
+    expect(result.isError).toBe(true);
+    const text = payloadText(result);
+    expect(text).toContain("agent_not_initialized");
+    expect(text).toContain("register_account");
   });
 });

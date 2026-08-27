@@ -14,11 +14,20 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { z } from "zod";
 import { ToolError, mapToolError, walletNotConfiguredError } from "./wallet-engine/mcp/errors.js";
 import { withNextAction } from "./next-action.js";
-import type { AgentStatus, DomainChallenge, DomainVerification, RegisterInput, RegisterResult } from "./wallet-engine/agent.js";
+import type {
+  AgentStatus,
+  DepixRailDisabledResult,
+  DepixRailEnabledResult,
+  DomainChallenge,
+  DomainVerification,
+  RegisterInput,
+  RegisterResult,
+} from "./wallet-engine/agent.js";
+import type { DepixPayCredential } from "./wallet-engine/wallet.js";
 import type { ActiveKeyMode } from "./wallet-engine/agent/credential-store.js";
 
 /** The agent-local catalog (§3.6). Exported for the count invariant + tests. */
-export const AGENT_TOOL_NAMES = ["register_account", "agent_status", "verify_domain"] as const;
+export const AGENT_TOOL_NAMES = ["register_account", "agent_status", "verify_domain", "configure_depix_rail"] as const;
 
 /** The DepixAgent surface these tools use (a subset; a fake satisfies it in tests). */
 export interface AgentLike {
@@ -27,6 +36,8 @@ export interface AgentLike {
   status(): Promise<AgentStatus>;
   verifyDomain(domain: string): Promise<DomainChallenge>;
   verifyDomain(domain: string, options: { confirm: true }): Promise<DomainVerification>;
+  configureDepixRail(input: { enabled: true; address: string; blindingKey: string; derivationIndex?: number | null }): Promise<DepixRailEnabledResult>;
+  configureDepixRail(input: { enabled: false }): Promise<DepixRailDisabledResult>;
 }
 
 /** What persisting the minted keys reports back (§3.1 precedence "achado m4"). */
@@ -39,9 +50,11 @@ export interface KeyActivation {
   envOverride: boolean;
 }
 
-/** The wallet surface register_account needs — just the payout address. */
+/** The wallet surface the agent tools need: the payout address + the DePix-rail credential. */
 export interface AgentWalletLike {
   getReceiveAddress(options?: { index?: number }): Promise<string>;
+  /** Derive the DePix-rail dedicated address + its per-script SLIP-77 view key (§3.9). */
+  deriveDepixPayCredential(options?: { index?: number }): Promise<DepixPayCredential>;
 }
 
 /** Injected dependencies (defaults built in stdio.ts; tests pass fakes). */
@@ -216,6 +229,49 @@ async function verifyDomain(deps: AgentToolDeps, args: { domain: string; confirm
   };
 }
 
+async function configureDepixRail(deps: AgentToolDeps, args: { enabled: boolean; derivation_index?: number }) {
+  // The rail is signed by the agent identity, so an account must already exist —
+  // this tool never creates one (that is register_account).
+  const agent = await deps.openAgent();
+  if (!agent) throw agentNotInitialized();
+
+  if (!args.enabled) {
+    // Turning OFF needs no wallet and no key — revoking a grant is never harder
+    // than granting it.
+    const result = await agent.configureDepixRail({ enabled: false });
+    return {
+      enabled: false as const,
+      depix_pay_enabled: false,
+      view_key_deleted: result.viewKeyDeleted,
+      pending_addresses: result.pendingAddresses,
+    };
+  }
+
+  // Turning ON derives the dedicated address AND the per-script SLIP-77 view key
+  // from THIS wallet. The blinding key is a secret: it is passed straight to the
+  // signed backend call and is NEVER placed in the return value or a log.
+  const wallet = await deps.getWallet();
+  if (!wallet) throw walletNotConfiguredError();
+  const cred = await wallet.deriveDepixPayCredential(
+    args.derivation_index !== undefined ? { index: args.derivation_index } : {},
+  );
+  const result = await agent.configureDepixRail({
+    enabled: true,
+    address: cred.address,
+    blindingKey: cred.blindingKey,
+    derivationIndex: cred.derivationIndex,
+  });
+
+  // PUBLIC facts only — the address and the state of the rail, never the key.
+  return {
+    enabled: true as const,
+    depix_pay_enabled: true,
+    depix_pay_address: result.address,
+    derivation_index: cred.derivationIndex,
+    discount_pct: result.discountPct,
+  };
+}
+
 // ── registration ──
 
 const write: ToolAnnotations = { readOnlyHint: false, openWorldHint: true };
@@ -344,6 +400,40 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       annotations: write,
     },
     (args) => run(() => verifyDomain(deps, args as { domain: string; confirm?: boolean })),
+  );
+
+  server.registerTool(
+    "configure_depix_rail",
+    {
+      title: "Turn the DePix direct rail on/off",
+      description:
+        "Let this merchant be paid in DePix sent DIRECTLY on Liquid, not only by Pix. Enabling derives a dedicated " +
+        "receiving address from THIS wallet and registers it with the backend so incoming DePix is credited; " +
+        "disabling turns it off. Needs an initialized wallet (to derive the address) and a registered agent account " +
+        "(the call is signed). You pass only `enabled` (and, optionally, a `derivation_index` to re-derive a specific " +
+        "address) — the tool derives the address and its private viewing key itself and sends them in-process. The " +
+        "response carries only PUBLIC facts (the address, the rail state): the viewing key is NEVER shown here.",
+      inputSchema: {
+        enabled: z.boolean().describe("true = turn the DePix direct rail ON (derive + register a dedicated address); false = turn it OFF."),
+        derivation_index: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Optional: derive the dedicated address at this exact index (e.g. to re-register a known one). Omit to allocate a fresh one."),
+      },
+      outputSchema: {
+        enabled: z.boolean().describe("Echo of the requested state."),
+        depix_pay_enabled: z.boolean().describe("Whether the rail is now ON for this merchant."),
+        depix_pay_address: z.string().optional().describe("ON only: the dedicated confidential (lq1…) address now receiving DePix."),
+        derivation_index: z.number().int().optional().describe("ON only: the derivation index the address was taken at."),
+        discount_pct: z.number().optional().describe("ON only: the DePix-payment discount the merchant offers, in percent."),
+        view_key_deleted: z.boolean().optional().describe("OFF only: true when the viewing key was deleted (no in-flight checkout kept it)."),
+        pending_addresses: z.number().int().optional().describe("OFF only: addresses whose key was retained because a checkout there is still open."),
+      },
+      annotations: write,
+    },
+    (args) => run(() => configureDepixRail(deps, args as { enabled: boolean; derivation_index?: number })),
   );
 
   return { toolNames: AGENT_TOOL_NAMES };

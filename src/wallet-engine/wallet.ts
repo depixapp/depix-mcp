@@ -27,6 +27,7 @@ import {
   Signer,
   TxBuilder,
   buildWollet,
+  deriveSlip77BlindingKeyHex,
   descriptorFromMnemonic,
   generateMnemonic,
   mainnetNetwork,
@@ -270,6 +271,16 @@ export interface WalletTransaction {
   feeSats: bigint;
   /** Net balance deltas keyed by asset (AssetKey when known, raw hex id otherwise). */
   balance: Record<string, bigint>;
+}
+
+/** The dedicated address + per-script SLIP-77 view key for the DePix rail (§3.9). */
+export interface DepixPayCredential {
+  /** The confidential (lq1…) dedicated address that will receive DePix. */
+  address: string;
+  /** SLIP-77 blinding PRIVATE key of that script (64-hex). A view key — SECRET. */
+  blindingKey: string;
+  /** The derivation index the address was taken at (reserved from the frontier). */
+  derivationIndex: number;
 }
 
 export interface SendParams {
@@ -1297,6 +1308,56 @@ export class DepixWallet {
       await this.updateStore.bumpScanHint(idx + 1).catch(() => {});
       await this.refreshFile();
       return wollet.address(idx).address().toString();
+    });
+  }
+
+  /**
+   * Derive the dedicated address for the DePix direct rail together with the
+   * SLIP-77 blinding PRIVATE key of its script (spec §3.9). The pair is what
+   * `configure_depix_rail` hands the backend so the §6.3 watcher can unblind
+   * the amounts paid to THAT address and nothing else — the key is a per-script
+   * READ key with zero spending power.
+   *
+   * With no `index`, a FRESH dedicated index is allocated the same way a receive
+   * address is: `max(lwk_last_unused, nextReceiveIndex)`, bumped and persisted
+   * BEFORE returning, so re-activating always derives a brand-new address the
+   * backend has never seen. With an explicit `index` (a re-activation or a
+   * server-rehydrated address), that exact index is derived — the caller has
+   * already established it belongs to this seed. Either way the burned index is
+   * kept inside the coverage a degraded (gap-limit) rescan replays, so a restore
+   * still finds what payers sent to it.
+   *
+   * The blinding key never enters the log or any return field other than this
+   * one — the caller sends it in-process and surfaces only the address.
+   */
+  async deriveDepixPayCredential(options: { index?: number } = {}): Promise<DepixPayCredential> {
+    this.assertOpen();
+    this.assertBackupConfirmed();
+    const wollet = await this.ensureWollet();
+    const descriptor = this.requireDescriptor();
+
+    if (typeof options.index === "number") {
+      if (!Number.isInteger(options.index) || options.index < 0) {
+        throw new WalletError("INVALID_ADDRESS", "derivation_index must be a non-negative integer");
+      }
+      const idx = options.index;
+      const address = wollet.address(idx).address().toString();
+      await this.updateStore.bumpScanHint(idx + 1).catch(() => {});
+      return { address, blindingKey: deriveSlip77BlindingKeyHex(descriptor, address), derivationIndex: idx };
+    }
+
+    // Fresh dedicated index under the SAME mutex as getReceiveAddress()/send(),
+    // so the read-modify-write of nextReceiveIndex can never hand two callers
+    // the same index (which would regress the never-reuse property).
+    return this.opMutex.runExclusive(async () => {
+      const lastUnused = wollet.address(null).index();
+      const next = this.file.nextReceiveIndex ?? 0;
+      const idx = Math.max(lastUnused, next);
+      await this.seedStore.setNextReceiveIndex(idx + 1);
+      await this.updateStore.bumpScanHint(idx + 1).catch(() => {});
+      await this.refreshFile();
+      const address = wollet.address(idx).address().toString();
+      return { address, blindingKey: deriveSlip77BlindingKeyHex(descriptor, address), derivationIndex: idx };
     });
   }
 

@@ -215,6 +215,43 @@ export interface DomainVerification {
   verifiedDomain: string;
 }
 
+// ─── depix-rail I/O (§3.9) ─────────────────────────────────────────────────
+
+/** Enable the DePix direct rail: the dedicated address + its per-script view key. */
+export interface DepixRailEnableInput {
+  enabled: true;
+  /** The confidential (lq1…) dedicated address, derived from the wallet. */
+  address: string;
+  /** SLIP-77 blinding PRIVATE key of that script (64-hex) — a view grant, never spendable. */
+  blindingKey: string;
+  /** Derivation index of the address; omit when unknown (the server stores null). */
+  derivationIndex?: number | null;
+}
+
+/** Disable the DePix direct rail. No key material — revoking is never harder than granting. */
+export interface DepixRailDisableInput {
+  enabled: false;
+}
+
+export type DepixRailInput = DepixRailEnableInput | DepixRailDisableInput;
+
+export interface DepixRailEnabledResult {
+  enabled: true;
+  /** The dedicated address now watched (normalized lowercase by the server). */
+  address: string;
+  derivationIndex: number | null;
+  /** DePix-payment discount the merchant currently offers, in percent. */
+  discountPct: number;
+}
+
+export interface DepixRailDisabledResult {
+  enabled: false;
+  /** true when the viewing key was actually deleted (no in-flight checkout kept it). */
+  viewKeyDeleted: boolean;
+  /** Addresses whose key was retained because a checkout there is still open. */
+  pendingAddresses: number;
+}
+
 // ─── the class ───────────────────────────────────────────────────────────
 
 export class DepixAgent {
@@ -444,5 +481,61 @@ export class DepixAgent {
       body: { domain },
     });
     return { recordName: wire.record_name, recordValue: wire.record_value };
+  }
+
+  /**
+   * Turn the DePix direct rail on or off (§3.9). The per-request Ed25519
+   * signature IS the step-up the human door gets from a password, so this is the
+   * only path an agent account has to the rail (POST /api/agents/depix-pay).
+   *
+   * Enabling registers a dedicated address together with the SLIP-77 blinding
+   * PRIVATE key of its script — a per-script READ key that lets the backend
+   * watcher unblind the amounts paid there and nothing else. Disabling sends no
+   * key at all.
+   *
+   * The `blindingKey` transits to the backend BY DESIGN (the minimal grant of
+   * visibility over one script); it is never logged here and never returned.
+   * Backend rejections arrive as `DepixApiError` (branch on `err.code`):
+   * `depix_address_unsupported` (not lq1), `invalid_blinding_key` (key/address
+   * mismatch), `depix_address_conflict`, `verification_required`,
+   * `merchant_required`, `account_suspended`, `service_unavailable`.
+   */
+  async configureDepixRail(input: DepixRailEnableInput): Promise<DepixRailEnabledResult>;
+  async configureDepixRail(input: DepixRailDisableInput): Promise<DepixRailDisabledResult>;
+  async configureDepixRail(input: DepixRailInput): Promise<DepixRailEnabledResult | DepixRailDisabledResult> {
+    const path = "/api/agents/depix-pay";
+    if (!input.enabled) {
+      const wire = await this.client.request<{
+        depix_pay_enabled: boolean;
+        view_key_deleted: boolean;
+        pending_addresses: number;
+      }>({ method: "POST", path, body: { enabled: false } });
+      return {
+        enabled: false,
+        viewKeyDeleted: wire.view_key_deleted === true,
+        pendingAddresses: wire.pending_addresses ?? 0,
+      };
+    }
+
+    const body: Record<string, unknown> = {
+      enabled: true,
+      address: input.address,
+      blinding_key: input.blindingKey,
+    };
+    if (input.derivationIndex !== undefined && input.derivationIndex !== null) {
+      body.derivation_index = input.derivationIndex;
+    }
+    const wire = await this.client.request<{
+      depix_pay_enabled: boolean;
+      depix_pay_address: string;
+      depix_derivation_index: number | null;
+      depix_discount_pct: number;
+    }>({ method: "POST", path, body });
+    return {
+      enabled: true,
+      address: wire.depix_pay_address,
+      derivationIndex: wire.depix_derivation_index ?? null,
+      discountPct: wire.depix_discount_pct ?? 0,
+    };
   }
 }

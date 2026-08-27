@@ -15,6 +15,7 @@
 // a ~50-line fs.readFile loader, same dance as the frontend's lwk-loader.js —
 // if the nodejs target ever stops being published.
 
+import { createHmac } from "node:crypto";
 import {
   Address,
   AssetId,
@@ -115,5 +116,60 @@ export function generateMnemonic(): string {
     return m.toString();
   } finally {
     m.free();
+  }
+}
+
+/**
+ * The 32-byte SLIP-77 master blinding key, read out of a CT descriptor
+ * (`ct(slip77(<64 hex>),elwpkh(...))#checksum`). It is a VIEW secret, never a
+ * spending one — but it unblinds EVERY script of the wallet, so callers keep it
+ * in-scope and hand out only per-script keys derived from it, one at a time.
+ */
+function slip77MasterFromDescriptor(descriptor: string): Buffer | null {
+  const hex = /\bslip77\(([0-9a-fA-F]{64})\)/.exec(descriptor)?.[1];
+  return hex ? Buffer.from(hex, "hex") : null;
+}
+
+/** The scriptPubkey bytes of a Liquid address (the confidential blinding is not part of the script). */
+function addressScriptPubkeyBytes(addressStr: string): Buffer {
+  let addr: Address;
+  try {
+    addr = new Address(addressStr);
+  } catch (err) {
+    throw new WalletError("INVALID_ADDRESS", "Invalid Liquid address for scriptPubkey derivation", { cause: err });
+  }
+  let script: ReturnType<Address["scriptPubkey"]> | undefined;
+  try {
+    script = addr.scriptPubkey();
+    return Buffer.from(script.bytes());
+  } finally {
+    script?.free();
+    addr.free();
+  }
+}
+
+/**
+ * SLIP-77 blinding PRIVATE key of ONE script, as 64-char lowercase hex:
+ *
+ *   blinding_privkey = HMAC-SHA256(master_blinding_key, scriptPubkey)
+ *
+ * This is the exact scalar the backend re-derives the blinding PUBLIC key from
+ * to accept a DePix-rail activation (depix-rail.js). The master unblinds every
+ * script, so it is zeroed the moment the derivation is done and never returned;
+ * the caller only ever receives the per-script hex, which is what transits to
+ * the backend by design (spec §3.9). Never log the result.
+ */
+export function deriveSlip77BlindingKeyHex(descriptor: string, addressStr: string): string {
+  const script = addressScriptPubkeyBytes(addressStr);
+  const master = slip77MasterFromDescriptor(descriptor);
+  // A descriptor without a slip77 master is a malformed wallet, not caller input;
+  // the message names neither the master nor the key.
+  if (!master) throw new WalletError("UNKNOWN", "Wallet descriptor carries no SLIP-77 blinding key");
+  const derived = createHmac("sha256", master).update(script).digest();
+  try {
+    return derived.toString("hex");
+  } finally {
+    master.fill(0);
+    derived.fill(0);
   }
 }

@@ -1,6 +1,22 @@
 # Changelog
 
-## 2.6.0 — agent onboarding tools, the sync rule, and a per-request credential
+## 2.7.0 — an agent can turn on the DePix direct rail
+
+A local agent merchant could only be paid by Pix: the DePix direct-rail opt-in
+is a JWT+password door no agent account can reach. This release adds the agent's
+own door. **Tool count: 26 gateway / 59 full (was 58) — 26 + 29 `wallet_*` + 4
+agent-local.**
+
+- **`configure_depix_rail` (§3.9), local server only.** `{ enabled: true }`
+  derives a dedicated confidential address from THIS wallet plus the SLIP-77
+  blinding PRIVATE key of its script, and registers the pair with the backend
+  (`POST /api/agents/depix-pay`, signed with the agent identity — the per-request
+  Ed25519 signature is the step-up). `{ enabled: false }` turns it off and sends
+  no key. The blinding key is a per-address VIEW key with zero spending power; it
+  transits to the backend by design (the minimal grant that lets the §6.3 watcher
+  unblind payments to that one script) and NEVER reaches the tool response or a
+  log — the tool returns only public facts (the address, the rail state). The
+  hosted catalog never offers it (D4).
 
 Local agents can now create and run their own account without a key pasted into
 a config, the wallet syncs on the agent's behalf so incoming money is never

@@ -203,6 +203,15 @@ function cannedApiMessage(
         : limitCents !== undefined
           ? `Spending limit reached (limit ${limitCents} BRL cents).`
           : "Spending limit reached for this key/account.";
+    // DePix-rail activation (configure_depix_rail, §3.9). The tool derives the
+    // address + key correctly, so an agent should not normally see these — but if
+    // one surfaces, name the half at fault instead of a bare code.
+    case "depix_address_unsupported":
+      return "The DePix receiving address must be a confidential Liquid address (lq1…). configure_depix_rail derives one — retry it.";
+    case "invalid_blinding_key":
+      return "The derived viewing key did not match the derived address. Retry configure_depix_rail; if it persists, sync the wallet first.";
+    case "depix_address_conflict":
+      return "The derived DePix address is already registered, or clashes with your payout/split address. Retry configure_depix_rail to derive a fresh one.";
     case "not_found":
       return "Resource not found (or not owned by this key).";
     case "conflict":

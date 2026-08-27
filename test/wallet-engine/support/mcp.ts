@@ -18,6 +18,7 @@ import type {
 } from "../../../src/wallet-engine/mcp/tools.js";
 import type { McpSwapQuoteStream } from "../../../src/wallet-engine/mcp/swap-streams.js";
 import type {
+  DepixPayCredential,
   DepositParams,
   DepositResult,
   GuardrailReadout,
@@ -502,6 +503,10 @@ export class FakeWallet implements McpWalletFacade {
   async getReceiveAddress(options?: { index?: number }): Promise<string> {
     this.rec("getReceiveAddress", [options]);
     return this.address;
+  }
+  async deriveDepixPayCredential(options?: { index?: number }): Promise<DepixPayCredential> {
+    this.rec("deriveDepixPayCredential", [options]);
+    return { address: this.address, blindingKey: "ab".repeat(32), derivationIndex: options?.index ?? 0 };
   }
   async getBalances(): Promise<WalletBalances> {
     this.rec("getBalances", []);

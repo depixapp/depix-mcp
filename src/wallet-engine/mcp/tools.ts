@@ -12,6 +12,7 @@ import type {
   ConversionResumeSummary,
   DepositParams,
   DepositResult,
+  DepixPayCredential,
   GuardrailReadout,
   PendingItem,
   RecoverySummary,
@@ -130,6 +131,13 @@ export interface McpWalletFacade {
   isBackupConfirmed(): boolean;
   getGuardrails(): Promise<GuardrailReadout>;
   getReceiveAddress(options?: { index?: number }): Promise<string>;
+  /**
+   * Derive the DePix-rail dedicated address + its per-script SLIP-77 view key
+   * (§3.9). Consumed by the agent-local `configure_depix_rail` tool, NOT by any
+   * wallet_* tool — the blinding key is a secret that must never surface in a
+   * tool result. DepixWallet.deriveDepixPayCredential satisfies this structurally.
+   */
+  deriveDepixPayCredential(options?: { index?: number }): Promise<DepixPayCredential>;
   getBalances(): Promise<WalletBalances>;
   listTransactions(): Promise<WalletTransaction[]>;
   /**
