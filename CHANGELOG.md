@@ -1,5 +1,55 @@
 # Changelog
 
+## 2.5.0 — Lightning works again, and a swap remembers who is holding it
+
+The agent wallet's Lightning send, receive and gift cards had been dead since
+2026-08-03. Not broken: refused. Boltz runs a switch that turns swap CREATION
+off, and this package spoke to Boltz and to nobody else.
+
+- **A second swap backend.** Boltz stays first — while it is answering nothing
+  about the engine changes — and Coinos serves Lightning when it is not. Both run
+  the same `boltz-backend` v2 API, so this is a list to walk, not an integration.
+- **Liveness is read from the creation path, because a GET lies about it.** A
+  backend with creation switched off still answers `/v2/swap/*` with a full,
+  healthy-looking pair matrix: limits, fees, pair hashes, HTTP 200. So the probe
+  POSTs a real creation request for 1 sat — below every known minimum, so it is
+  refused before anything exists — and reads WHICH complaint came back, since
+  "swap creation is disabled" and "1 is less than minimal of 25000" are both 400.
+- **A swap belongs to whoever created it.** Records now carry the backend, and
+  watching, claiming and refunding go back to it — never to whoever the process
+  happens to have selected since. Boltz recovering must not strand a Coinos swap.
+  Records written before this have no such field; they are all Boltz, and a
+  reader must never stall a refundable swap over a shape it does not recognise.
+- **Concurrent swaps reach different backends.** The swap SDK keeps one config
+  for the whole process and takes no per-call base URL, so "re-point it, then
+  call it" does not survive the `await` in between. The API base is resolved per
+  request from the calling chain's own context instead: a 20-minute stablecoin
+  execution and a Lightning send now run side by side, each on its own backend,
+  with no lock between them.
+- **L-BTC → USDC/USDT stays on Boltz** and says so when Boltz is off. That route
+  rides Boltz's own hosted engine — an EVM leg, a DEX, a bridge, a gas sponsor —
+  none of which ships with the backend a fallback operator runs.
+
+**A route nobody will honour is no longer offered.** `wallet_quote` marks each
+candidate `available`, and refuses to price the ones a backend would turn down;
+`wallet_convert` refuses them outright, with a retryable error and a next step.
+That check happens BEFORE the first leg: a multi-hop used to swap DePix into
+L-BTC and only then discover the second leg had nowhere to go, leaving the value
+in the wrong asset behind a parked plan. Funds already in flight are untouched by
+any of this — a backend that stopped creating swaps still claims and refunds what
+it holds, and recovery never asks whether it would take a new one.
+
+**A quoted fee is now charged where the quote says it is.** SideSwap names the
+fee side ("Base"/"Quote"), not the asset, and the estimator was reading that
+label as an asset id — so every live quote reported an unknown fee asset, and the
+branch meant to handle that was unreachable. Worse, it subtracted the fee from
+the receipt unconditionally, across assets with different units: a DePix-priced
+fee against an L-BTC receipt drove the estimate negative and reported a perfectly
+healthy route as "amount too small". The fee is netted only when it is charged on
+the asset being received — the same rule the PSET validator already enforced at
+execution — and a fee whose side cannot be resolved is reported as unknown rather
+than assumed.
+
 ## 2.4.0 — the wallet engine lives here now
 
 No tool changed, no behaviour changed, nothing on the wire moved. What changed is
