@@ -201,6 +201,20 @@ if (missing.length > 0) {
 if (check) {
   const current = existsSync(OUTPUT) ? readFileSync(OUTPUT, "utf8") : "";
   if (current !== content) {
+    // Show WHERE they diverge — a bare "out of date" from CI is undebuggable
+    // when the mismatch does not reproduce locally.
+    const a = current.split("\n");
+    const b = content.split("\n");
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    console.error(
+      `[licenses] first divergence at line ${i + 1} ` +
+        `(committed: ${a.length} lines, generated: ${b.length} lines)`,
+    );
+    for (let j = Math.max(0, i - 2); j < Math.min(i + 8, Math.max(a.length, b.length)); j++) {
+      if (a[j] !== undefined) console.error(`- ${j + 1}: ${a[j]}`);
+      if (b[j] !== undefined && b[j] !== a[j]) console.error(`+ ${j + 1}: ${b[j]}`);
+    }
     console.error(
       "[licenses] FAIL — THIRD_PARTY_LICENSES is out of date with the production dependency tree.\n" +
         "Run `npm run licenses` and commit the result.",
