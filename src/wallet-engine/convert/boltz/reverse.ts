@@ -22,6 +22,7 @@
 import { hex } from "@scure/base";
 import { ConversionError } from "../../errors.js";
 import { ensureBoltzConfig } from "./client.js";
+import { getProviderById, selectSwapProvider, withProvider, type SwapProvider } from "./providers.js";
 import { ensureBoltzUtxoSecp } from "./secp.js";
 import { decodeInvoicePaymentHash } from "./lightning.js";
 
@@ -75,20 +76,33 @@ async function resolveFeeRate(): Promise<number> {
   return FALLBACK_FEE_RATE;
 }
 
-/** Resolve the BTC->L-BTC reverse pair hash + invoice amount limits (sats) + fees. */
-export async function getReverseLimits(): Promise<{
+/**
+ * Resolve the BTC->L-BTC reverse pair hash + invoice amount limits (sats) + fees.
+ *
+ * The limits belong to whoever will SERVE the swap, so with no provider given
+ * this resolves the live one — and surfaces SWAP_PROVIDER_UNAVAILABLE when none
+ * is creating swaps, rather than quoting a minimum nobody will honour.
+ */
+export async function getReverseLimits(provider?: SwapProvider): Promise<{
   hash: string;
   min: number | null;
   max: number | null;
   fees: unknown;
 }> {
+  const backend = provider ?? (await selectSwapProvider());
   await ensureBoltzConfig();
-  const { getPairs } = (await import("boltz-swaps/client")) as unknown as {
-    getPairs: () => Promise<{ reverse?: { BTC?: { "L-BTC"?: ReversePairInfo } } }>;
-  };
-  const pairs = await getPairs();
-  const pair = pairs?.reverse?.BTC?.["L-BTC"];
-  if (!pair?.hash) throw new ConversionError("SWAP_VALIDATION_FAILED", "Boltz has no BTC->L-BTC reverse pair");
+  const pair = await withProvider(backend, async () => {
+    const { getPairs } = (await import("boltz-swaps/client")) as unknown as {
+      getPairs: () => Promise<{ reverse?: { BTC?: { "L-BTC"?: ReversePairInfo } } }>;
+    };
+    return (await getPairs())?.reverse?.BTC?.["L-BTC"];
+  });
+  if (!pair?.hash) {
+    throw new ConversionError(
+      "SWAP_VALIDATION_FAILED",
+      `${backend.name} has no BTC->L-BTC reverse pair`
+    );
+  }
   return {
     hash: pair.hash,
     min: typeof pair.limits?.minimal === "number" ? pair.limits.minimal : null,
@@ -153,8 +167,11 @@ export async function buildReverseClaimTx(args: {
   claimKeys: ClaimKeys;
   preimage: Uint8Array;
   claimAddress: string;
+  /** The backend that created the swap — it is the only one that can co-sign. */
+  provider?: SwapProvider;
 }): Promise<string> {
   const { swap, lockupTxHex, claimKeys, preimage, claimAddress } = args;
+  const provider = args.provider ?? getProviderById(undefined);
   await ensureBoltzConfig();
   await ensureBoltzUtxoSecp();
 
@@ -207,7 +224,7 @@ export async function buildReverseClaimTx(args: {
     );
   }
 
-  const feeRate = Math.max(await resolveFeeRate(), LIQUID_MIN_FEE_RATE);
+  const feeRate = Math.max(await withProvider(provider, resolveFeeRate), LIQUID_MIN_FEE_RATE);
 
   const buildClaim = (
     cooperative: boolean
@@ -240,12 +257,14 @@ export async function buildReverseClaimTx(args: {
     const { details, claimTx } = buildClaim(true);
     const sigHash = utxo.hashForWitnessV1(LBTC, net, details, claimTx, 0);
     const withNonce = tweaked.message(sigHash).generateNonce();
-    const boltzSig = await client.getPartialReverseClaimSignature(
-      swap.swapId,
-      preimage,
-      withNonce.publicNonce,
-      utxo.txToHex(claimTx),
-      0
+    const boltzSig = await withProvider<{ pubNonce: unknown; signature: unknown }>(provider, () =>
+      client.getPartialReverseClaimSignature(
+        swap.swapId,
+        preimage,
+        withNonce.publicNonce,
+        utxo.txToHex(claimTx),
+        0
+      )
     );
     const aggNonces = withNonce.aggregateNonces([[boltzPub, boltzSig.pubNonce]]);
     const session = aggNonces.initializeSession();
@@ -268,6 +287,11 @@ export async function buildReverseClaimTx(args: {
 }
 
 export interface ReverseDeps {
+  /**
+   * The backend this swap lives on. Absent = Boltz, which is what every record
+   * written before the engine had a fallback means.
+   */
+  provider?: SwapProvider;
   deriveSecrets: () => Promise<{ preimage: Uint8Array; preimageHash: Uint8Array; claimKeys: ClaimKeys }>;
   getClaimAddress: () => Promise<string>;
   subscribe: (swapId: string, onRaw: (raw: string) => void) => () => void;
@@ -282,6 +306,7 @@ export interface ReverseDeps {
     claimKeys: ClaimKeys;
     preimage: Uint8Array;
     claimAddress: string;
+    provider?: SwapProvider;
   }) => Promise<string>;
   /** Override the L-BTC broadcast (tests). */
   broadcast?: (asset: string, txHex: string) => Promise<{ id?: string } | null>;
@@ -333,6 +358,7 @@ export async function receiveViaLightning(
     throw new TypeError("receiveViaLightning requires a positive integer amountSats");
   }
 
+  const provider = d.provider ?? getProviderById(undefined);
   await ensureBoltzConfig();
   d.onPhase(REVERSE_PHASE.CREATING);
 
@@ -347,17 +373,22 @@ export async function receiveViaLightning(
       };
       return real(...a);
     });
-  const created = await createReverseSwap(
-    "BTC",
-    "L-BTC",
-    params.amountSats,
-    hex.encode(preimageHash),
-    params.pairHash,
-    hex.encode(claimKeys.publicKey),
-    claimAddress
+  const created = await withProvider(provider, () =>
+    createReverseSwap(
+      "BTC",
+      "L-BTC",
+      params.amountSats,
+      hex.encode(preimageHash),
+      params.pairHash,
+      hex.encode(claimKeys.publicKey),
+      claimAddress
+    )
   );
   if (!created?.id || !created?.invoice || !created?.lockupAddress) {
-    throw new ConversionError("SWAP_VALIDATION_FAILED", "Boltz createReverseSwap returned an incomplete response");
+    throw new ConversionError(
+      "SWAP_VALIDATION_FAILED",
+      `${provider.name} createReverseSwap returned an incomplete response`
+    );
   }
   // Verify the invoice Boltz returned pays against OUR preimage hash BEFORE it is
   // shown to a payer. A substituted invoice would settle the payer's payment with
@@ -367,7 +398,7 @@ export async function receiveViaLightning(
   if (!invoiceHash || invoiceHash !== hex.encode(preimageHash)) {
     throw new ConversionError(
       "INVOICE_HASH_MISMATCH",
-      "Boltz returned an invoice whose payment hash does not match our preimage"
+      `${provider.name} returned an invoice whose payment hash does not match our preimage`
     );
   }
 
@@ -430,6 +461,7 @@ function watchReverseSwap(
   d: Required<Pick<ReverseDeps, "onPhase" | "onInvoice" | "persist">> & ReverseDeps
 ): Promise<ReverseOutcome> {
   const { swapId, record, claimKeys, preimage, claimAddress } = args;
+  const provider = d.provider ?? getProviderById(undefined);
   return new Promise<ReverseOutcome>((resolve, reject) => {
     let settled = false;
     let claiming = false;
@@ -459,11 +491,6 @@ function watchReverseSwap(
             };
             return getReverseTransaction(id);
           });
-        const lockup = await getLockupTx(swapId);
-        const lockupTxHex = lockup?.hex;
-        if (!lockupTxHex) throw new ConversionError("SWAP_VALIDATION_FAILED", "reverse claim: lockup transaction unavailable");
-        const claimFn = d.claim ?? buildReverseClaimTx;
-        const claimTxHex = await claimFn({ swap: record, lockupTxHex, claimKeys, preimage, claimAddress });
         const broadcast =
           d.broadcast ??
           (async (asset: string, txHex: string) => {
@@ -472,7 +499,26 @@ function watchReverseSwap(
             };
             return broadcastApiTransaction(asset, txHex);
           });
-        const res = await broadcast("L-BTC", claimTxHex);
+        // The status socket fires this from ITS OWN async context, so the
+        // provider has to be re-declared here — the one the swap was created on,
+        // which is the only backend holding its lockup and its co-signing key.
+        const res = await withProvider(provider, async () => {
+          const lockup = await getLockupTx(swapId);
+          const lockupTxHex = lockup?.hex;
+          if (!lockupTxHex) {
+            throw new ConversionError("SWAP_VALIDATION_FAILED", "reverse claim: lockup transaction unavailable");
+          }
+          const claimFn = d.claim ?? buildReverseClaimTx;
+          const claimTxHex = await claimFn({
+            swap: record,
+            lockupTxHex,
+            claimKeys,
+            preimage,
+            claimAddress,
+            provider
+          });
+          return broadcast("L-BTC", claimTxHex);
+        });
         record.claimTxId = res?.id ?? null;
         d.persist(record);
       } catch (e) {

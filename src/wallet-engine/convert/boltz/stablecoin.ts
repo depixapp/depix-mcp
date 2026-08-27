@@ -28,6 +28,7 @@ import { base58 } from "@scure/base";
 import { ConversionError } from "../../errors.js";
 import { ensureBoltzConfig } from "./client.js";
 import { randomKeypair } from "./keys.js";
+import { dynamicMainnetConfig, STABLECOIN_PROVIDER, withProvider } from "./providers.js";
 import { assertLockupAddressBindsToUser } from "./verify-lockup.js";
 
 // USDC/USDT on EVM chains are 6-decimal tokens.
@@ -186,7 +187,17 @@ export type GetChainSwapTransactions = (swapId: string) => Promise<ChainSwapTran
  * free) boltz-swaps client and calls its getChainSwapTransactions. Port of
  * depix-frontend/wallet/boltz/stablecoin.js:186-196.
  */
-export async function chainSwapNeverLocked(
+export function chainSwapNeverLocked(
+  swapId: string,
+  getTransactions?: GetChainSwapTransactions
+): Promise<boolean> {
+// The route rides Boltz's OWN hosted engine (EVM + DEX + bridge + gas sponsor),
+// which no fallback operator runs — so every request under here is pinned to
+// STABLECOIN_PROVIDER, whatever backend the Lightning flows selected.
+  return withProvider(STABLECOIN_PROVIDER, () => chainSwapNeverLockedOnBoltz(swapId, getTransactions));
+}
+
+async function chainSwapNeverLockedOnBoltz(
   swapId: string,
   getTransactions?: GetChainSwapTransactions
 ): Promise<boolean> {
@@ -552,7 +563,17 @@ const TBTC_WEI_PER_LBTC_SAT = 10_000_000_000n;
  * so it is NOT part of the public surface (not re-exported from the barrels). Use
  * `wallet.convert.boltz.toStablecoin`, which owns and zeroes the key.
  */
-export async function prepareStablecoinRoute(
+export function prepareStablecoinRoute(
+  params: StablecoinParams,
+  deps: PrepareStablecoinDeps = {}
+): Promise<PreparedStablecoinRoute> {
+// The route rides Boltz's OWN hosted engine (EVM + DEX + bridge + gas sponsor),
+// which no fallback operator runs — so every request under here is pinned to
+// STABLECOIN_PROVIDER, whatever backend the Lightning flows selected.
+  return withProvider(STABLECOIN_PROVIDER, () => prepareStablecoinRouteOnBoltz(params, deps));
+}
+
+async function prepareStablecoinRouteOnBoltz(
   params: StablecoinParams,
   deps: PrepareStablecoinDeps = {}
 ): Promise<PreparedStablecoinRoute> {
@@ -818,7 +839,17 @@ export interface ExecuteStablecoinDeps {
  * afterward. The destination claim reveals the preimage, so completing the swap is
  * what makes the locked L-BTC go through.
  */
-export async function executeStablecoinRoute(
+export function executeStablecoinRoute(
+  record: ExecuteStablecoinRecord,
+  deps: ExecuteStablecoinDeps
+): Promise<{ swapId: string; claimTransactionId: string }> {
+// The route rides Boltz's OWN hosted engine (EVM + DEX + bridge + gas sponsor),
+// which no fallback operator runs — so every request under here is pinned to
+// STABLECOIN_PROVIDER, whatever backend the Lightning flows selected.
+  return withProvider(STABLECOIN_PROVIDER, () => executeStablecoinRouteOnBoltz(record, deps));
+}
+
+async function executeStablecoinRouteOnBoltz(
   record: ExecuteStablecoinRecord,
   deps: ExecuteStablecoinDeps
 ): Promise<{ swapId: string; claimTransactionId: string }> {
@@ -907,7 +938,17 @@ export interface EstimateStablecoinDeps {
  * bridge), using the same route math Boltz's own site shows. Read-only, viem-free
  * — creates no swap. Feeds the caller's economic guard (checkStablecoinAmount).
  */
-export async function estimateStablecoinOut(
+export function estimateStablecoinOut(
+  params: { asset: StablecoinAsset; networkId: string; amountSats: number | bigint },
+  deps: EstimateStablecoinDeps = {}
+): Promise<StablecoinEstimate> {
+// The route rides Boltz's OWN hosted engine (EVM + DEX + bridge + gas sponsor),
+// which no fallback operator runs — so every request under here is pinned to
+// STABLECOIN_PROVIDER, whatever backend the Lightning flows selected.
+  return withProvider(STABLECOIN_PROVIDER, () => estimateStablecoinOutOnBoltz(params, deps));
+}
+
+async function estimateStablecoinOutOnBoltz(
   params: { asset: StablecoinAsset; networkId: string; amountSats: number | bigint },
   deps: EstimateStablecoinDeps = {}
 ): Promise<StablecoinEstimate> {
@@ -996,6 +1037,9 @@ let stablecoinConfigured = false;
  * the Lightning path (client.ts, which uses the viem-FREE setBoltzSwapsConfig),
  * the stablecoin route needs the FULL client (route/EVM execution), so it uses
  * createBoltzClient from the main barrel — the one place viem is pulled in.
+ *
+ * Both writers install the SAME per-request-resolving config, so whichever runs
+ * second does not pin the other's requests to one backend.
  */
 export async function ensureStablecoinConfig(): Promise<void> {
   if (stablecoinConfigured) return;
@@ -1004,7 +1048,7 @@ export async function ensureStablecoinConfig(): Promise<void> {
       import("boltz-swaps"),
       import("boltz-swaps/presets/mainnet")
     ]);
-    (createBoltzClient as (c: unknown) => void)(mainnetConfig);
+    (createBoltzClient as (c: unknown) => void)(dynamicMainnetConfig(mainnetConfig as object));
     stablecoinConfigured = true;
   } catch (err) {
     throw new ConversionError(

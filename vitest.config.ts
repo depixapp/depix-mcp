@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
+    setupFiles: ["test/setup.ts"],
     // The wallet-engine suite derives real keys: Argon2id at 19 MiB (deliberate)
     // and the read-only Esplora integration test both need headroom well beyond
     // the 5 s default.

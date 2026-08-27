@@ -17,6 +17,14 @@ import type { Logger } from "../../logger.js";
 import { hex } from "@scure/base";
 import { BoltzClient } from "./client.js";
 import { deriveReverseSecrets } from "./keys.js";
+import {
+  assertStablecoinProviderLive,
+  getProviderById,
+  invalidateSelectionOnCreationFailure,
+  selectSwapProvider,
+  STABLECOIN_PROVIDER,
+  type SwapProvider
+} from "./providers.js";
 import { mapSubmarineStatus } from "./lightning.js";
 import {
   refundChainSwap,
@@ -88,7 +96,18 @@ export interface BoltzWalletContext {
 
 /** Test/advanced overrides so the flows never touch real Boltz crypto/network. */
 export interface BoltzConvertDeps {
+  /**
+   * Pin the REST/WS client for EVERY provider (tests/advanced). Without it each
+   * backend gets its own client bound to its own base URL.
+   */
   client?: BoltzClient;
+  /** Build the client for one backend (tests). Default: bound to its own URLs. */
+  clientFactory?: (provider: SwapProvider) => BoltzClient;
+  /**
+   * Resolve the backend a NEW Lightning swap is created on. Default: the
+   * liveness probe over the provider list (providers.ts).
+   */
+  selectProvider?: () => Promise<SwapProvider>;
   verifyLockup?: typeof assertLockupAddressBindsToUser;
   genRefundKeypair?: () => { privHex: string; pubHex: string };
   deriveSecrets?: () => {
@@ -185,7 +204,8 @@ export interface BoltzResumeSummary {
 
 export class BoltzConvert {
   private readonly ctx: BoltzWalletContext;
-  private readonly client: BoltzClient;
+  /** One REST/WS client per backend — a swap only ever talks to its own. */
+  private readonly clients = new Map<string, BoltzClient>();
   private readonly deps: BoltzConvertDeps;
   private readonly logger: Logger;
   /** Teardown handles for every in-flight watch (status socket + reconnect timer). */
@@ -202,8 +222,25 @@ export class BoltzConvert {
   constructor(ctx: BoltzWalletContext, deps: BoltzConvertDeps = {}) {
     this.ctx = ctx;
     this.deps = deps;
-    this.client = deps.client ?? new BoltzClient();
     this.logger = ctx.logger;
+  }
+
+  /** The REST/WS client bound to `provider` (an injected client overrides all). */
+  private clientFor(provider: SwapProvider): BoltzClient {
+    if (this.deps.client) return this.deps.client;
+    let client = this.clients.get(provider.id);
+    if (!client) {
+      client = this.deps.clientFactory
+        ? this.deps.clientFactory(provider)
+        : new BoltzClient({ apiBase: provider.apiUrl, wsUrl: provider.wsUrl });
+      this.clients.set(provider.id, client);
+    }
+    return client;
+  }
+
+  /** The backend a NEW Lightning swap is created on. */
+  private lightningProvider(): Promise<SwapProvider> {
+    return (this.deps.selectProvider ?? selectSwapProvider)();
   }
 
   /**
@@ -221,10 +258,10 @@ export class BoltzConvert {
    * single refund/claim path). The handle is freed when that watch unsubscribes,
    * so a later attach for the same id (after it settled) works normally.
    */
-  private trackedSubscribe(swapId: string, onRaw: (raw: string) => void): () => void {
+  private trackedSubscribe(swapId: string, provider: SwapProvider, onRaw: (raw: string) => void): () => void {
     if (this.disposed) return () => {};
     if (this.watchesBySwap.has(swapId)) return () => {};
-    const raw = this.client.subscribeSwap(swapId, onRaw);
+    const raw = this.clientFor(provider).subscribeSwap(swapId, onRaw);
     let cleared = false;
     const wrapped = (): void => {
       if (cleared) return;
@@ -285,22 +322,31 @@ export class BoltzConvert {
     /** Rolling-24h accountant label (default "boltz-submarine"). */
     spendKind?: string;
   }): Promise<PayLightningResult> {
+    const provider = await this.lightningProvider();
+    const client = this.clientFor(provider);
     const prepared = await prepareSubmarineSwap(
       { invoice: params.invoice },
       {
-        getSubmarinePairHash: () => this.client.getSubmarinePairHash(),
-        createSubmarineSwap: (p) => this.client.createSubmarineSwap(p),
-        getChainHeight: () => this.client.getChainHeight("L-BTC"),
+        getSubmarinePairHash: () => client.getSubmarinePairHash(),
+        createSubmarineSwap: (p) => client.createSubmarineSwap(p),
+        getChainHeight: () => client.getChainHeight("L-BTC"),
         ...(this.deps.genRefundKeypair ? { genRefundKeypair: this.deps.genRefundKeypair } : {}),
         ...(this.deps.verifyLockup ? { verifyLockup: this.deps.verifyLockup } : {}),
         ...(this.deps.maxTimeoutBlocks !== undefined ? { maxTimeoutBlocks: this.deps.maxTimeoutBlocks } : {})
       }
-    );
+    ).catch((err: unknown) => {
+      // A creation failure that blames the backend drops the cached selection,
+      // so the next attempt re-probes instead of retrying a dead one for the
+      // life of the process.
+      invalidateSelectionOnCreationFailure(err);
+      throw err;
+    });
 
     // Persist the (crash-safe) refund material BEFORE anything is funded — a
     // crash after the lockup broadcasts must still be refundable (§5.3).
     const record: StoredSubmarineSwap = {
       type: "submarine",
+      providerId: provider.id,
       swapId: prepared.swapId,
       invoice: prepared.invoice,
       lockupAddress: prepared.lockupAddress,
@@ -353,7 +399,7 @@ export class BoltzConvert {
       (r as StoredSubmarineSwap).state = "locked_up";
     });
 
-    const completion = this.watchSubmarine(record.swapId, prepared.timeoutBlockHeight);
+    const completion = this.watchSubmarine(record.swapId, prepared.timeoutBlockHeight, provider);
     // Never surface an unhandled rejection if the caller ignores `completion`.
     completion.catch(() => {});
 
@@ -368,7 +414,11 @@ export class BoltzConvert {
   }
 
   /** Watch a funded submarine lockup: on refund/expiry, refund the L-BTC. */
-  private watchSubmarine(swapId: string, timeoutBlockHeight: number): Promise<SubmarineOutcome> {
+  private watchSubmarine(
+    swapId: string,
+    timeoutBlockHeight: number,
+    provider: SwapProvider
+  ): Promise<SubmarineOutcome> {
     return new Promise<SubmarineOutcome>((resolve) => {
       let settled = false;
       let unsubscribe: () => void = () => {};
@@ -406,7 +456,7 @@ export class BoltzConvert {
       };
 
       try {
-        unsubscribe = this.trackedSubscribe(swapId, onRaw);
+        unsubscribe = this.trackedSubscribe(swapId, provider, onRaw);
       } catch (err) {
         this.logger.error("boltz submarine watch could not subscribe", {
           swapId,
@@ -428,10 +478,14 @@ export class BoltzConvert {
   ): Promise<{ refunded: boolean; refundTxId?: string | null }> {
     const stored = await this.ctx.store.get(swapId).catch(() => null);
     if (!stored || stored.type !== "submarine") return { refunded: false };
+    // The lockup is held by whoever created the swap, and only that backend can
+    // co-sign its refund — never the backend this process happens to be on now.
+    const provider = getProviderById(stored.providerId);
     const refundFn = this.deps.refundSubmarine ?? refundSubmarineSwap;
     const refundDeps: RefundDeps = {
+      provider,
       getRefundAddress: () => this.ctx.getReceiveAddress(),
-      getBlockHeight: () => this.client.getChainHeight("L-BTC")
+      getBlockHeight: () => this.clientFor(provider).getChainHeight("L-BTC")
     };
     try {
       const res = await refundFn(
@@ -478,6 +532,10 @@ export class BoltzConvert {
    * viem account, gas paid by the hosted sponsor (sponsor.ccxp.space).
    */
   async toStablecoin(params: StablecoinParams): Promise<ToStablecoinResult> {
+    // This route rides the provider's own hosted engine, so it cannot move to a
+    // fallback operator: refuse up front with the typed, retryable error instead
+    // of creating a swap the backend will not honour.
+    await assertStablecoinProviderLive();
     const prepared = await prepareStablecoinRoute(params, {
       ...(this.deps.stablecoin?.prepare ?? {})
     });
@@ -488,6 +546,7 @@ export class BoltzConvert {
     // record; the in-memory copy is zeroed right after (below).
     const record: StoredStablecoinSwap = {
       type: "stablecoin",
+      providerId: STABLECOIN_PROVIDER.id,
       swapId: prepared.swapId,
       asset: prepared.asset,
       networkId: prepared.networkId,
@@ -671,7 +730,7 @@ export class BoltzConvert {
         timeoutMs
       );
       try {
-        unsubscribe = this.trackedSubscribe(swapId, (raw) => {
+        unsubscribe = this.trackedSubscribe(swapId, STABLECOIN_PROVIDER, (raw) => {
           if (raw === "transaction.server.confirmed") {
             finish(resolve);
           } else if (CHAIN_SWAP_FAILURE_STATUSES.has(raw)) {
@@ -709,10 +768,12 @@ export class BoltzConvert {
       return { refunded: false, dropped: true };
     }
 
+    const provider = getProviderById(record.providerId);
     const refundFn = this.deps.stablecoin?.refundChain ?? refundChainSwap;
     const refundDeps: ChainRefundDeps = {
+      provider,
       getRefundAddress: () => this.ctx.getReceiveAddress(),
-      getBlockHeight: () => this.client.getChainHeight("L-BTC")
+      getBlockHeight: () => this.clientFor(provider).getChainHeight("L-BTC")
     };
     try {
       const res = await refundFn(
@@ -755,9 +816,10 @@ export class BoltzConvert {
    * pays. An INFLOW — no guardrail.
    */
   async receiveLightning(params: { amountSats: number }): Promise<ReceiveLightningResult> {
+    const provider = await this.lightningProvider();
     const pairHash = this.deps.getReversePairHash
       ? await this.deps.getReversePairHash()
-      : (await getReverseLimits()).hash;
+      : (await getReverseLimits(provider)).hash;
 
     let resolveInvoice!: (v: { invoice: string; record: ReverseSwapRecord }) => void;
     let rejectInvoice!: (e: unknown) => void;
@@ -767,11 +829,18 @@ export class BoltzConvert {
     });
 
     const reverseDeps: ReverseDeps = {
+      provider,
       deriveSecrets: async () => (this.deps.deriveSecrets ?? deriveReverseSecrets)(),
       getClaimAddress: () => this.ctx.getReceiveAddress(),
-      subscribe: (id, onRaw) => this.trackedSubscribe(id, onRaw),
+      subscribe: (id, onRaw) => this.trackedSubscribe(id, provider, onRaw),
       persist: async (rec) => {
-        const stored: StoredReverseSwap = { ...rec, type: "reverse", state: "awaiting_payment", createdAt: Date.now() };
+        const stored: StoredReverseSwap = {
+          ...rec,
+          type: "reverse",
+          providerId: provider.id,
+          state: "awaiting_payment",
+          createdAt: Date.now()
+        };
         // Awaited (durability §5.3) but best-effort: a persist failure logs and
         // does not reject the receive — the frontend's persist is likewise
         // try/caught. receiveViaLightning awaits this before surfacing the invoice.
@@ -798,7 +867,10 @@ export class BoltzConvert {
         return outcome;
       }
     );
-    completion.catch((err) => rejectInvoice(err));
+    completion.catch((err) => {
+      invalidateSelectionOnCreationFailure(err);
+      rejectInvoice(err);
+    });
     // Don't leak an unhandled rejection when the caller only awaits the invoice.
     completion.catch(() => {});
 
@@ -865,9 +937,10 @@ export class BoltzConvert {
 
   private async resumeSubmarine(record: StoredSubmarineSwap, summary: BoltzResumeSummary): Promise<void> {
     // Reconcile with Boltz to decide claim (paid) vs refund vs still-pending.
+    const provider = getProviderById(record.providerId);
     let bucket: ReturnType<typeof mapSubmarineStatus>;
     try {
-      const status = await this.client.getSwapStatus(record.swapId);
+      const status = await this.clientFor(provider).getSwapStatus(record.swapId);
       bucket = mapSubmarineStatus(status?.status);
     } catch {
       bucket = null;
@@ -890,16 +963,18 @@ export class BoltzConvert {
       return;
     }
     // Still in flight — re-attach the watch (best-effort, background).
-    const completion = this.watchSubmarine(record.swapId, record.timeoutBlockHeight);
+    const completion = this.watchSubmarine(record.swapId, record.timeoutBlockHeight, provider);
     completion.catch(() => {});
     summary.submarineResumed++;
   }
 
   private async resumeReverse(record: StoredReverseSwap, summary: BoltzResumeSummary): Promise<void> {
+    const provider = getProviderById(record.providerId);
     const reverseDeps: ReverseDeps = {
+      provider,
       deriveSecrets: async () => (this.deps.deriveSecrets ?? deriveReverseSecrets)(),
       getClaimAddress: () => this.ctx.getReceiveAddress(),
-      subscribe: (id, onRaw) => this.trackedSubscribe(id, onRaw),
+      subscribe: (id, onRaw) => this.trackedSubscribe(id, provider, onRaw),
       persist: (rec) => {
         void this.ctx.store
           .patch(rec.swapId, (r) => {
@@ -930,7 +1005,7 @@ export class BoltzConvert {
     // (outcome:refund) never re-attempts execution — straight to refund.
     let bucket: ReturnType<typeof mapChainSwapStatus>;
     try {
-      const status = await this.client.getSwapStatus(record.swapId);
+      const status = await this.clientFor(getProviderById(record.providerId)).getSwapStatus(record.swapId);
       bucket = mapChainSwapStatus(status?.status);
     } catch {
       bucket = null;

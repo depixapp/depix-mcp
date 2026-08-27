@@ -12,6 +12,7 @@
 // mainnet api.boltz.exchange without pulling viem.
 
 import { BoltzApiError } from "../../errors.js";
+import { dynamicMainnetConfig } from "./providers.js";
 
 export const BOLTZ_API_BASE = "https://api.boltz.exchange";
 export const BOLTZ_WS_URL = "wss://api.boltz.exchange/v2/ws";
@@ -53,6 +54,10 @@ let configured = false;
  * Configure the boltz-swaps client for mainnet exactly once. Uses the viem-free
  * `setBoltzSwapsConfig` (config subpath) rather than the main-barrel
  * `createBoltzClient`, which transitively imports viem (PR5b). Idempotent.
+ *
+ * The installed config resolves `boltzApiUrl` per REQUEST, from the calling
+ * chain's provider context (providers.ts) — one config, many backends. A swap
+ * that never declares a provider talks to Boltz, the historical default.
  */
 export async function ensureBoltzConfig(): Promise<void> {
   if (configured) return;
@@ -60,7 +65,7 @@ export async function ensureBoltzConfig(): Promise<void> {
     import("boltz-swaps/config"),
     import("boltz-swaps/presets/mainnet")
   ]);
-  setBoltzSwapsConfig(mainnetConfig as never);
+  setBoltzSwapsConfig(dynamicMainnetConfig(mainnetConfig as object) as never);
   configured = true;
 }
 

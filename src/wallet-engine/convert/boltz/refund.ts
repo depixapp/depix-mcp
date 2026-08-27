@@ -17,6 +17,7 @@
 import { hex } from "@scure/base";
 import { ConversionError } from "../../errors.js";
 import { ensureBoltzConfig } from "./client.js";
+import { getProviderById, withProvider, type SwapProvider } from "./providers.js";
 import { ensureBoltzUtxoSecp } from "./secp.js";
 
 const LBTC = "L-BTC";
@@ -69,6 +70,8 @@ interface RefundKeys {
 
 export interface BuildRefundTxParams {
   swapId: string;
+  /** The backend holding the lockup — the only one that can co-sign the refund. */
+  provider?: SwapProvider;
   /** Boltz's key in the lockup (hex) — claimPublicKey (submarine). Aggregated FIRST. */
   boltzPublicKey: string;
   swapTree: unknown;
@@ -113,6 +116,7 @@ export async function buildRefundTx(params: BuildRefundTxParams): Promise<string
     refundAddress,
     cooperative = true
   } = params;
+  const provider = params.provider ?? getProviderById(undefined);
 
   await ensureBoltzConfig();
   await ensureBoltzUtxoSecp();
@@ -165,7 +169,7 @@ export async function buildRefundTx(params: BuildRefundTxParams): Promise<string
   const timeout = Number(timeoutBlockHeight) || 0;
   const lockTime = refundLockTime(cooperative, timeout);
 
-  const feeRate = Math.max(await resolveFeeRate(), LIQUID_MIN_FEE_RATE);
+  const feeRate = Math.max(await withProvider(provider, resolveFeeRate), LIQUID_MIN_FEE_RATE);
   const skeleton = liquid.constructRefundTransaction(
     details,
     decoded.script,
@@ -197,12 +201,8 @@ export async function buildRefundTx(params: BuildRefundTxParams): Promise<string
     const sigHash = utxo.hashForWitnessV1(LBTC, net, details, refundTx, 0);
     const withNonce = tweaked.message(sigHash).generateNonce();
     const type = swapType === "chain" ? SwapType.Chain : SwapType.Submarine;
-    const boltzSig = await client.getPartialRefundSignature(
-      swapId,
-      type,
-      withNonce.publicNonce,
-      utxo.txToHex(refundTx),
-      0
+    const boltzSig = await withProvider<{ pubNonce: unknown; signature: unknown }>(provider, () =>
+      client.getPartialRefundSignature(swapId, type, withNonce.publicNonce, utxo.txToHex(refundTx), 0)
     );
     const aggNonces = withNonce.aggregateNonces([[boltzPub, boltzSig.pubNonce]]);
     const session = aggNonces.initializeSession();
@@ -223,8 +223,10 @@ export function buildSubmarineRefundTx(args: {
   refundKeys: RefundKeys;
   refundAddress: string;
   cooperative?: boolean;
+  provider?: SwapProvider;
 }): Promise<string> {
   return buildRefundTx({
+    ...(args.provider ? { provider: args.provider } : {}),
     swapId: args.swap.swapId,
     boltzPublicKey: args.swap.claimPublicKey,
     swapTree: args.swap.swapTree,
@@ -262,8 +264,10 @@ export function buildChainRefundTx(args: {
   refundKeys: RefundKeys;
   refundAddress: string;
   cooperative?: boolean;
+  provider?: SwapProvider;
 }): Promise<string> {
   return buildRefundTx({
+    ...(args.provider ? { provider: args.provider } : {}),
     swapId: args.swap.swapId,
     boltzPublicKey: args.swap.serverPublicKey,
     swapTree: args.swap.swapTree,
@@ -278,6 +282,11 @@ export function buildChainRefundTx(args: {
 }
 
 export interface RefundDeps {
+  /**
+   * The backend that created the swap. Absent = Boltz, which is what a record
+   * written before the engine had a fallback means.
+   */
+  provider?: SwapProvider;
   /** Required — the wallet L-BTC receive address the lockup is refunded to. */
   getRefundAddress: () => Promise<string>;
   /** Override the lockup-hex fetch (default: boltz-swaps/client getLockupTransaction). */
@@ -293,11 +302,13 @@ export interface RefundDeps {
     refundKeys: RefundKeys;
     refundAddress: string;
     cooperative?: boolean;
+    provider?: SwapProvider;
   }) => Promise<string>;
 }
 
 /** Deps for {@link refundChainSwap} — mirrors RefundDeps with a chain-record refund fn. */
 export interface ChainRefundDeps {
+  provider?: SwapProvider;
   getRefundAddress: () => Promise<string>;
   getLockupHex?: () => Promise<string | null | undefined>;
   broadcast?: (asset: string, txHex: string) => Promise<{ id?: string } | null>;
@@ -308,6 +319,7 @@ export interface ChainRefundDeps {
     refundKeys: RefundKeys;
     refundAddress: string;
     cooperative?: boolean;
+    provider?: SwapProvider;
   }) => Promise<string>;
 }
 
@@ -327,14 +339,21 @@ async function runRefund<R>(args: {
     refundKeys: RefundKeys;
     refundAddress: string;
     cooperative?: boolean;
+    provider?: SwapProvider;
   }) => Promise<string>;
   getLockupHex: () => Promise<string | null | undefined>;
   timeoutBlockHeight: number;
-  deps: { getRefundAddress: () => Promise<string>; broadcast?: RefundDeps["broadcast"]; getBlockHeight?: RefundDeps["getBlockHeight"] };
+  deps: {
+    provider?: SwapProvider;
+    getRefundAddress: () => Promise<string>;
+    broadcast?: RefundDeps["broadcast"];
+    getBlockHeight?: RefundDeps["getBlockHeight"];
+  };
 }): Promise<RefundResult> {
   const { record, refundKeys, refundFn, getLockupHex, timeoutBlockHeight, deps } = args;
+  const provider = deps.provider ?? getProviderById(undefined);
   const refundAddress = await deps.getRefundAddress();
-  const lockupTxHex = await getLockupHex();
+  const lockupTxHex = await withProvider(provider, getLockupHex);
   if (!lockupTxHex) {
     throw new ConversionError("SWAP_VALIDATION_FAILED", "refund: lockup transaction unavailable");
   }
@@ -350,8 +369,17 @@ async function runRefund<R>(args: {
 
   // 1. Cooperative refund — fast, broadcastable now.
   try {
-    const txHex = await refundFn({ swap: record, lockupTxHex, refundKeys, refundAddress, cooperative: true });
-    const res = await broadcast("L-BTC", txHex);
+    const res = await withProvider(provider, async () => {
+      const txHex = await refundFn({
+        swap: record,
+        lockupTxHex,
+        refundKeys,
+        refundAddress,
+        cooperative: true,
+        provider
+      });
+      return broadcast("L-BTC", txHex);
+    });
     return { refundTxId: res?.id ?? null, cooperative: true };
   } catch (coopErr) {
     // 2. Cooperative failed → trustless TIMEOUT refund. Only valid once the lock
@@ -360,7 +388,7 @@ async function runRefund<R>(args: {
     try {
       height = deps.getBlockHeight
         ? await deps.getBlockHeight()
-        : await defaultChainHeight();
+        : await withProvider(provider, defaultChainHeight);
     } catch {
       // height unknown
     }
@@ -370,8 +398,19 @@ async function runRefund<R>(args: {
         coopErr
       );
     }
-    const txHex = await refundFn({ swap: record, lockupTxHex, refundKeys, refundAddress, cooperative: false });
-    const res = await broadcast("L-BTC", txHex);
+    const res = await withProvider(provider, async () => {
+      // The trustless script-path refund needs no co-signature, but the
+      // broadcast still goes through the backend holding the lockup.
+      const txHex = await refundFn({
+        swap: record,
+        lockupTxHex,
+        refundKeys,
+        refundAddress,
+        cooperative: false,
+        provider
+      });
+      return broadcast("L-BTC", txHex);
+    });
     return { refundTxId: res?.id ?? null, cooperative: false };
   }
 }

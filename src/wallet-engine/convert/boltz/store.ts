@@ -19,6 +19,7 @@ import { defaultLogger, type Logger } from "../../logger.js";
 import { Mutex } from "../../mutex.js";
 import { aesGcmDecrypt, aesGcmEncrypt, deriveKey, randomIv } from "../../store/crypto.js";
 import { ensureDir, writeFileDurable } from "../../store/fs-util.js";
+import type { SwapProviderId } from "./providers.js";
 import type { ReverseSwapRecord } from "./reverse.js";
 
 export const BOLTZ_SWAPS_FILE = "boltz-swaps.json";
@@ -49,6 +50,14 @@ export type SubmarineState =
 export interface StoredSubmarineSwap {
   type: "submarine";
   swapId: string;
+  /**
+   * The backend that CREATED this swap. Watching, claiming and refunding must
+   * go back to it even after the process selected another operator. Absent on
+   * records written before the engine had a fallback — those are all Boltz
+   * (getProviderById defaults to it), and a reader must never stall a
+   * refundable swap over a field it does not recognise.
+   */
+  providerId?: SwapProviderId;
   invoice: string;
   lockupAddress: string;
   expectedAmountSats: number;
@@ -68,6 +77,14 @@ export type ReverseState = "awaiting_payment" | "claimed" | "failed";
 
 export interface StoredReverseSwap extends ReverseSwapRecord {
   type: "reverse";
+  /**
+   * The backend that CREATED this swap. Watching, claiming and refunding must
+   * go back to it even after the process selected another operator. Absent on
+   * records written before the engine had a fallback — those are all Boltz
+   * (getProviderById defaults to it), and a reader must never stall a
+   * refundable swap over a field it does not recognise.
+   */
+  providerId?: SwapProviderId;
   state: ReverseState;
   createdAt: number;
 }
@@ -90,6 +107,14 @@ export type StablecoinState =
 export interface StoredStablecoinSwap {
   type: "stablecoin";
   swapId: string;
+  /**
+   * The backend that CREATED this swap. Watching, claiming and refunding must
+   * go back to it even after the process selected another operator. Absent on
+   * records written before the engine had a fallback — those are all Boltz
+   * (getProviderById defaults to it), and a reader must never stall a
+   * refundable swap over a field it does not recognise.
+   */
+  providerId?: SwapProviderId;
   asset: "USDC" | "USDT";
   networkId: string;
   /** FINAL recipient (EVM/Tron) address. */
