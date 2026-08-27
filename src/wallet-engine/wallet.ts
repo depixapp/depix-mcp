@@ -1321,11 +1321,12 @@ export class DepixWallet {
    * With no `index`, a FRESH dedicated index is allocated the same way a receive
    * address is: `max(lwk_last_unused, nextReceiveIndex)`, bumped and persisted
    * BEFORE returning, so re-activating always derives a brand-new address the
-   * backend has never seen. With an explicit `index` (a re-activation or a
-   * server-rehydrated address), that exact index is derived — the caller has
-   * already established it belongs to this seed. Either way the burned index is
-   * kept inside the coverage a degraded (gap-limit) rescan replays, so a restore
-   * still finds what payers sent to it.
+   * backend has never seen — and its index is kept inside the coverage a degraded
+   * (gap-limit) rescan replays, so a restore still finds what payers sent to it.
+   * With an explicit `index` (a re-activation or a server-rehydrated address),
+   * that exact index is derived — the caller has already established it belongs
+   * to this seed — and, exactly like getReceiveAddress, the scan hint is left
+   * untouched (a typoed huge index must not poison the degraded scan).
    *
    * The blinding key never enters the log or any return field other than this
    * one — the caller sends it in-process and surfaces only the address.
@@ -1341,8 +1342,11 @@ export class DepixWallet {
         throw new WalletError("INVALID_ADDRESS", "derivation_index must be a non-negative integer");
       }
       const idx = options.index;
+      // Deliberately does NOT bump the scan hint — mirroring the explicit-index
+      // path of getReceiveAddress: a typoed huge index would push the degraded-
+      // scan coverage floor up to the clamp and poison every degraded scan. Only
+      // the FRESH branch below, which advances from the frontier, raises it.
       const address = wollet.address(idx).address().toString();
-      await this.updateStore.bumpScanHint(idx + 1).catch(() => {});
       return { address, blindingKey: deriveSlip77BlindingKeyHex(descriptor, address), derivationIndex: idx };
     }
 
