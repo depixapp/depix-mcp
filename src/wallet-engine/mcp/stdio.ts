@@ -19,6 +19,7 @@ import { DepixWallet, type ConversionResumeSummary, type ResumeSummary } from ".
 import { defaultLogger, redactSecrets } from "../logger.js";
 import { createWalletMcpServer } from "./server.js";
 import { createShutdownHandler, resolveKeyMode, resolveMaxWaitSeconds } from "./runtime.js";
+import { sanitizeOutgoingSchemas } from "../../schemaDialect.js";
 
 async function main(): Promise<void> {
   const apiKey = process.env.DEPIX_API_KEY;
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
     logger: defaultLogger,
   });
 
-  const transport = new StdioServerTransport();
+  const transport = sanitizeOutgoingSchemas(new StdioServerTransport());
   await server.connect(transport);
   // The host closing our stdin closes the transport → onclose → clean shutdown.
   server.server.onclose = () => shutdown(0);

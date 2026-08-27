@@ -17,6 +17,7 @@ import {
 } from "./config.js";
 import { OAuthTokenError, buildWwwAuthenticate, verifyWorkosAccessToken } from "./oauth.js";
 import { logger } from "./log.js";
+import { sanitizeOutgoingSchemas } from "./schemaDialect.js";
 
 /** Extract the raw token from an `Authorization: Bearer <token>` header. */
 export function extractBearer(header?: string | string[]): string | undefined {
@@ -105,13 +106,13 @@ export async function handleMcpHttp(
     maxWaitSeconds: resolveMaxWaitSeconds(),
     version: resolveServerVersion(),
   });
-  const transport = new StreamableHTTPServerTransport({
+  const transport = sanitizeOutgoingSchemas(new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     // DNS-rebinding protection (official MCP guidance): reject requests whose
     // Host header is not ours. MCP_ALLOWED_HOSTS extends it for previews.
     enableDnsRebindingProtection: true,
     allowedHosts: resolveAllowedHosts(),
-  });
+  }));
 
   res.on("close", () => {
     void transport.close();

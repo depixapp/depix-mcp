@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.5.1 — the catalog stops declaring a dialect the clients refuse
+
+Claude Desktop and Claude Code validate every tool call against the tool's
+declared schemas with a JSON-Schema-2020-12-only validator — and the SDK's
+zod-v3 converter stamps `"$schema": draft-07` on every schema it emits, so
+every call failed in the client before reaching the tool ("invalid
+outputSchema: JSON Schema declares an unsupported dialect").
+
+- **The stamp is stripped on the wire.** The SDK adds it inside its own
+  tools/list handler, after our code has run, so the transport is the one
+  reliable choke point: both entries (stdio and the hosted HTTP function) now
+  send their catalog through `sanitizeOutgoingSchemas`. Nothing else in the
+  schema changes — the keywords these schemas use mean the same thing in both
+  dialects.
+- **A control test pins the SDK's behaviour.** When the SDK stops stamping
+  draft-07, that test fails on purpose: the signal to delete the shim.
+
 ## 2.5.0 — Lightning works again, and a swap remembers who is holding it
 
 The agent wallet's Lightning send, receive and gift cards had been dead since

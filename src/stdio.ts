@@ -26,6 +26,7 @@ import { runCli } from "./cli.js";
 import { resolveApiBase, resolveMaxWaitSeconds, resolveServerVersion } from "./config.js";
 import { UNIFIED_INIT_COMMAND } from "./instructions.js";
 import { logger, redact } from "./log.js";
+import { sanitizeOutgoingSchemas } from "./schemaDialect.js";
 import {
   UNIFIED_PACKAGE_NAME,
   UNIFIED_TOOL_COUNT,
@@ -117,7 +118,7 @@ async function serve(): Promise<void> {
     logger: engineLogger,
   });
 
-  const transport = new StdioServerTransport();
+  const transport = sanitizeOutgoingSchemas(new StdioServerTransport());
   await server.connect(transport);
   // The host closing our stdin closes the transport → onclose → clean shutdown.
   server.server.onclose = () => shutdown(0);
