@@ -47,6 +47,7 @@ describe("viem never enters the Lightning-send chunk (stays dynamic-only, §5.3)
 
   for (const mod of [
     "src/wallet-engine/convert/boltz/client.ts",
+    "src/wallet-engine/convert/boltz/providers.ts",
     "src/wallet-engine/convert/boltz/submarine.ts",
     "src/wallet-engine/convert/boltz/reverse.ts",
     "src/wallet-engine/convert/boltz/refund.ts",

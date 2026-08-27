@@ -32,7 +32,13 @@ import {
   type StoredReverseSwap,
   type StoredSubmarineSwap
 } from "../../src/wallet-engine/convert/boltz/store.js";
-import type { RefundDeps, RefundResult, SubmarineRefundRecord } from "../../src/wallet-engine/convert/boltz/refund.js";
+import {
+  refundSubmarineSwap,
+  type RefundDeps,
+  type RefundResult,
+  type SubmarineRefundRecord
+} from "../../src/wallet-engine/convert/boltz/refund.js";
+import { executeStablecoinRoute } from "../../src/wallet-engine/convert/boltz/stablecoin.js";
 import type { Logger } from "../../src/wallet-engine/logger.js";
 import { isDepixSdkError } from "../../src/wallet-engine/errors.js";
 import { TEST_INVOICE } from "./support/boltz.js";
@@ -318,6 +324,75 @@ describe("the stablecoin route stays on Boltz and refuses when Boltz is off", ()
 describe("a Lightning flow on the fallback runs CONCURRENTLY with a stablecoin flow on Boltz", () => {
   beforeEach(() => {
     resetBoltzConfigForTests();
+  });
+
+  it("a Coinos refund co-signs against Coinos while a Boltz stablecoin execution runs", async () => {
+    // The Lightning SEND path only reaches the shared SDK config when it
+    // refunds — and a refund asked of the wrong backend is a stranded lockup.
+    await ensureBoltzConfig();
+    const { getBoltzApiUrl } = (await import("boltz-swaps/config")) as unknown as {
+      getBoltzApiUrl: () => string;
+    };
+    const seen: Record<string, string[]> = { refund: [], stablecoin: [] };
+    const step = async (flow: string, ms: number): Promise<void> => {
+      await new Promise((r) => setTimeout(r, ms));
+      seen[flow]!.push(getBoltzApiUrl());
+    };
+
+    const refund = refundSubmarineSwap(
+      {
+        swapId: "sub-coinos",
+        claimPublicKey: "03" + "cc".repeat(32),
+        swapTree: {},
+        timeoutBlockHeight: 1_000_100,
+        refundPrivateKeyHex: "11".repeat(32),
+        refundPublicKeyHex: "02" + "22".repeat(32)
+      },
+      {
+        provider: COINOS,
+        getRefundAddress: async () => LOCKUP_ADDRESS,
+        getLockupHex: async () => {
+          await step("refund", 0);
+          return "00";
+        },
+        refund: async () => {
+          await step("refund", 6);
+          return "deadbeef";
+        },
+        broadcast: async () => {
+          await step("refund", 12);
+          return { id: "refund_txid" };
+        }
+      }
+    );
+
+    const stablecoin = executeStablecoinRoute(
+      {
+        swapId: "chain-1",
+        claimAddress: "0x" + "a".repeat(40),
+        createdSwap: {},
+        plan: {},
+        preimageHex: "aa".repeat(32),
+        evmPrivateKeyHex: "bb".repeat(32)
+      },
+      {
+        ensureConfig: async () => {},
+        waitForServerLockup: async () => {
+          await step("stablecoin", 3);
+          await step("stablecoin", 9);
+        },
+        buildSigner: (async () => ({}) as never) as never,
+        executeRoute: async () => {
+          await step("stablecoin", 15);
+          return { claimTransactionId: "0xclaim" };
+        }
+      }
+    );
+
+    await Promise.all([refund, stablecoin]);
+
+    expect(seen.refund).toEqual([COINOS.apiUrl, COINOS.apiUrl, COINOS.apiUrl]);
+    expect(seen.stablecoin).toEqual([BOLTZ.apiUrl, BOLTZ.apiUrl, BOLTZ.apiUrl]);
   });
 
   it("each provider request resolves its own base URL", async () => {
