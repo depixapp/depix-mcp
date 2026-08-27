@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    20b0765ca529f9e38b0de20b0c3265a5c9a8dc58
+ * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
  * Path:      src/convert/sideswap-client.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -83,6 +83,18 @@ export function safeBigInt(v: unknown, name: string): bigint {
   throw ssError(SS_ERROR.INVALID_RESPONSE, `Invalid numeric ${name}: ${String(v)}`);
 }
 
+// Coerce a peg_quote field (number or numeric string across server versions) to
+// a finite number, or null when absent/unparseable. Never throws — a peg quote
+// is advisory, so a junk field degrades to null, not a failure.
+function pegQuoteNumber(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /** A UTXO shape SideSwap's dealer flow needs (blinding factors included). */
 export interface SideSwapUtxo {
   txid: string;
@@ -124,6 +136,15 @@ export interface PegResult {
   recvAmount?: number | null;
   expiresAt?: number | null;
   createdAt?: number | null;
+}
+
+export interface PegQuoteResult {
+  /** Percentage fee the server takes on the peg (null when unreported). */
+  serverFeePercent: number | null;
+  /** Smallest on-chain amount (sats) the server will accept for this direction. */
+  minAmount: number | null;
+  maxAmount: number | null;
+  recvAmount: number | null;
 }
 
 export interface PegStatusResult {
@@ -190,6 +211,7 @@ export interface SideSwapClient {
   takerSign(args: { quoteId: number | string; signedPset: string }): Promise<{ txid: string }>;
   pegIn(args: { recvAddr: string }): Promise<PegResult>;
   pegOut(args: { recvAddr: string; blocks?: number }): Promise<PegResult>;
+  pegQuote(args: { pegIn: boolean; sendAmountSats?: number | null }): Promise<PegQuoteResult | null>;
   pegStatus(args: { orderId: string; pegIn: boolean }): Promise<PegStatusResult>;
   serverStatus(args?: { forceRefresh?: boolean }): Promise<Record<string, unknown>>;
 }
@@ -721,6 +743,29 @@ export function createSideSwapClient(options: SideSwapClientOptions = {}): SideS
     };
   }
 
+  // Fee estimate + accepted amount bounds for a peg direction, BEFORE an order
+  // exists. `min_amount` is the direction-specific floor peg-out callers gate on
+  // (§5.2). Best-effort: an amount-less probe (sendAmountSats null) may omit
+  // min_amount, and an older server may not implement peg_quote at all — either
+  // way this resolves to null and the caller falls back to server_status.
+  async function pegQuote(args: { pegIn: boolean; sendAmountSats?: number | null }): Promise<PegQuoteResult | null> {
+    try {
+      const result = (await rpc("peg_quote", {
+        peg_in: args.pegIn,
+        send_amount: args.sendAmountSats ?? null
+      })) as Record<string, unknown>;
+      const q = ((result?.peg_quote as Record<string, unknown>) ?? result ?? {}) as Record<string, unknown>;
+      return {
+        serverFeePercent: pegQuoteNumber(q.server_fee_percent ?? q.fee_percent),
+        minAmount: pegQuoteNumber(q.min_amount),
+        maxAmount: pegQuoteNumber(q.max_amount),
+        recvAmount: pegQuoteNumber(q.recv_amount)
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async function pegStatus(args: { orderId: string; pegIn: boolean }): Promise<PegStatusResult> {
     const result = (await rpc("peg_status", { order_id: args.orderId, peg_in: args.pegIn })) as {
       order_id?: string;
@@ -754,6 +799,7 @@ export function createSideSwapClient(options: SideSwapClientOptions = {}): SideS
     takerSign,
     pegIn,
     pegOut,
+    pegQuote,
     pegStatus,
     serverStatus
   });

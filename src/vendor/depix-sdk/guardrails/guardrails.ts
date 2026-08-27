@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    20b0765ca529f9e38b0de20b0c3265a5c9a8dc58
+ * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
  * Path:      src/guardrails/guardrails.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *

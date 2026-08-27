@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    20b0765ca529f9e38b0de20b0c3265a5c9a8dc58
+ * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
  * Path:      src/convert/sideswap-peg.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -197,6 +197,40 @@ export function assertPegOutRecipient(
   }
 }
 
+// ─── peg-out minimum (fund-safety gate, P6) ──────────────────────────────────
+
+/**
+ * Conservative peg-out floor (sats), used ONLY when the server reported no live
+ * minimum — 0.001 BTC, matching the frontend's floor. The real minimum is read
+ * live per call (never hardcoded); this is the fail-closed backstop.
+ */
+export const PEG_OUT_MIN_FLOOR_SATS = 100_000n;
+
+// A server minimum arrives as a number or a numeric string across versions.
+// Round UP so a fractional value never understates the floor; null when absent
+// or unusable.
+function coercePegMinSats(v: unknown): bigint | null {
+  const n =
+    typeof v === "bigint"
+      ? Number(v)
+      : typeof v === "number"
+        ? v
+        : typeof v === "string" && v.trim() !== ""
+          ? Number(v)
+          : NaN;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return BigInt(Math.ceil(n));
+}
+
+/**
+ * Resolve the peg-out minimum (sats): peg_quote's direction-specific min_amount
+ * first, then server_status's min_peg_out_amount, then the conservative floor
+ * when the server reported neither.
+ */
+export function resolvePegOutMinSats(quoteMin: unknown, statusMin: unknown): bigint {
+  return coercePegMinSats(quoteMin) ?? coercePegMinSats(statusMin) ?? PEG_OUT_MIN_FLOOR_SATS;
+}
+
 // ─── public peg API (§5.2) ────────────────────────────────────────────────────
 
 export interface PegInResult {
@@ -319,6 +353,10 @@ export class SideSwapPeg {
       let recvAmount: number | null;
       try {
         await client.connect();
+        // Fund-safety gate (P6): below the live minimum, SideSwap discards the
+        // deposit as InsufficientAmount — a final state with no refund — so the
+        // L-BTC would be burned. Refuse before the send is built or broadcast.
+        await this.assertPegOutAboveMin(client, params.amountSats);
         const peg = await client.pegOut({ recvAddr: params.recvAddr, blocks: params.blocks });
         if (!peg.pegAddr || !peg.orderId) {
           throw new SideSwapError(
@@ -368,6 +406,42 @@ export class SideSwapPeg {
     const rec = await this.pending.load();
     if (!rec) return null;
     return { orderId: rec.orderId, pegAddr: rec.pegAddr, recvAddr: rec.recvAddr, expiresAt: null, createdAt: rec.createdAt };
+  }
+
+  /**
+   * Refuse a peg-out below the live SideSwap minimum, BEFORE the L-BTC send is
+   * built (P6). Both sources are best-effort: peg_quote's direction-specific
+   * min_amount is preferred, server_status's min_peg_out_amount backs it, and
+   * the conservative floor covers a server that answered with neither.
+   */
+  private async assertPegOutAboveMin(client: SideSwapClient, amountSats: bigint): Promise<void> {
+    const sendAmount = amountSats <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(amountSats) : null;
+    let quoteMin: number | null = null;
+    try {
+      quoteMin = (await client.pegQuote({ pegIn: false, sendAmountSats: sendAmount }))?.minAmount ?? null;
+    } catch {
+      /* advisory — fall through to server_status, then the floor */
+    }
+    let statusMin: unknown = null;
+    try {
+      statusMin = (await client.serverStatus())?.min_peg_out_amount ?? null;
+    } catch {
+      /* advisory — the floor covers a silent server */
+    }
+
+    const minSats = resolvePegOutMinSats(quoteMin, statusMin);
+    if (amountSats < minSats) {
+      const err = new WalletError(
+        "INVALID_AMOUNT",
+        `peg-out amount ${amountSats} sats is below SideSwap's minimum of ${minSats} sats; ` +
+          "a smaller deposit is discarded on-chain with no refund. Send at least the minimum.",
+        { details: { amountSats: amountSats.toString(), minSats: minSats.toString() } }
+      );
+      // Nothing was signed or sent — a multi-hop caller may keep the plan for
+      // retry rather than parking it as an ambiguous failure (§5.3).
+      (err as { nothingLocked?: boolean }).nothingLocked = true;
+      throw err;
+    }
   }
 
   private async buildSignBroadcastLbtc(
