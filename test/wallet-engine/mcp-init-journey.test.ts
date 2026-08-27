@@ -132,7 +132,7 @@ describe("init journey — real engine (§1.5/§3.7 DoD)", () => {
     // The seed is encrypted at rest — the mnemonic is nowhere in the file.
     const stored = await readFile(join(dataDir, "wallet.json"), "utf8");
     const mnemonic = await wallet.exportMnemonic();
-    expect(stored).not.toContain(mnemonic.split(" ")[0]!);
+    expect(stored).not.toContain(mnemonic); // the whole phrase, not a word that can land in base64
     expect(output.join("\n")).toContain(mnemonic.split(" ")[0]!); // shown ONLY in the ritual
 
     // …and the LAST step of the DoD: the host started from that block reaches a
@@ -233,7 +233,10 @@ describe("init journey — real engine (§1.5/§3.7 DoD)", () => {
     const result = await runWalletInit({ io, tty: TTY, dataDir, env: {}, restore: true, unlock: fakeUnlock(), ...SIDE_EFFECT_FREE });
     expect(result.action).toBe("restored");
     expect(result.backupConfirmed).toBe(true);
-    expect(output.join("\n")).not.toContain(mnemonic.split(" ")[0]!);
+    // Leak check: the typed phrase must never be echoed. Assert the WHOLE
+    // mnemonic is absent, not a single word — a short BIP39 word (e.g. "age")
+    // substring-matches innocent copy like "password manager".
+    expect(output.join("\n")).not.toContain(mnemonic);
 
     const wallet = await DepixWallet.open({
       dataDir,
