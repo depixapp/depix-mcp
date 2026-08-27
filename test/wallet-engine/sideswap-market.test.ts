@@ -224,6 +224,79 @@ describe("execute() — fail-closed validation aborts before recording/broadcast
   });
 });
 
+describe("execute() — the quote's fee leg reaches the PSET validator end to end", () => {
+  // The recv-leg fee is what lets the validator accept a PSET that credits LESS
+  // than the quote. It only gets there if execute() forwards `feeAssetId` from
+  // the quote: drop that one field and this honest swap is rejected as a
+  // divergence, because 900 of fee is far outside the 100-unit tolerance.
+  it("accepts a fee-netted PSET when the fee falls on the RECEIVED asset", async () => {
+    const client = new FakeSideSwapClient();
+    const feeNettedSigner = async (
+      _p: string,
+      validate: (i: SwapPsetInspection) => void
+    ): Promise<string> => {
+      validate({ outputScriptsHex: [EXPECTED_SCRIPT], netBalances: new Map([[LBTC, 4_100n]]) });
+      return "SIGNED_PSET_B64";
+    };
+    const { hooks, spies } = makeHooks();
+    const market = makeMarket(hooks, client, feeNettedSigner);
+    const stream = await market.quote({ from: "DEPIX", to: "LBTC", amountSats: 1000n });
+    client.emitQuote({
+      quoteId: "Q1",
+      sendAmount: 1000n,
+      recvAmount: 5_000n,
+      serverFee: 900n,
+      fixedFee: 0n,
+      feeAsset: "Base",
+      feeAssetId: LBTC,
+      ttlMs: 30_000,
+      sendAsset: DEPIX,
+      recvAsset: LBTC
+    });
+    const quote = await stream.next();
+
+    const res = await stream.execute(quote);
+
+    // The reported receipt is the PSET's real post-fee net, not the quote figure.
+    expect(res.recvAmountSats).toBe(4_100n);
+    expect(spies.record).toEqual([[5_000, "sideswap-swap"]]);
+    expect(client.takerSignCalls).toEqual([{ quoteId: "Q1", signedPset: "SIGNED_PSET_B64" }]);
+    stream.close();
+  });
+
+  it("refuses the SAME PSET when the fee is charged on the SENT asset", async () => {
+    const client = new FakeSideSwapClient();
+    const feeNettedSigner = async (
+      _p: string,
+      validate: (i: SwapPsetInspection) => void
+    ): Promise<string> => {
+      validate({ outputScriptsHex: [EXPECTED_SCRIPT], netBalances: new Map([[LBTC, 4_100n]]) });
+      return "NEVER";
+    };
+    const { hooks, spies } = makeHooks();
+    const market = makeMarket(hooks, client, feeNettedSigner);
+    const stream = await market.quote({ from: "DEPIX", to: "LBTC", amountSats: 1000n });
+    client.emitQuote({
+      quoteId: "Q1",
+      sendAmount: 1000n,
+      recvAmount: 5_000n,
+      serverFee: 900n,
+      fixedFee: 0n,
+      feeAsset: "Quote",
+      feeAssetId: DEPIX,
+      ttlMs: 30_000,
+      sendAsset: DEPIX,
+      recvAsset: LBTC
+    });
+    const quote = await stream.next();
+
+    await expect(stream.execute(quote)).rejects.toSatisfy((e) => isDepixSdkError(e, "SWAP_VALIDATION_FAILED"));
+    expect(spies.record).toHaveLength(0);
+    expect(client.takerSignCalls).toHaveLength(0);
+    stream.close();
+  });
+});
+
 describe("execute() — quote TTL guard (§5.1)", () => {
   it("refuses a (nearly) expired quote with SWAP_QUOTE_EXPIRED — no get_quote", async () => {
     const clock = fakeClock(1_000_000);

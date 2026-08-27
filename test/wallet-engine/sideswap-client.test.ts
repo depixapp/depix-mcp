@@ -106,6 +106,45 @@ describe("SideSwap client — quote stream (§5.1)", () => {
     }
   });
 
+  it("the label names the SIDE, so 'Base' can be the RECEIVED asset when selling the quote side", () => {
+    // Market base=USDT, quote=DEPIX. Sending DEPIX (the quote side) to receive
+    // USDT (the base side) makes fee_asset:"Base" the asset we RECEIVE — which
+    // is what decides whether the fee nets out of the recv output downstream.
+    const USDT = ASSETS.USDT.id;
+    const { WebSocketImpl, instances } = makeFakeWebSocket((msg, ws) => {
+      const p = (msg.params ?? {}) as Record<string, unknown>;
+      if (p.start_quotes) ws.respond(msg.id, { start_quotes: { quote_sub_id: 9, fee_asset: "Base" } });
+      else ws.respond(msg.id, {});
+    });
+    const client = createSideSwapClient({
+      WebSocketImpl,
+      presetMarkets: [{ asset_pair: { base: USDT, quote: DEPIX }, type: "Stablecoin" }]
+    });
+    return (async () => {
+      await client.connect();
+      const quotes: SideSwapQuoteEvent[] = [];
+      client.startQuotes({
+        sendAsset: DEPIX,
+        recvAsset: USDT,
+        sendAmountSats: 1000,
+        utxos: [],
+        receiveAddress: "rcv",
+        changeAddress: "chg",
+        onQuote: (q) => quotes.push(q)
+      });
+      await flush();
+      instances[0]!.notify("market", {
+        quote: { quote_sub_id: 9, status: { Success: { quote_id: "Q", base_amount: 5, quote_amount: 1000 } } }
+      });
+      const q = quotes[0]!;
+      // Selling the quote side: quote_amount is what we send, base_amount what we get.
+      expect(q.sendAmount).toBe(1000n);
+      expect(q.recvAmount).toBe(5n);
+      expect(q.feeAssetId).toBe(USDT);
+      client.disconnect();
+    })();
+  });
+
   it("ignores a quote whose quote_sub_id does not match the bound subscription", async () => {
     const { client, instances } = await connectedClient();
     const quotes: SideSwapQuoteEvent[] = [];

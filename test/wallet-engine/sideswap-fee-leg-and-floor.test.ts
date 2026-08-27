@@ -55,6 +55,23 @@ describe("P2 — declared fees only widen the recv band on the RECV leg", () => 
     expect(() => assertSwapPsetPaysAndBalances(recvNet(950_000n), expect_)).not.toThrow(); // quote − fees
     expect(() => assertSwapPsetPaysAndBalances(recvNet(935_000n), expect_)).toThrow(); // below fee-widened floor
   });
+
+  it("UNKNOWN fee leg (null or absent) is fail-closed — an unattributed fee never widens the band", () => {
+    // Both shapes mean the same thing: nothing proves the fee touched the recv
+    // output, so a recv short by exactly the fee is a subpayment, not netting.
+    const asNull = { ...base, recvAmountSats: RECV, declaredFeesSats: FEES, feeAssetId: null };
+    const asAbsent = { ...base, recvAmountSats: RECV, declaredFeesSats: FEES };
+    for (const expect_ of [asNull, asAbsent]) {
+      expect(() => assertSwapPsetPaysAndBalances(recvNet(950_000n), expect_)).toThrow();
+      try {
+        assertSwapPsetPaysAndBalances(recvNet(950_000n), expect_);
+      } catch (e) {
+        expect(isSwapFail(e)).toBe(true);
+      }
+      // The honest full-recv PSET still passes — fail-closed, not fail-always.
+      expect(() => assertSwapPsetPaysAndBalances(recvNet(RECV), expect_)).not.toThrow();
+    }
+  });
 });
 
 describe("P3 — the 1% tolerance is floored so small swaps keep a usable band", () => {

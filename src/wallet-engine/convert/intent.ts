@@ -33,7 +33,7 @@
 // the intent layer cannot bypass it by construction. A multi-hop plan counts
 // its value ONCE (§4.3 count-once — see multihop.ts/continuation.ts).
 
-import { MAINNET_ASSET_ID_TO_KEY, type AssetKey } from "../assets.js";
+import { ASSETS, MAINNET_ASSET_ID_TO_KEY, type AssetKey } from "../assets.js";
 import { ConversionError, WalletError, type ErrorDetails } from "../errors.js";
 import { estimateReverseReceive, getReverseLimits } from "./boltz/reverse.js";
 import {
@@ -52,6 +52,7 @@ import { executeMultiHopRoute } from "./multihop.js";
 import type { ConversionPlanStore } from "./plan-store.js";
 import type { ConvertNamespace, SideSwapNamespace } from "./namespace.js";
 import { enumerateRoutes, type ConvertIntent, type Route, type RouteLeg } from "./routes.js";
+import { assetIdEquals } from "./sideswap.js";
 import type {
   NextQuoteOptions,
   SideSwapQuote,
@@ -376,13 +377,17 @@ async function estimateLeg(leg: RouteLeg, amountIn: bigint, deps: IntentDeps): P
       });
       try {
         const quote = await stream.next();
-        // SideSwap's recv_amount is PRE-fee: the dealer nets server_fee +
-        // fixed_fee out of the recv output in the PSET (observed live —
-        // mainnet e2e P0/P2, 2026-07-11). Surface the NET amount the wallet
-        // will actually be credited; a pre-fee figure here overstated the
-        // outcome and made quote() disagree with the executed result.
+        // SideSwap denominates server_fee + fixed_fee in ONE leg of the pair and
+        // nets them out of the recv output only when that leg IS the recv asset
+        // (observed live — mainnet e2e P0/P2, 2026-07-11). Subtracting them
+        // unconditionally compares amounts in DIFFERENT units: a DePix-denominated
+        // fee against an L-BTC receipt drove the estimate negative and reported a
+        // healthy route as "amount too small". Same rule as the execute-time
+        // validator (assertSwapPsetPaysAndBalances).
         const declaredFees = quote.serverFeeSats + quote.fixedFeeSats;
-        const netRecv = quote.recvAmountSats - declaredFees;
+        const feeOnRecvLeg =
+          quote.feeAssetId != null && assetIdEquals(quote.feeAssetId, ASSETS[leg.to as AssetKey].id);
+        const netRecv = feeOnRecvLeg ? quote.recvAmountSats - declaredFees : quote.recvAmountSats;
         if (netRecv <= 0n) {
           return {
             receivedSats: null,
@@ -391,17 +396,16 @@ async function estimateLeg(leg: RouteLeg, amountIn: bigint, deps: IntentDeps): P
             note: "declared fees meet or exceed the quoted receive — amount too small for this route"
           };
         }
-        // fee_asset comes from the start_quotes RESPONSE and the server may
-        // OMIT it; the fees are netted from the RECV side (observed), so an
-        // omitted fee asset defaults to the recv asset rather than reporting an
-        // unusable null. A PRESENT-but-unmapped id, however, stays null — an
-        // honest "unknown" (which suppresses estimatedFeeTotalSats downstream)
-        // rather than coercing it to `leg.to`, which would mislabel the fee
-        // asset and could sum fees denominated in different assets into a
-        // spurious same-asset total.
-        const feeAssetKey: AssetKey | null = quote.feeAsset
-          ? (MAINNET_ASSET_ID_TO_KEY[quote.feeAsset] ?? null)
-          : (leg.to as AssetKey);
+        // `quote.feeAsset` is the SIDE label the server sends ("Base"/"Quote"),
+        // never an asset id — only the client can resolve it against the accepted
+        // market, which it does into `feeAssetId`. An unresolved label falls back
+        // to the recv asset, matching the observed netting side; that is a
+        // reporting default only, since the arithmetic above still requires an
+        // explicit match.
+        const feeAssetKey: AssetKey | null =
+          quote.feeAssetId != null
+            ? (MAINNET_ASSET_ID_TO_KEY[quote.feeAssetId] ?? null)
+            : (leg.to as AssetKey);
         return {
           receivedSats: netRecv,
           feeSats: declaredFees,

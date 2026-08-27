@@ -251,7 +251,7 @@ function netSpentOf(netBalances: ReadonlyMap<string, bigint>, assetId: string): 
 }
 
 /** Reports whether two Liquid asset ids match, tolerating hex-case differences. */
-function assetIdEquals(a: string, b: string): boolean {
+export function assetIdEquals(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 

@@ -20,7 +20,10 @@ interface FakeStreamBehaviour {
   recvAmountSats?: bigint;
   serverFeeSats?: bigint;
   fixedFeeSats?: bigint;
+  /** The RAW side label SideSwap reports ("Base" | "Quote"), never an asset id. */
   feeAsset?: string | null;
+  /** The label resolved against the accepted market — the only usable fee asset. */
+  feeAssetId?: string | null;
   quoteError?: Error;
 }
 
@@ -45,6 +48,7 @@ function makeFakeSideswap(behaviourByTo: Record<string, FakeStreamBehaviour> = {
         serverFeeSats: b.serverFeeSats ?? 0n,
         fixedFeeSats: b.fixedFeeSats ?? 0n,
         feeAsset: b.feeAsset ?? null,
+        feeAssetId: b.feeAssetId ?? null,
         ttlMs: 30_000,
         expiresAt: Date.now() + 30_000,
         receiveAddress: "lq1our-receive"
@@ -237,7 +241,15 @@ function makeDeps(over: Partial<IntentDeps> = {}) {
 describe("quoteRoutes — enumerates ALL candidates with chained estimates", () => {
   it("DEPIX → USDT @ethereum: two 2-hop routes, estimates chained leg to leg", async () => {
     const ss = makeFakeSideswap({
-      LBTC: { recvAmountSats: 20_000n, serverFeeSats: 100n, fixedFeeSats: 10n, feeAsset: ASSETS.LBTC.id },
+      // Production shape: the wire carries the SIDE label, and the client
+      // resolves it against the accepted market into `feeAssetId`.
+      LBTC: {
+        recvAmountSats: 20_000n,
+        serverFeeSats: 100n,
+        fixedFeeSats: 10n,
+        feeAsset: "Base",
+        feeAssetId: ASSETS.LBTC.id
+      },
       USDT: { recvAmountSats: 1_900_000_000n, serverFeeSats: 0n, fixedFeeSats: 0n }
     });
     const shift = makeFakeSideshift();
@@ -333,6 +345,69 @@ describe("quoteRoutes — enumerates ALL candidates with chained estimates", () 
     await quoteRoutes({ from: "DEPIX", to: "LBTC", network: "liquid", amount: 1_000n }, deps);
     expect(ss.closed).toEqual(["DEPIX>LBTC"]);
     expect(ss.executed).toHaveLength(0); // estimate only — never executes
+  });
+
+  // The two halves of the same production bug: `feeAsset` is a SIDE LABEL
+  // ("Base"/"Quote"), so reading it as an asset id resolved to null on every
+  // live quote — and the estimator then subtracted fees denominated in the SENT
+  // asset from a receipt denominated in the RECEIVED one.
+  describe("the fee leg governs both the label and the arithmetic", () => {
+    it("resolves the fee asset from feeAssetId, not from the Base/Quote label", async () => {
+      const { deps } = makeDeps({
+        sideswap: makeFakeSideswap({
+          LBTC: {
+            recvAmountSats: 20_000n,
+            serverFeeSats: 100n,
+            fixedFeeSats: 10n,
+            feeAsset: "Base",
+            feeAssetId: ASSETS.LBTC.id
+          }
+        }).sideswap
+      });
+      const [route] = await quoteRoutes({ from: "DEPIX", to: "LBTC", amount: 1_000_000n }, deps);
+      expect(route!.legs[0]!.feeAsset).toBe("LBTC");
+    });
+
+    it("nets the fee out of the receipt only when it is charged on the RECEIVED asset", async () => {
+      // DePix → L-BTC with the fee on the SENT (DePix) leg: R$ 0.60 of fee is
+      // 60_000_000 DePix base units against a 6_073-sat receipt. Subtracting
+      // across units turned a healthy route into "amount too small".
+      const { deps } = makeDeps({
+        sideswap: makeFakeSideswap({
+          LBTC: {
+            recvAmountSats: 6_073n,
+            serverFeeSats: 60_000_000n,
+            fixedFeeSats: 0n,
+            feeAsset: "Quote",
+            feeAssetId: ASSETS.DEPIX.id
+          }
+        }).sideswap
+      });
+      const [route] = await quoteRoutes({ from: "DEPIX", to: "LBTC", amount: 100_000_000n }, deps);
+      const leg = route!.legs[0]!;
+      expect(leg.estimatedReceivedSats).toBe(6_073n);
+      expect(leg.estimatedFeeSats).toBe(60_000_000n);
+      expect(leg.feeAsset).toBe("DEPIX");
+      expect(leg.note).toBeUndefined();
+      expect(route!.estimateComplete).toBe(true);
+    });
+
+    it("still diagnoses 'too small' when the RECV-leg fee eats the whole receipt", async () => {
+      const { deps } = makeDeps({
+        sideswap: makeFakeSideswap({
+          LBTC: {
+            recvAmountSats: 90n,
+            serverFeeSats: 92n,
+            fixedFeeSats: 0n,
+            feeAsset: "Base",
+            feeAssetId: ASSETS.LBTC.id
+          }
+        }).sideswap
+      });
+      const [route] = await quoteRoutes({ from: "DEPIX", to: "LBTC", amount: 1_000n }, deps);
+      expect(route!.legs[0]!.estimatedReceivedSats).toBe(null);
+      expect(route!.legs[0]!.note).toMatch(/too small/);
+    });
   });
 
   it("BTC lightning entry uses estimateReverseReceive over the reverse pair fees", async () => {
