@@ -24,7 +24,7 @@ export interface CliDeps {
 export const USAGE = `depix-mcp — the DePix App MCP server (one MCP, two levels of access)
 
 USAGE
-  npx -y @depixapp/mcp              serve the MCP over stdio (49 tools)
+  npx -y @depixapp/mcp              serve the MCP over stdio (58 tools)
   npx -y @depixapp/mcp init         first run: create or restore the local wallet
   npx -y @depixapp/mcp init --restore
                                     import an existing 12-word mnemonic
@@ -32,12 +32,12 @@ USAGE
   npx -y @depixapp/mcp --version    print the server version
 
 ENVIRONMENT
-  DEPIX_API_KEY             sk_test_… / sk_live_… — the 22 gateway tools
-  DEPIX_WALLET_PASSPHRASE   unlocks the local wallet — the 27 wallet_* tools
+  DEPIX_API_KEY             sk_test_… / sk_live_… — the 26 gateway tools
+  DEPIX_WALLET_PASSPHRASE   unlocks the local wallet — the 29 wallet_* tools
   DEPIX_WALLET_DIR          wallet directory (default ~/.depix-wallet)
 
 NOTES
-  All 49 tools are always listed. Without a wallet, wallet_* tools return the typed
+  All 58 tools are always listed. Without a wallet, wallet_* tools return the typed
   wallet_not_configured error naming \`init\`; without an API key, the API-backed
   tools return missing_api_key. Neither is a startup failure.
 

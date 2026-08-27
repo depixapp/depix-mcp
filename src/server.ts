@@ -1,5 +1,5 @@
-// Server factory (spec §2.8). Registers all 22 tools on a McpServer bound to an
-// ApiClient carrying the caller's key (16 gateway tools + 6 support-ticket
+// Server factory (spec §2.8). Registers all 26 tools on a McpServer bound to an
+// ApiClient carrying the caller's key (20 gateway tools + 6 support-ticket
 // proxies, SPEC_TICKETS §8). Stateless: a fresh server is built per HTTP request
 // (the key comes from that request's Authorization header) and once for the
 // whole process in stdio mode. cancel_checkout is intentionally absent (removed
@@ -7,7 +7,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { ApiClient } from "./apiClient.js";
+import { ApiClient, type ApiKeySource } from "./apiClient.js";
 import { SERVER_NAME, SERVER_TITLE, resolveServerVersion } from "./config.js";
 import { ToolError } from "./errors.js";
 import { hostedInstructions } from "./instructions.js";
@@ -32,6 +32,10 @@ import {
 } from "./tools/products.js";
 import { getAccount } from "./tools/account.js";
 import { getDepositStatus, getWithdrawalStatus } from "./tools/payStatus.js";
+import { getOnboardingStatus } from "./tools/onboarding.js";
+import { updateMerchantProfile, type UpdateMerchantProfileArgs } from "./tools/merchantProfile.js";
+import { getVaultStatus } from "./tools/vault.js";
+import { listWebhookLogs } from "./tools/webhookLogs.js";
 import {
   attachSupportTicketFile,
   closeSupportTicket,
@@ -48,6 +52,15 @@ import type {
   ReplyTicketArgs,
   UpdateProductArgs,
 } from "./requestMap.js";
+
+/**
+ * The number of tools createServer registers — the HOSTED catalog and the
+ * gateway half of the unified one (§3.6): 20 gateway (merchant/account/status/
+ * onboarding/vault/webhook-logs) + 6 support-ticket. Kept as a checked constant
+ * so the count surfaces (well-known, unified.ts) derive from ONE number, and
+ * test/server.test.ts pins it against the tools actually registered here.
+ */
+export const GATEWAY_TOOL_COUNT = 26;
 
 function ok(out: unknown): CallToolResult {
   return {
@@ -88,9 +101,14 @@ async function run(fn: () => Promise<unknown>): Promise<CallToolResult> {
 }
 
 export interface CreateServerOptions {
-  apiKey?: string;
+  /** A fixed sk_/JWT string, or a resolver read per request (§3.1) so a key
+   * minted mid-session (register_account) is used without a restart. */
+  apiKey?: ApiKeySource;
   /** "oauth" when the connection authenticated via a WorkOS token (no sk_). */
   authMode?: "oauth";
+  /** Which deployment this is — steers the missing_api_key next_action (§5.1).
+   * Default "hosted"; the unified npx bin passes "local". */
+  deployment?: "hosted" | "local";
   apiBase: string;
   maxWaitSeconds: number;
   version?: string;
@@ -98,16 +116,16 @@ export interface CreateServerOptions {
   apiClient?: ApiClient;
   /**
    * PER-DEPLOYMENT handshake `instructions` (spec §1.6). Default: the hosted
-   * (receive-only, 22-tool) text, because the hosted entry is the caller that
+   * (receive-only, 26-tool) text, because the hosted entry is the caller that
    * passes nothing. The unified npx build MUST override it — the hosted text
    * asserts this server "never signs, never holds funds", which is false once
-   * the 27 wallet tools are mounted on the same server.
+   * the 29 wallet tools are mounted on the same server.
    */
   instructions?: string;
   /**
    * PER-DEPLOYMENT handshake `title` (spec §8/P2, moved from P4). Default
    * "DePix App Gateway", correct for the hosted receive-only deployment; the
-   * unified build passes UNIFIED_SERVER_TITLE so a 49-tool local server does not
+   * unified build passes UNIFIED_SERVER_TITLE so a 58-tool local server does not
    * introduce itself as a gateway. `name` is NOT per-deployment: it is the one
    * registry identity (io.github.depixapp/depix-mcp) both deployments answer to.
    */
@@ -115,7 +133,9 @@ export interface CreateServerOptions {
 }
 
 export function createServer(opts: CreateServerOptions): McpServer {
-  const client = opts.apiClient ?? new ApiClient({ apiKey: opts.apiKey, apiBase: opts.apiBase, authMode: opts.authMode });
+  const client =
+    opts.apiClient ??
+    new ApiClient({ apiKey: opts.apiKey, apiBase: opts.apiBase, authMode: opts.authMode, deployment: opts.deployment });
   const version = opts.version ?? resolveServerVersion();
 
   const server = new McpServer(
@@ -353,6 +373,70 @@ export function createServer(opts: CreateServerOptions): McpServer {
       annotations: readOnly,
     },
     (args) => run(() => getWithdrawalStatus(client, args)),
+  );
+
+  // ── Onboarding / merchant profile / vault / webhook logs (F3, §3.8/§4.3) ──
+  server.registerTool(
+    "get_onboarding_status",
+    {
+      title: "Get onboarding status",
+      description:
+        "Narrate what the account still needs to go live: an ordered ladder of steps (create the wallet, verify " +
+        "WhatsApp, deposit+convert+withdraw to verify, create the store), each with a plain PT+EN title and " +
+        "instruction to relay to the human, an absolute app deep link, and the current numbers. Composes the " +
+        "verification progress with a store probe, and — when every step is complete — triggers verification itself " +
+        "so the account never sits 'all green but not verified'. Read-first; the only write is that self-heal trigger.",
+      inputSchema: s.getOnboardingStatusInput,
+      outputSchema: s.getOnboardingStatusOutput,
+      annotations: write,
+    },
+    () => run(() => getOnboardingStatus(client)),
+  );
+
+  server.registerTool(
+    "update_merchant_profile",
+    {
+      title: "Update merchant profile",
+      description:
+        "Update the store's LIGHT profile fields — business_name, logo_url, website, default_redirect_url, " +
+        "default_callback_url — via PATCH /api/merchants/me. Only the fields you pass change. The money-redirecting " +
+        "fields (liquid_address, split_address) are NOT here by design and cannot be changed with a key. Requires " +
+        "scope `merchant_write`.",
+      inputSchema: s.updateMerchantProfileInput,
+      outputSchema: s.updateMerchantProfileOutput,
+      annotations: write,
+    },
+    (args) => run(() => updateMerchantProfile(client, args as UpdateMerchantProfileArgs)),
+  );
+
+  server.registerTool(
+    "get_vault_status",
+    {
+      title: "Get vault (Cofre) status",
+      description:
+        "Read the account's position in the Cofre deposit-hold mechanism (read-only): whether it is active, how long " +
+        "a new deposit is held, the trust level, and the rolling receive cap with how much is left this window. " +
+        "Requires scope `wallet_read`.",
+      inputSchema: s.getVaultStatusInput,
+      outputSchema: s.getVaultStatusOutput,
+      annotations: readOnly,
+    },
+    () => run(() => getVaultStatus(client)),
+  );
+
+  server.registerTool(
+    "list_webhook_logs",
+    {
+      title: "List webhook delivery logs",
+      description:
+        "Read recent webhook delivery attempts (read-only): the event, the endpoint, the HTTP status it returned or " +
+        "the transport error, the attempt number and when it was sent — newest first. Pass `id` to fetch one " +
+        "delivery. Did my webhook arrive, and what did the endpoint answer?",
+      inputSchema: s.listWebhookLogsInput,
+      outputSchema: s.listWebhookLogsOutput,
+      annotations: readOnly,
+    },
+    (args) => run(() => listWebhookLogs(client, args as { id?: string })),
   );
 
   // ── Support tickets (one channel for humans and agents; NO scope) ──

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The UNIFIED local bin — `npx -y @depixapp/mcp` (unified-MCP spec §1).
 //
-// One process, one server, 49 tools: the 22 gateway tools (a pure client of the
-// public DePix App API) plus the 27 `wallet_*` tools of the non-custodial Liquid
+// One process, one server, 58 tools: the 26 gateway tools (a pure client of the
+// public DePix App API) plus the 29 `wallet_*` tools of the non-custodial Liquid
 // wallet, which signs HERE, in the operator's own environment. Custody is decided
 // by who holds the seed, not by the transport — so this deployment is the one that
 // can hold one, and mcp.depixapp.com structurally cannot (§2.1).
@@ -10,12 +10,12 @@
 // THREE-STATE BOOT (§1(b)) — it never exits over missing configuration:
 //   - no DEPIX_API_KEY: the API-backed tools return the typed `missing_api_key`.
 //     (BEHAVIOUR CHANGE from 1.x, which exited 1: an operator running only the
-//     wallet half has no gateway key, and refusing to boot would deny them all 27
+//     wallet half has no gateway key, and refusing to boot would deny them all 29
 //     wallet tools over a credential they do not need.)
 //   - no wallet on the machine: every wallet_* tool returns the typed
 //     `wallet_not_configured` naming `npx -y @depixapp/mcp init`.
-//   - both present: all 49 work.
-// The catalog is ALWAYS 49 — MCP hosts snapshot tools/list at connect and
+//   - both present: all 58 work.
+// The catalog is ALWAYS 58 — MCP hosts snapshot tools/list at connect and
 // `list_changed` support is uneven, so a catalog that grew after `init` would mean
 // "restart your client".
 //
@@ -27,6 +27,8 @@ import { resolveApiBase, resolveMaxWaitSeconds, resolveServerVersion } from "./c
 import { UNIFIED_INIT_COMMAND } from "./instructions.js";
 import { logger, redact } from "./log.js";
 import { sanitizeOutgoingSchemas } from "./schemaDialect.js";
+import { CredentialResolver } from "./credentials.js";
+import { buildAgentToolDeps, seedResolverFromStore } from "./agent-deps.js";
 import {
   UNIFIED_PACKAGE_NAME,
   UNIFIED_TOOL_COUNT,
@@ -54,20 +56,25 @@ const engineLogger = {
 };
 
 async function serve(): Promise<void> {
-  const apiKey = process.env.DEPIX_API_KEY;
-  const apiKeyConfigured = Boolean(apiKey && apiKey.startsWith("sk_"));
+  const envKey = process.env.DEPIX_API_KEY;
+  // The credential is now RESOLVED per request (§3.1): the env key wins, else the
+  // key register_account wrote to the encrypted store. Seed it from the store at
+  // boot so a restarted agent keeps operating the account it created.
+  const credentials = new CredentialResolver({ envKey });
+  await seedResolverFromStore(credentials);
+  const apiKeyConfigured = Boolean(credentials.resolve()?.startsWith("sk_"));
   const walletDir = resolveWalletDir();
   const walletConfigured = await isWalletConfigured(walletDir);
 
   if (!apiKeyConfigured) {
     stderr(
-      "depix-mcp: no DEPIX_API_KEY (sk_test_… sandbox / sk_live_… production). Serving anyway — the tools that call the " +
-        "DePix App API return a missing_api_key error until it is set.\n",
+      "depix-mcp: no DEPIX_API_KEY and no stored account. Serving anyway — the tools that call the DePix App API " +
+        "return a missing_api_key error until you set a key or create an account with the register_account tool.\n",
     );
   }
   if (!walletConfigured) {
     stderr(
-      `depix-mcp: no wallet in ${walletDir}. Serving anyway — the 27 wallet_* tools are listed and return ` +
+      `depix-mcp: no wallet in ${walletDir}. Serving anyway — the 29 wallet_* tools are listed and return ` +
         `wallet_not_configured until you run \`${UNIFIED_INIT_COMMAND}\` in a terminal.\n`,
     );
   }
@@ -89,22 +96,27 @@ async function serve(): Promise<void> {
   });
 
   const version = resolveServerVersion();
+  const apiBase = resolveApiBase();
   const { server } = createUnifiedServer({
-    apiKey,
-    apiBase: resolveApiBase(),
+    // A resolver, not a value: register_account can write a key mid-session and it
+    // takes effect on the very next request (§3.1) — no restart.
+    apiKey: credentials.asFunction(),
+    apiBase,
     maxWaitSeconds: resolveMaxWaitSeconds(),
     version,
     walletConfigured,
     wallet: {
       getWallet: () => runtime.getWallet(),
       // Boot facts are thunks, not values: the wallet opens later, so a snapshot
-      // frozen here would make wallet_status lie for the whole session.
-      keyMode: () => resolveKeyMode(apiKey),
-      apiKeyConfigured: () => apiKeyConfigured,
+      // frozen here would make wallet_status lie for the whole session. They read
+      // the RESOLVER so a key created mid-session is reflected too.
+      keyMode: () => resolveKeyMode(credentials.resolve()),
+      apiKeyConfigured: () => Boolean(credentials.resolve()?.startsWith("sk_")),
       bootResume: () => runtime.bootResume(),
       bootConversions: () => runtime.bootConversions(),
       maxWaitSeconds: resolveWalletMaxWaitSeconds(),
     },
+    agentTools: buildAgentToolDeps({ resolver: credentials, apiBase, getWallet: () => runtime.getWallet() }),
   });
 
   const shutdown = createShutdownHandler({

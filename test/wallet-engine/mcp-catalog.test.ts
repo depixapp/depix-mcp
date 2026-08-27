@@ -72,19 +72,22 @@ const RECOVERY = ["wallet_recover", "wallet_pending"];
 // Maintenance/support (PR-D): read-only health snapshot, never key material.
 const MAINTENANCE = ["wallet_diagnostics"];
 
-const EXPECTED = [...MVP, ...INTENT, ...FAST_FOLLOW, ...GIFTCARD_DISCOVERY, ...RECOVERY, ...MAINTENANCE].sort();
+// Sync primitives (§3.8): explicit refresh + read-only UTXO view.
+const SYNC = ["wallet_sync", "wallet_list_utxos"];
 
-describe("wallet MCP catalog (§6.2 — 10 MVP + 2 intent + 8 fast-follow + 4 gift-card discovery + 2 recovery + 1 maintenance wallet_* tools)", () => {
-  it("initialize handshake succeeds and lists the MVP catalog PLUS intent + fast-follows", async () => {
+const EXPECTED = [...MVP, ...INTENT, ...FAST_FOLLOW, ...GIFTCARD_DISCOVERY, ...RECOVERY, ...MAINTENANCE, ...SYNC].sort();
+
+describe("wallet MCP catalog (§6.2/§3.8 — 10 MVP + 2 intent + 8 fast-follow + 4 gift-card discovery + 2 recovery + 1 maintenance + 2 sync wallet_* tools)", () => {
+  it("initialize handshake succeeds and lists the MVP catalog PLUS intent + fast-follows + sync", async () => {
     const { client } = await connectWallet({ wallet: new FakeWallet() });
     // The connect above already ran initialize; capability read confirms the handshake.
     expect(client.getServerVersion()?.name).toBe("com.depixapp/wallet");
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(EXPECTED);
-    expect(names.length).toBe(27);
-    // All 10 MVP tools survive; every intent + fast-follow + discovery + recovery + maintenance tool is present.
-    for (const n of [...MVP, ...INTENT, ...FAST_FOLLOW, ...GIFTCARD_DISCOVERY, ...RECOVERY, ...MAINTENANCE])
+    expect(names.length).toBe(29);
+    // Every group is present.
+    for (const n of [...MVP, ...INTENT, ...FAST_FOLLOW, ...GIFTCARD_DISCOVERY, ...RECOVERY, ...MAINTENANCE, ...SYNC])
       expect(names).toContain(n);
   });
 

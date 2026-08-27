@@ -1,10 +1,10 @@
-// The UNIFIED deployment (unified-MCP spec §1, §1.6): 49 tools on ONE server, the
+// The UNIFIED deployment (unified-MCP spec §1, §1.6): 58 tools on ONE server, the
 // three-state seedless behaviour, and per-deployment `instructions`.
 //
 // The load-bearing assertions here are the ones a reviewer cannot check by reading:
-//   - the unified catalog is EXACTLY 22 + 27, and the 22 are byte-identical to the
+//   - the unified catalog is EXACTLY 26 + 29 + 3, and the 26 gateway are byte-identical to the
 //     hosted catalog (the frontend's check-mcp-tool-count.mjs guard depends on the
-//     hosted count staying 22, so the wallet mount must not touch it);
+//     hosted count staying at its pinned value, so the wallet mount must not touch it);
 //   - a wallet_* call with NO wallet returns the typed `wallet_not_configured`
 //     naming `init` — not a crash, not a missing tool;
 //   - the hosted instructions carry the Level-2 signpost, and the unified ones can
@@ -19,7 +19,18 @@ import { HOSTED_ONLY_CUSTODY_SENTENCE, hostedInstructions } from "../src/instruc
 import { createServer } from "../src/server.js";
 import { UNIFIED_TOOL_COUNT, createUnifiedServer, createWalletRuntime, unifiedInstructions } from "../src/unified.js";
 import { WALLET_TOOL_NAMES } from "../src/wallet-engine/mcp/server.js";
+import { AGENT_TOOL_NAMES, type AgentToolDeps } from "../src/agent-tools.js";
 import { makeFetch } from "./helpers/mockFetch.js";
+
+/** A no-op agent-tools dependency set — the catalog tests never call them. */
+const fakeAgentTools: AgentToolDeps = {
+  getWallet: async () => null,
+  openAgent: async () => null,
+  createAgent: async () => {
+    throw new Error("not used in catalog tests");
+  },
+  persistKeys: async () => ({ activeMode: "test", source: "store", envOverride: false }),
+};
 
 const BASE = "https://api.depixapp.com";
 const KEY = "sk_test_ABC";
@@ -57,38 +68,56 @@ async function seedlessUnified() {
       bootResume: () => runtime.bootResume(),
       bootConversions: () => runtime.bootConversions(),
     },
+    agentTools: fakeAgentTools,
   });
   return connect(server);
 }
 
-describe("unified catalog — 22 gateway + 27 wallet = 49", () => {
-  it("mounts exactly 49 tools", async () => {
+describe("unified catalog — 26 gateway + 29 wallet + 3 agent-local = 58", () => {
+  it("mounts exactly 58 tools", async () => {
     const client = await seedlessUnified();
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(49);
+    expect(tools.length).toBe(58);
     expect(tools.length).toBe(UNIFIED_TOOL_COUNT);
   });
 
-  it("keeps the hosted 22 EXACTLY as they are — the wallet mount adds, never edits", async () => {
+  it("keeps the hosted 26 EXACTLY as they are — the wallet + agent mounts add, never edit", async () => {
     const hosted = await connect(createServer({ apiBase: BASE, maxWaitSeconds: 120, apiClient: apiClient(), version: "0.0.0-test" }));
     const hostedNames = (await hosted.listTools()).tools.map((t) => t.name).sort();
-    expect(hostedNames.length).toBe(22);
+    expect(hostedNames.length).toBe(26);
 
     const unified = await seedlessUnified();
     const unifiedNames = (await unified.listTools()).tools.map((t) => t.name).sort();
-    const gatewayHalf = unifiedNames.filter((n) => !n.startsWith("wallet_"));
+    // The gateway half = everything that is neither a wallet_* tool nor one of the
+    // 3 agent-local tools. It must be byte-identical to the hosted catalog.
+    const agentSet = new Set<string>(AGENT_TOOL_NAMES);
+    const gatewayHalf = unifiedNames.filter((n) => !n.startsWith("wallet_") && !agentSet.has(n));
     expect(gatewayHalf).toEqual(hostedNames);
   });
 
-  it("adds the 27 wallet_* tools, and nothing else", async () => {
+  it("adds the 29 wallet_* tools", async () => {
     const client = await seedlessUnified();
     const names = (await client.listTools()).tools.map((t) => t.name);
     const wallet = names.filter((n) => n.startsWith("wallet_")).sort();
     expect(wallet).toEqual([...WALLET_TOOL_NAMES].sort());
-    expect(wallet.length).toBe(27);
+    expect(wallet.length).toBe(29);
   });
 
-  it("has NO name collision between the two halves", async () => {
+  it("adds the 3 agent-local tools, mounted only on the unified server", async () => {
+    const client = await seedlessUnified();
+    const names = new Set((await client.listTools()).tools.map((t) => t.name));
+    for (const name of AGENT_TOOL_NAMES) expect(names.has(name)).toBe(true);
+    expect(AGENT_TOOL_NAMES.length).toBe(3);
+  });
+
+  it("the HOSTED catalog offers NO registration tool (D4)", async () => {
+    const hosted = await connect(createServer({ apiBase: BASE, maxWaitSeconds: 120, apiClient: apiClient(), version: "0.0.0-test" }));
+    const hostedNames = (await hosted.listTools()).tools.map((t) => t.name);
+    expect(hostedNames.filter((n) => n.includes("register"))).toEqual([]);
+    for (const name of AGENT_TOOL_NAMES) expect(hostedNames).not.toContain(name);
+  });
+
+  it("has NO name collision between the halves", async () => {
     const client = await seedlessUnified();
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
@@ -142,14 +171,14 @@ describe("per-deployment instructions (§1.6)", () => {
     expect(text).toContain(HOSTED_ONLY_CUSTODY_SENTENCE);
     expect(text).toContain("npx -y @depixapp/mcp");
     expect(text).toContain("npx -y @depixapp/mcp init");
-    expect(text).toContain("22 tools total");
+    expect(text).toContain("26 tools total");
     expect(text).toMatch(/seed never leaves|never leaves the operator|never leaves that machine/i);
   });
 
   // The handshake is what a host shows the model BEFORE it reads any tool
   // description — and it listed "checkouts/products", so an agent whose user
   // asked for a cobrança had no signal from it that dated charges exist at all.
-  // Both deployments serve the same 22 gateway tools, so both must say it.
+  // Both deployments serve the same 26 gateway tools, so both must say it.
   it("both deployments announce dated charges, and name the tool that makes one", () => {
     const texts = [
       hostedInstructions(),
@@ -169,7 +198,7 @@ describe("per-deployment instructions (§1.6)", () => {
 
   it("hosted: does NOT describe wallet tools it does not have", () => {
     const text = hostedInstructions();
-    expect(text).not.toContain("49 tools");
+    expect(text).not.toContain("58 tools");
     expect(text).not.toMatch(/\bwallet_[a-z_]+\b/);
   });
 
@@ -182,9 +211,9 @@ describe("per-deployment instructions (§1.6)", () => {
     }
   });
 
-  it("unified: describes 49 tools and local signing", () => {
+  it("unified: describes 58 tools and local signing", () => {
     const text = unifiedInstructions({ walletConfigured: true });
-    expect(text).toContain("49 tools total");
+    expect(text).toContain("58 tools total");
     expect(text).toMatch(/signs (locally|in this process)/i);
     expect(text).toContain("wallet_send");
   });

@@ -39,11 +39,15 @@ export interface ApiRequest {
   signal?: AbortSignal;
 }
 
+/** A per-request key source: a fixed string, or a resolver read on every call. */
+export type ApiKeySource = string | undefined | (() => string | undefined);
+
 export interface ApiClientOptions {
   /** Caller's bearer credential, forwarded verbatim: an `sk_` API key, or the
-   * verified WorkOS JWT when authMode==="oauth". Undefined ⇒ every request
-   * errors clearly. */
-  apiKey: string | undefined;
+   * verified WorkOS JWT when authMode==="oauth". A FUNCTION is resolved PER
+   * REQUEST (§3.1) so a key minted mid-session (register_account) is used at
+   * once, without a restart. Undefined ⇒ every request errors clearly. */
+  apiKey: ApiKeySource;
   apiBase: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -54,6 +58,10 @@ export interface ApiClientOptions {
    * missing-key error then explains the OAuth situation instead of telling
    * the user to reconnect with a header they already sent. */
   authMode?: "oauth";
+  /** Which deployment this client serves — steers the missing_api_key
+   * next_action (§5.1): "local" points at register_account, "hosted" at signup.
+   * Default "hosted". */
+  deployment?: "hosted" | "local";
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -86,8 +94,10 @@ function buildQueryString(query: Record<string, QueryValue> | undefined): string
 }
 
 export class ApiClient {
-  private readonly apiKey: string | undefined;
+  /** Resolved per request (§3.1): a fixed key is wrapped as a constant thunk. */
+  private readonly resolveKey: () => string | undefined;
   private readonly authMode?: "oauth";
+  private readonly deployment: "hosted" | "local";
   private readonly apiBase: string;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -95,13 +105,16 @@ export class ApiClient {
   private readonly maxRetrySleepMs: number;
 
   constructor(opts: ApiClientOptions) {
-    this.apiKey = opts.apiKey;
+    // Bind to a const so the type narrowing survives into the constant thunk.
+    const key = opts.apiKey;
+    this.resolveKey = typeof key === "function" ? key : () => key;
     this.apiBase = opts.apiBase;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? defaultSleep;
     this.maxAttempts = opts.maxAttempts ?? 3;
     this.maxRetrySleepMs = opts.maxRetrySleepMs ?? 10_000;
     this.authMode = opts.authMode;
+    this.deployment = opts.deployment ?? "hosted";
   }
 
   /** Build + validate the target URL against the strict origin allowlist. */
@@ -121,19 +134,22 @@ export class ApiClient {
   }
 
   async request<T = unknown>(req: ApiRequest): Promise<ApiResult<T>> {
+    // Resolve the key HERE, per request (§3.1): a key written mid-session by
+    // register_account is picked up on the very next call, no restart.
+    const apiKey = this.resolveKey();
     // Credential presence first (clear, actionable error — spec §3.3). An OAuth
     // session forwards the WorkOS JWT already verified at the HTTP edge (no sk_
     // prefix) as the bearer; every other mode still requires an sk_ key. The
     // strict origin allowlist below gates where the header may be sent, for
     // both token types.
-    if (!this.apiKey || (this.authMode !== "oauth" && !this.apiKey.startsWith("sk_"))) {
-      throw missingApiKeyError(this.authMode);
+    if (!apiKey || (this.authMode !== "oauth" && !apiKey.startsWith("sk_"))) {
+      throw missingApiKeyError(this.authMode, this.deployment);
     }
     // Origin allowlist BEFORE the Authorization header is ever attached (§3.2).
     const url = this.resolveUrl(req.path, req.query);
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       Accept: "application/json",
     };
     let bodyText: string | undefined;
@@ -201,7 +217,7 @@ export class ApiClient {
         return { data: parsed as T, status: res.status, requestId, replayed };
       }
 
-      const toolError = mapApiError(res.status, parsed as ApiErrorEnvelope, requestId, this.authMode);
+      const toolError = mapApiError(res.status, parsed as ApiErrorEnvelope, requestId, this.authMode, this.deployment);
       logger.warn("api_error", {
         tool: req.tool,
         method: req.method,

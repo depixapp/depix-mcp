@@ -27,7 +27,9 @@ import type {
   SendResult,
   WalletBalances,
   WalletDiagnostics,
+  WalletSyncCallOptions,
   WalletTransaction,
+  WalletUtxo,
   WithdrawParams,
   WithdrawResult,
 } from "../../../src/wallet-engine/wallet.js";
@@ -547,6 +549,34 @@ export class FakeWallet implements McpWalletFacade {
     this.rec("quote", [params]);
     return this.quoteResult;
   }
+
+  // ── sync rule (§3.8) test surface ──
+  /** Set to make sync() reject — exercises the fail-soft stale / post_sync_failed paths. */
+  syncError?: unknown;
+  syncUpdated = false;
+  syncCalls: WalletSyncCallOptions[] = [];
+  utxosValue: WalletUtxo[] = [
+    {
+      asset: "DEPIX",
+      amountSats: 1_500_000n,
+      outpoint: { txid: "dd".repeat(32), vout: 0 },
+      address: "lq1qqfakeaddressfortesting0000000000000000000000000000000000000000",
+      height: 3_000_000,
+      confirmations: 12,
+    },
+  ];
+  async sync(options: WalletSyncCallOptions = {}): Promise<{ updated: boolean }> {
+    this.rec("sync", [options]);
+    this.syncCalls.push(options);
+    if (this.syncError) throw this.syncError;
+    return { updated: this.syncUpdated };
+  }
+  readonly advanced = {
+    listUtxos: async (): Promise<WalletUtxo[]> => {
+      this.rec("advanced.listUtxos" as keyof McpWalletFacade, []);
+      return this.utxosValue;
+    },
+  };
 
   /** Convenience: find the args of the last recorded call to `method`. */
   lastArgs(method: keyof McpWalletFacade): unknown[] | undefined {

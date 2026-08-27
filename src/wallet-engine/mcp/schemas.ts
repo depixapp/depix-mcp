@@ -157,6 +157,67 @@ export const waitInput = (maxWaitSeconds: number = MAX_WAIT_SECONDS_CEILING) =>
       ),
   }) as const;
 
+// ── sync-rule metadata (§3.8) — attached by the server's sync wrappers ──
+//
+// A fresh zod instance per use (no shared const) keeps the JSON-Schema converter
+// from emitting a $ref the catalog test forbids.
+/** Present + true when the pre-op refresh failed and the snapshot is served. */
+const staleField = () =>
+  z
+    .boolean()
+    .optional()
+    .describe(
+      "true when the balance refresh (sync) before this read/spend FAILED and the result reflects the last " +
+        "persisted snapshot — the on-chain state may be newer. Reads never fail on a provider outage; they " +
+        "serve the snapshot with this flag. Absent means the state was refreshed.",
+    );
+/** Present + true when the post-broadcast refresh failed. */
+const postSyncFailedField = () =>
+  z
+    .boolean()
+    .optional()
+    .describe(
+      "true when the balance refresh (sync) AFTER this money-moving call failed. The money already moved (see " +
+        "the txid); the next balance read reflects it. This is never a failure of the operation itself.",
+    );
+
+// ── sync primitives (§3.8): wallet_sync + wallet_list_utxos ──
+export const syncInput = {
+  rescan: z
+    .boolean()
+    .optional()
+    .describe(
+      "false (default) = fast incremental sync (~seconds warm). true = DEEP cold re-scan from zero — drops the " +
+        "cached update-chain and rebuilds LWK state; use when balances look desynchronized (missing txs, stale " +
+        "amounts). Slower: a rescan can take several MINUTES (10-min budget). Signs nothing.",
+    ),
+} as const;
+
+export const syncOutput = {
+  updated: z.boolean().describe("Whether the scan produced any new on-chain state since the last sync."),
+  rescan: z.boolean().describe("Whether this ran the deep cold re-scan (true) or the incremental sync (false)."),
+  ...{ stale: staleField() },
+} as const;
+
+export const listUtxosInput = {} as const;
+
+export const listUtxosOutput = {
+  utxos: z
+    .array(
+      z.object({
+        asset: z.string().describe("Asset key (DEPIX/LBTC/USDT) or the raw Liquid asset id when unrecognized."),
+        amount_sats: z.string().describe("Output value in the asset's base units (sats), as a decimal string."),
+        txid: z.string().describe("The funding transaction id of this UTXO."),
+        vout: z.number().int().describe("The output index within that transaction."),
+        address: z.string().describe("The wallet address that holds this output."),
+        height: z.number().int().nullable().describe("Block height it confirmed at, or null while unconfirmed."),
+        confirmations: z.number().int().describe("Confirmations relative to the chain tip (0 when unconfirmed)."),
+      }),
+    )
+    .describe("The wallet's unspent outputs (read-only view; signs and moves nothing)."),
+  stale: staleField(),
+} as const;
+
 // ── outputs (ZodRawShape) ──
 const guardrailBudget = () =>
   z.object({
@@ -260,6 +321,7 @@ export const getBalancesOutput = {
     .int()
     .nullable()
     .describe("Total BRL-cent estimate across assets, or null if a needed quote is unavailable (§4.4)."),
+  stale: staleField(),
 } as const;
 
 export const listTransactionsOutput = {
@@ -275,10 +337,13 @@ export const listTransactionsOutput = {
       }),
     )
     .describe("Wallet transaction history, newest-first as LWK returns it."),
+  stale: staleField(),
 } as const;
 
 export const sendOutput = {
   txid: z.string().describe("The broadcast Liquid transaction id."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 export const createDepositOutput = {
@@ -296,6 +361,8 @@ export const createWithdrawalOutput = {
   gross_cents: z.number().int().describe("GROSS BRL cents leaving the wallet (net + fee)."),
   payout_cents: z.number().int().describe("BRL cents the recipient receives on Pix."),
   sandbox: z.boolean().optional().describe("true when this is a sandbox withdrawal — no on-chain leg ran."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 /** Status-read shape (§3.4). External API payload — id/status always present, the rest optional. */
@@ -309,6 +376,9 @@ export const statusReadOutput = {
   rejection_reasons: z.array(z.string()).optional(),
   liquid_txid: z.string().optional(),
   sandbox: z.boolean().optional(),
+  // Only wallet_wait_deposit sets this — when a deposit settles, the wallet syncs
+  // so the arriving DePix shows on the next balance read (§3.8). Never an error.
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 export const getGuardrailsOutput = { ...guardrailBudget().shape } as const;
@@ -457,6 +527,8 @@ export const swapExecuteOutput = {
   send_amount_sats: z.string().describe("Base units of `from` that left the wallet."),
   recv_amount_sats: z.string().describe("Base units of `to` received."),
   brl_cents: z.number().int().describe("The SENT side valued in BRL cents — what was counted against the guardrail (§4.3)."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 export const payLightningInvoiceOutput = {
@@ -465,6 +537,8 @@ export const payLightningInvoiceOutput = {
   expected_amount_sats: z.number().int().describe("L-BTC locked for the swap (base units)."),
   invoice_sats: z.number().int().describe("The decoded BOLT11 amount (sats)."),
   invoice: z.string().describe("The BOLT11 invoice that was paid."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 export const receiveLightningOutput = {
@@ -481,6 +555,8 @@ export const toStablecoinOutput = {
   asset: z.string().describe("The stablecoin being delivered (USDC/USDT)."),
   network_id: z.string().describe("The destination network."),
   claim_address: z.string().describe("The FINAL recipient address the stablecoin is delivered to."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 // Fresh zod instance per use — a shared const would be emitted as a JSON-Schema
@@ -506,6 +582,8 @@ export const buyGiftcardOutput = {
   expected_amount_sats: z.number().int().describe("L-BTC the Boltz lockup locked (base units)."),
   total_sats: z.string().describe("expected_amount + fee — L-BTC leaving the wallet, network fee excluded (base units)."),
   beneficiary_account: z.string().describe("The resolved delivery target (email or phone)."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 export const listGiftcardOrdersOutput = {
@@ -792,6 +870,8 @@ export const walletConvertOutput = {
     .optional()
     .describe("Funding instructions for INFLOW routes (only with status awaiting_funding)."),
   next_step: z.string().optional().describe("What to do next when the result is not terminal — always actionable (G3)."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;
 
 // ── recovery wiring: wallet_recover + wallet_pending (fund-safety) ────────────
@@ -903,4 +983,6 @@ export const shiftUsdtOutput = {
   custodial: z
     .literal(true)
     .describe("Always true — SideShift is CUSTODIAL: once sent, the funds are in SideShift's custody, not yours."),
+  stale: staleField(),
+  post_sync_failed: postSyncFailedField(),
 } as const;

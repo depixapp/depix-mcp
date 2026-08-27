@@ -20,7 +20,9 @@ import type {
   SendResult,
   WalletBalances,
   WalletDiagnostics,
+  WalletSyncCallOptions,
   WalletTransaction,
+  WalletUtxo,
   WithdrawParams,
   WithdrawResult,
 } from "../wallet.js";
@@ -99,6 +101,16 @@ export interface McpConvertFacade {
   readonly sideshift: McpSideshiftFacade;
 }
 
+/**
+ * The `wallet.advanced` sub-facade the read-only primitives tool consumes (§3.8).
+ * DepixWallet's WalletAdvanced satisfies it structurally. Only listUtxos() is
+ * exposed to the MCP — selectCoins/sendMany/getDescriptor/export/wipe are
+ * DELIBERATELY absent (a view-key or a second send path must never reach a tool).
+ */
+export interface McpAdvancedFacade {
+  listUtxos(): Promise<WalletUtxo[]>;
+}
+
 /** The `wallet.giftcards` sub-facade the fast-follow tools consume (§5.5). */
 export interface McpGiftcardsFacade {
   buy(params: BuyGiftcardParams): Promise<BuyGiftcardResult>;
@@ -120,6 +132,16 @@ export interface McpWalletFacade {
   getReceiveAddress(options?: { index?: number }): Promise<string>;
   getBalances(): Promise<WalletBalances>;
   listTransactions(): Promise<WalletTransaction[]>;
+  /**
+   * Refresh on-chain state (§3.8). The MCP facade — NOT the engine — decides
+   * WHEN to call this: before every balance read/spend and after every spend, so
+   * incoming DePix is never invisible and a send never builds from a stale
+   * snapshot. `rescan` forces a deep cold re-scan (wallet_sync). DepixWallet.sync
+   * satisfies this structurally.
+   */
+  sync(options?: WalletSyncCallOptions): Promise<{ updated: boolean }>;
+  /** Read-only low-level primitives (only listUtxos is surfaced, §3.8). */
+  readonly advanced: McpAdvancedFacade;
   send(params: SendParams): Promise<SendResult>;
   deposit(params: DepositParams): Promise<DepositResult>;
   withdraw(params: WithdrawParams): Promise<WithdrawResult>;
@@ -849,6 +871,41 @@ export async function convertTool(
   };
   const result = await wallet.convert(params);
   return convertResultToOutput(result);
+}
+
+// ── sync primitives (§3.8) ──
+//
+// wallet_sync exposes the engine's scanner explicitly; wallet_list_utxos exposes
+// the read-only UTXO view. Both are otherwise driven implicitly by the sync
+// rule in server.ts (every balance read/spend syncs on the agent's behalf).
+
+/**
+ * wallet_sync — an EXPLICIT refresh. `rescan` runs a deep cold re-scan from zero
+ * (minutes; use when balances look desynchronized), otherwise an incremental
+ * sync (~seconds warm). Signs nothing.
+ */
+export async function syncTool(wallet: McpWalletFacade, args: { rescan?: boolean }) {
+  const options: WalletSyncCallOptions = args.rescan === true ? { rescan: true } : {};
+  const { updated } = await wallet.sync(options);
+  return { updated, rescan: args.rescan === true };
+}
+
+function utxoToOutput(u: WalletUtxo) {
+  return {
+    asset: u.asset,
+    amount_sats: u.amountSats.toString(),
+    txid: u.outpoint.txid,
+    vout: u.outpoint.vout,
+    address: u.address,
+    height: u.height,
+    confirmations: u.confirmations,
+  };
+}
+
+/** wallet_list_utxos — read-only view of the wallet's unspent outputs (§3.8). */
+export async function listUtxosTool(wallet: McpWalletFacade) {
+  const utxos = await wallet.advanced.listUtxos();
+  return { utxos: utxos.map(utxoToOutput) };
 }
 
 export async function shiftUsdtTool(

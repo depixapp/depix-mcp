@@ -1,17 +1,17 @@
-// The UNIFIED deployment: the 22 gateway tools AND the 27 `wallet_*` tools on ONE
+// The UNIFIED deployment: the 26 gateway tools AND the 29 `wallet_*` tools on ONE
 // McpServer (unified-MCP spec §1). Reachable ONLY from the stdio bin — `api/mcp.ts`
 // must never import this module, and scripts/check-hosted-isolation.mjs fails CI if
 // it ever does, because everything below drags the wallet engine in.
 //
-// THREE-STATE, not binary (§1(b)). All 49 tools are mounted unconditionally:
-//   - api key + seed   -> all 49 work;
-//   - api key, no seed -> the 22 gateway tools work; each wallet_* answers with the
+// THREE-STATE, not binary (§1(b)). All 58 tools are mounted unconditionally:
+//   - api key + seed   -> all 58 work;
+//   - api key, no seed -> the 26 gateway tools work; each wallet_* answers with the
 //                         typed `wallet_not_configured` error naming `init`;
 //   - seed, no api key -> the wallet works; the API-backed tools answer with the
 //                         typed `missing_api_key` error.
 // Boot NEVER fails on a missing seed or a missing key. A catalog that grew after
 // `init` would mean "restart your client": MCP hosts snapshot tools/list at connect
-// and `list_changed` support is uneven, so a static 49 + typed errors is the design.
+// and `list_changed` support is uneven, so a static 58 + typed errors is the design.
 //
 // The wallet is opened LAZILY, on the first wallet tool call, and the engine's
 // registration single-flights concurrent resolutions so two parallel calls cannot
@@ -24,7 +24,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { UNIFIED_SERVER_TITLE } from "./config.js";
 import { UNIFIED_INIT_COMMAND, UNIFIED_RUN_COMMAND, gatewaySentences } from "./instructions.js";
-import { createServer, type CreateServerOptions } from "./server.js";
+import { createServer, GATEWAY_TOOL_COUNT, type CreateServerOptions } from "./server.js";
+import { AGENT_TOOL_NAMES, registerAgentTools, type AgentToolDeps } from "./agent-tools.js";
 import {
   WALLET_TOOL_NAMES,
   registerWalletTools,
@@ -39,12 +40,17 @@ import type { McpWalletFacade } from "./wallet-engine/mcp/tools.js";
 /** npm package name the printed config block and the `init` guidance name. */
 export const UNIFIED_PACKAGE_NAME = "@depixapp/mcp";
 
-/** The full unified catalog: 22 gateway + 27 wallet. Exported for the tests/docs. */
-export const UNIFIED_TOOL_COUNT = 22 + WALLET_TOOL_NAMES.length;
+/**
+ * The full unified catalog (§3.6): 26 gateway + 29 wallet + 3 agent-local = 58.
+ * The closed-sum invariant: full = gateway + wallet + agent_local. Derived from
+ * the three source-of-truth counts, never a bare literal, so adding a tool in one
+ * place updates it here.
+ */
+export const UNIFIED_TOOL_COUNT = GATEWAY_TOOL_COUNT + WALLET_TOOL_NAMES.length + AGENT_TOOL_NAMES.length;
 
 /**
  * The unified `instructions` (§1.6). Two things it must do that the hosted text
- * must not: describe 49 tools, and NEVER carry the hosted-only sentence "it never
+ * must not: describe 58 tools, and NEVER carry the hosted-only sentence "it never
  * signs, never holds funds, and never stores your key" — false the moment a
  * wallet_* tool exists on this server, and actively misleading to the model.
  *
@@ -57,7 +63,7 @@ export function unifiedInstructions(opts: { walletConfigured: boolean }): string
     ...gatewaySentences("unified"),
     "This deployment runs LOCALLY on the operator's own machine (`" +
       UNIFIED_RUN_COMMAND +
-      "`). The 22 gateway tools are a pure client of the DePix App API; the 27 wallet_* tools are a NON-CUSTODIAL Liquid wallet " +
+      "`). The 26 gateway tools are a pure client of the DePix App API; the 29 wallet_* tools are a NON-CUSTODIAL Liquid wallet " +
       "that signs in this process with a seed that never leaves this machine — the DePix App backend never sees it and cannot sign for it.",
     withoutEngineLede(walletMcpInstructions({ initCommand: UNIFIED_INIT_COMMAND, walletConfigured: opts.walletConfigured })),
   ].join(" ");
@@ -112,6 +118,8 @@ export interface CreateUnifiedServerOptions extends CreateServerOptions {
   wallet: Omit<RegisterWalletToolsContext, "initCommand">;
   /** Whether a wallet exists on this machine — decides which `instructions` ship. */
   walletConfigured: boolean;
+  /** Dependencies for the 3 agent-local tools (register_account/agent_status/verify_domain). */
+  agentTools: AgentToolDeps;
 }
 
 export interface UnifiedServer {
@@ -124,13 +132,19 @@ export interface UnifiedServer {
  * carrying the unified title and instructions.
  */
 export function createUnifiedServer(opts: CreateUnifiedServerOptions): UnifiedServer {
-  const { wallet, walletConfigured, ...serverOptions } = opts;
+  const { wallet, walletConfigured, agentTools, ...serverOptions } = opts;
   const server = createServer({
     ...serverOptions,
+    // This IS the local deployment: a missing key resolves to register_account,
+    // not "reconnect with a header" (§5.1).
+    deployment: "local",
     title: UNIFIED_SERVER_TITLE,
     instructions: unifiedInstructions({ walletConfigured }),
   });
   const registration = registerWalletTools(server, { ...wallet, initCommand: UNIFIED_INIT_COMMAND });
+  // The 3 agent-local tools are mounted HERE, never in createServer — the hosted
+  // catalog must never offer a registration tool (D4).
+  registerAgentTools(server, agentTools);
   return { server, wallet: registration };
 }
 

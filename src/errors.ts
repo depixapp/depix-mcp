@@ -14,6 +14,8 @@
 // regex-guarded short `field`), and route the untrusted free text to
 // `data.api_message` / `data.api_field_errors`, truncated and clearly labeled.
 
+import { withNextAction } from "./next-action.js";
+
 /** The closed set of API-key scopes (OpenAPI 0.6.0). */
 export const SCOPES = ["merchant_read", "merchant_write", "wallet_read", "wallet_write"] as const;
 export type Scope = (typeof SCOPES)[number];
@@ -40,7 +42,9 @@ export class ToolError extends Error {
 }
 
 /** Clear error when the caller provided no usable API key (spec §3.3). */
-export function missingApiKeyError(authMode?: "oauth"): ToolError {
+export function missingApiKeyError(authMode?: "oauth", deployment?: "hosted" | "local"): ToolError {
+  const next = (data: Record<string, unknown> = {}) =>
+    withNextAction(data, "missing_api_key", { authMode, deployment });
   if (authMode === "oauth") {
     // Defensive: an OAuth session normally forwards its verified WorkOS JWT as
     // the bearer, so this only fires if that token went missing after the edge
@@ -48,11 +52,22 @@ export function missingApiKeyError(authMode?: "oauth"): ToolError {
     return new ToolError(
       "This OAuth session has no bearer credential to call the API with. Reconnect the OAuth connector, or use a terminal client with `Authorization: Bearer sk_…` (local stdio: DEPIX_API_KEY). See https://depixapp.com/docs/en/",
       "missing_api_key",
+      { data: next() },
+    );
+  }
+  if (deployment === "local") {
+    // Local (npx): the operator can mint a key in-process with register_account.
+    return new ToolError(
+      "No DePix App API key is configured. On this local server you can create an account and its key with the " +
+        "register_account tool (it needs the operator's op_ code and a wallet), or set DEPIX_API_KEY and restart. See https://depixapp.com/docs/en/",
+      "missing_api_key",
+      { data: next() },
     );
   }
   return new ToolError(
     "No DePix App API key on this connection. Over HTTP, connect with the header `Authorization: Bearer sk_…`; in local stdio mode set the DEPIX_API_KEY environment variable. Ask the user to reconnect with their key (sk_test_ for sandbox, sk_live_ for production) — tools cannot set it. See https://depixapp.com/docs/en/",
     "missing_api_key",
+    { data: next() },
   );
 }
 
@@ -122,6 +137,7 @@ export function mapApiError(
   body: ApiErrorEnvelope | null | undefined,
   requestIdHeader?: string,
   authMode?: "oauth",
+  deployment?: "hosted" | "local",
 ): ToolError {
   const err = body?.error ?? {};
   // The code is interpolated into the canned message (default branch) and into
@@ -322,6 +338,10 @@ export function mapApiError(
       message: truncate(e?.message) ?? null,
     }));
   }
+
+  // Attach the didactic next_action (§5.1). retry_after is mirrored — never a
+  // third source — and the deployment/authMode steer the credential branches.
+  withNextAction(data, code, { deployment, authMode, retryAfterSeconds: retryAfter });
 
   return new ToolError(message, code, { retryable, data });
 }

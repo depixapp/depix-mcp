@@ -878,3 +878,125 @@ export const attachSupportTicketFileOutput = {
   message: ticketMessageObject,
   ticket: ticketObject,
 };
+
+// ── Onboarding / merchant / vault / webhook-logs (F3, §3.8/§4.3) ──────────────
+
+/** A fresh {pt,en} object per call — a shared const would emit a forbidden $ref. */
+const bilingual = () =>
+  z.object({
+    pt: z.string().describe("Portuguese text to relay to the human."),
+    en: z.string().describe("English text to relay to the human."),
+  });
+
+export const getOnboardingStatusInput = {} as const;
+
+export const getOnboardingStatusOutput = {
+  verified: z.boolean().describe("Whether the account is verified (can create a store and go live)."),
+  verification_enabled: z
+    .boolean()
+    .describe("Whether the verification program is enabled at all. false → nothing to complete right now."),
+  merchant_exists: z.boolean().describe("Whether a merchant/store profile exists on this account yet."),
+  self_healed: z
+    .boolean()
+    .describe("true when this call auto-triggered POST /api/verification because every step was complete."),
+  next_step: z
+    .string()
+    .describe("The id of the first step still to do (or 'ready' when the account is fully set up)."),
+  steps: z
+    .array(
+      z.object({
+        id: z.string().describe("Stable step id (e.g. wallet, whatsapp, deposit, convert_lbtc, withdraw, verification, merchant, or __unknown)."),
+        state: z
+          .enum(["done", "pending", "unknown"])
+          .describe("done = complete; pending = to do; unknown = the server cannot see it from here (do it in the app)."),
+        title: bilingual().describe("Short human title for the step (PT+EN), to relay."),
+        instruction: bilingual().describe("What the human should do, in plain language (PT+EN), to relay."),
+        app_url: z.string().nullable().describe("Absolute deep link into the app for this step, or null."),
+        numbers: z
+          .object({
+            target_cents: z.number().int().nullable().optional(),
+            remaining_cents: z.number().int().nullable().optional(),
+            target_days: z.number().int().nullable().optional(),
+            remaining_days: z.number().int().nullable().optional(),
+          })
+          .nullable()
+          .describe("The step's numeric targets/remaining, when it has any."),
+      }),
+    )
+    .describe("The ordered onboarding ladder — the agent narrates it top to bottom."),
+} as const;
+
+export const updateMerchantProfileInput = {
+  business_name: z.string().min(1).optional().describe("The store's display/business name."),
+  logo_url: z.string().optional().describe("Public HTTPS URL of the store logo (empty string clears it)."),
+  website: z.string().optional().describe("The store's website URL (empty string clears it)."),
+  default_redirect_url: z
+    .string()
+    .optional()
+    .describe("Where a customer is sent after paying (empty string clears it)."),
+  default_callback_url: z
+    .string()
+    .optional()
+    .describe("Default webhook endpoint for deposit/withdraw events (empty string clears it)."),
+} as const;
+
+export const updateMerchantProfileOutput = {
+  merchant_slug: z.string().describe("The store's public URL slug after the update (changes only if the name did)."),
+} as const;
+
+export const getVaultStatusInput = {} as const;
+
+export const getVaultStatusOutput = {
+  vault_active: z.boolean().describe("Whether the Cofre (deposit-hold) mechanism is switched on at all."),
+  vault_window_hours: z
+    .number()
+    .nullable()
+    .describe("Hours a new deposit is held before it settles (0 when nothing is held)."),
+  level: z
+    .object({
+      current: z.number().int().nullable().optional(),
+      max: z.number().int().nullable().optional(),
+      eligible: z.number().int().nullable().optional(),
+      pinned: z.boolean().optional(),
+      frozen_until: z.string().nullable().optional(),
+    })
+    .nullable()
+    .describe("The account's trust level in the ladder."),
+  cap: z
+    .object({
+      enforced: z.boolean().optional(),
+      cents: z.number().int().nullable().optional(),
+      used_cents: z.number().int().nullable().optional(),
+      available_cents: z.number().int().nullable().optional(),
+      window_days: z.number().int().nullable().optional(),
+      resets_at: z.string().nullable().optional(),
+      first_deposit_pending: z.boolean().optional(),
+    })
+    .nullable()
+    .describe("The rolling receive cap and how much of it is left this window."),
+} as const;
+
+export const listWebhookLogsInput = {
+  id: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Fetch ONE delivery log by id (GET /api/webhook-logs/:id). Omit to list recent deliveries."),
+} as const;
+
+export const listWebhookLogsOutput = {
+  logs: z
+    .array(
+      z.object({
+        id: z.string(),
+        checkout_id: z.string().nullable().describe("The checkout this delivery was for, or null for pay-side events."),
+        event: z.string().describe("The event type delivered (e.g. checkout.completed, deposit.confirmed)."),
+        url: z.string().nullable().describe("The endpoint the webhook was delivered to."),
+        status_code: z.number().int().nullable().describe("HTTP status the endpoint returned, or null on a transport error."),
+        error: z.string().nullable().describe("Transport error text when the delivery failed, else null."),
+        attempt: z.number().int().nullable().describe("Which retry attempt this row records."),
+        sent_at: z.string().nullable().describe("When the delivery was attempted."),
+      }),
+    )
+    .describe("Webhook delivery logs, newest first. One-element array when a specific id was requested."),
+} as const;

@@ -1,4 +1,4 @@
-// The mount API (unified-MCP spec §1.5): the 27 `wallet_*` tools register on a
+// The mount API (unified-MCP spec §1.5): the 29 `wallet_*` tools register on a
 // server the HOST owns (the unified @depixapp/mcp bin passes the gateway's), the
 // wallet is resolved LAZILY per call, and with no wallet on the machine the
 // catalog stays FULL while every call returns the typed `wallet_not_configured`
@@ -23,7 +23,7 @@ function sc(result: unknown): Record<string, unknown> {
 }
 
 describe("registerWalletTools — mounting on a host's server (§1.5)", () => {
-  it("mounts all 27 wallet tools next to the host's own tools", async () => {
+  it("mounts all 29 wallet tools next to the host's own tools", async () => {
     const { client, registration } = await connectMountedWallet(
       { wallet: new FakeWallet(), apiKeyConfigured: true, keyMode: "test" },
       { hostTools: ["get_account", "create_checkout"] },

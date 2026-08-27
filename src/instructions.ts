@@ -2,9 +2,9 @@
 //
 // The same package ships two deployments with DIFFERENT truths:
 //
-//   hosted  (mcp.depixapp.com)  — 22 tools, no seed, receive-only. "It never
+//   hosted  (mcp.depixapp.com)  — 26 tools, no seed, receive-only. "It never
 //                                 signs, never holds funds" is TRUE here.
-//   unified (npx @depixapp/mcp) — 49 tools, the operator's seed, local signing.
+//   unified (npx @depixapp/mcp) — 58 tools, the operator's seed, local signing.
 //                                 That same sentence is FALSE here, and shipping
 //                                 it would tell the model the wallet cannot pay.
 //
@@ -17,7 +17,7 @@
 // separation (§2.1). The unified half — which merges the engine's own wallet
 // instructions — lives in src/unified.ts, reachable only from the stdio bin.
 
-/** Canonical run command for the full (49-tool) local deployment. */
+/** Canonical run command for the full (58-tool) local deployment. */
 export const UNIFIED_RUN_COMMAND = "npx -y @depixapp/mcp";
 /** The first-run ceremony. A human act at a terminal — never an MCP tool (§1.5). */
 export const UNIFIED_INIT_COMMAND = "npx -y @depixapp/mcp init";
@@ -31,12 +31,12 @@ export const HOSTED_ONLY_CUSTODY_SENTENCE =
 
 /**
  * The Level-1 → Level-2 signpost (§1.6). The hosted deployment structurally lacks
- * the 27 wallet tools, so a connected agent cannot discover that they exist. It is
+ * the 29 wallet tools, so a connected agent cannot discover that they exist. It is
  * closed with WORDS, not code: no wallet symbol enters the hosted bundle.
  */
 export const LEVEL_TWO_SIGNPOST =
-  "This is the HOSTED, receive-only level of the DePix App MCP. The same MCP has a second level with 27 more tools — " +
-  `a non-custodial Liquid wallet (hold, send, convert, pay Lightning invoices, buy gift cards) — which runs LOCALLY via \`${UNIFIED_RUN_COMMAND}\` ` +
+  "This is the HOSTED, receive-only level of the DePix App MCP. The same MCP has a second level with 32 more tools — " +
+  `a non-custodial Liquid wallet (hold, send, convert, pay Lightning invoices, buy gift cards) plus local account setup — which runs LOCALLY via \`${UNIFIED_RUN_COMMAND}\` ` +
   "on the operator's own machine, because signing happens in-process and the seed never leaves that machine. " +
   `First run is a human ceremony at a terminal: \`${UNIFIED_INIT_COMMAND}\`. If the user asks this server to hold, send or convert funds, ` +
   "point them there — no tool here can do it.";
@@ -47,8 +47,8 @@ function catalogSentence(deployment: "hosted" | "unified"): string {
     "DePix App MCP — receive payments on either rail (a Pix QR, or DePix sent directly on Liquid) via checkouts and products, " +
     "plus dated charges (cobranças, Pix), read transaction status, and manage support tickets (open/get/list/reply/close a ticket, attach a file) via the public DePix App API.";
   return deployment === "hosted"
-    ? `${base} 22 tools total: 16 gateway + 6 support-ticket.`
-    : `${base} 49 tools total: 16 gateway + 6 support-ticket + 27 local wallet_* tools.`;
+    ? `${base} 26 tools total: 20 gateway + 6 support-ticket.`
+    : `${base} 58 tools total: 20 gateway + 6 support-ticket + 29 local wallet_* tools + 3 account tools.`;
 }
 
 /**
@@ -86,7 +86,7 @@ export function gatewaySentences(deployment: "hosted" | "unified"): string[] {
 }
 
 /**
- * `instructions` for the DePix App-hosted deployment (mcp.depixapp.com): the 22
+ * `instructions` for the DePix App-hosted deployment (mcp.depixapp.com): the 26
  * gateway tools, the honest custody sentence, and the Level-2 signpost.
  */
 export function hostedInstructions(): string {

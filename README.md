@@ -13,7 +13,7 @@ depends only on whether the running instance has a seed:
 |---|---|---|
 | How | `https://mcp.depixapp.com/mcp` (Streamable HTTP) | `npx -y @depixapp/mcp` (stdio) |
 | Runs on | DePix App's servers | **your** machine |
-| Tools | **22** — receive Pix, status reads, support | **49** — the 22 **plus** 27 `wallet_*` |
+| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **58** — the 26 **plus** 29 `wallet_*` and 3 account tools |
 | Seed | none, ever | yours, never leaves the machine |
 | Install | zero (claude.ai, ChatGPT) | Node.js ≥ 22.4 |
 
@@ -27,7 +27,7 @@ not. That is physics, not a product tier.
 **Both levels:**
 
 - **A pure client of the public DePix API** (`https://api.depixapp.com/api/*`) for
-  the 22 gateway tools. It holds **zero critical credentials** — no Eulen token,
+  the 26 gateway tools. It holds **zero critical credentials** — no Eulen token,
   no database, no webhook HMAC. Your `sk_` key is passed **verbatim** to the API
   on each call and lives only in memory for that request.
 - **Same door as everyone.** No privileged path: the same auth, scopes and rate
@@ -38,7 +38,7 @@ stores your key. It has no wallet code at all — the wallet engine is not merel
 disabled there, it is **structurally absent** from that deployment's import graph,
 and a CI guard (`npm run guard:hosted`) fails the build if that ever changes.
 
-**Level 2 (`npx`) only:** the 27 `wallet_*` tools hold, send, convert and pay —
+**Level 2 (`npx`) only:** the 29 `wallet_*` tools hold, send, convert and pay —
 signing locally, inside your own process, under guardrails (per-transaction and
 rolling-24h BRL caps, optional allowlist) that no tool call can raise. There is
 no tool that exports the seed, edits guardrails, or pays a merchant checkout QR.
@@ -98,7 +98,7 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=depix&config=<base64 from th
 > surface is feature-flagged (`AUTHKIT_DOMAIN`): with it unset, only the `sk_`
 > header/stdio paths above are active. Terminal clients keep using `sk_` keys.
 
-## Quickstart 2 — Local stdio, 49 tools (Claude Desktop / Claude Code / Cursor)
+## Quickstart 2 — Local stdio, 58 tools (Claude Desktop / Claude Code / Cursor)
 
 Requires **Node.js ≥ 22.4**. The only official npm package is `@depixapp/mcp` —
 the `@depixapp` scope is organization-owned; do not install any similarly-named
@@ -106,7 +106,7 @@ unscoped package. Secrets come from the environment, never from a flag.
 
 ### 2a. Gateway only (no wallet)
 
-Exactly the 22 tools of level 1, running locally:
+Exactly the 26 tools of level 1, running locally:
 
 ```json
 {
@@ -120,7 +120,7 @@ Exactly the 22 tools of level 1, running locally:
 }
 ```
 
-All 49 tools are still *listed* — the 27 `wallet_*` ones answer with a typed
+All 58 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
 `wallet_not_configured` error telling the agent to ask you to run `init`. That is
 deliberate: MCP hosts snapshot the tool list when they connect, so a catalog that
 grew later would mean "restart your client".
@@ -223,7 +223,7 @@ deliberately unpayable (placeholder address, `uri: null`); drive them with
 
 ## Tools
 
-**22 gateway tools** — available at both levels. Amounts are BRL cents.
+**26 gateway tools** — available at both levels. Amounts are BRL cents.
 
 | Tool | API | Scope |
 |---|---|---|
@@ -261,7 +261,7 @@ poll `get_support_ticket`. Amounts are BRL cents. A tool call whose key lacks th
 `insufficient_scope` tool error naming the missing scope — that is the only way
 to discover a missing scope (the API never lists a key's scopes).
 
-**27 `wallet_*` tools** — the local (`npx`) level only. They sign in-process with
+**29 `wallet_*` tools** — the local (`npx`) level only. They sign in-process with
 your seed; without one they return `wallet_not_configured`.
 
 | Group | Tools |
@@ -296,7 +296,7 @@ Local (`npx`) level only — the wallet half:
 
 | Env | Meaning | Default |
 |---|---|---|
-| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet. **Required for the 27 `wallet_*` tools**; without it they return `wallet_not_configured` | — |
+| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet. **Required for the 29 `wallet_*` tools**; without it they return `wallet_not_configured` | — |
 | `DEPIX_WALLET_DIR` | Where the encrypted wallet lives | `~/.depix-wallet` |
 | `DEPIX_GUARDRAIL_*` | Per-transaction / rolling-24h BRL caps and allowlist. Immutable at runtime: set here + restart | R$100/tx, R$500/day |
 | `DEPIX_MCP_MAX_WAIT_SECONDS` | Ceiling for the wallet wait tools | `900` |
@@ -333,7 +333,7 @@ Set `DEPIX_TEST_KEY=sk_test_…` to run the real-sandbox e2e test
 
 ### The wallet engine (`src/wallet-engine/`)
 
-The 27 wallet tools come from the DePix App wallet engine. It used to be vendored
+The 29 wallet tools come from the DePix App wallet engine. It used to be vendored
 here from a pinned commit of a second repository; it is now simply part of this
 package's source, developed and released with it. Its tests live in
 `test/wallet-engine/`, mirroring the layout.

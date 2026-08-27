@@ -22,14 +22,17 @@
 // the untrusted path BY CONSTRUCTION, not by remembering to update this mapper.
 
 import {
+  AgentError,
   ConversionError,
   DepixApiError,
   DepixSdkError,
   GuardrailError,
+  MerchantError,
   WalletError,
   WithdrawContractError,
   type DepixApiErrorDetails,
 } from "../errors.js";
+import { withNextAction } from "../../next-action.js";
 
 /** The closed set of API-key scopes (OpenAPI 0.6.0). */
 export const SCOPES = ["merchant_read", "merchant_write", "wallet_read", "wallet_write"] as const;
@@ -96,7 +99,7 @@ export function walletNotConfiguredError(initCommand?: string): ToolError {
       "prints the config block to paste), then restart this server. The seed never leaves that machine — never " +
       "ask for it, and never accept it in this conversation. Every other tool on this server keeps working.",
     "wallet_not_configured",
-    { data: { init_command: command } },
+    { data: withNextAction({ init_command: command }, "wallet_not_configured") },
   );
 }
 
@@ -104,8 +107,9 @@ export function walletNotConfiguredError(initCommand?: string): ToolError {
 export function missingApiKeyError(): ToolError {
   return new ToolError(
     "No DePix API key is configured on this MCP server. Set the DEPIX_API_KEY environment variable " +
-      "(sk_test_ for sandbox, sk_live_ for production) and restart — tools cannot set it.",
+      "(sk_test_ for sandbox, sk_live_ for production) and restart — or create an account with register_account.",
     "api_key_required",
+    { data: withNextAction({}, "api_key_required") },
   );
 }
 
@@ -253,6 +257,12 @@ const SDK_AUTHORED_MESSAGE_ERRORS = [
   GuardrailError,
   WithdrawContractError,
   ConversionError,
+  // AgentError (agent_not_initialized, agent_key_unreadable, …) and MerchantError
+  // are OUR client-side semantic errors — their messages are authored in this
+  // codebase (never an upstream body), so they surface verbatim, not down the
+  // untrusted-provider path.
+  AgentError,
+  MerchantError,
 ] as const;
 
 function hasSdkAuthoredMessage(err: DepixSdkError): boolean {
@@ -321,7 +331,12 @@ function cannedTransportMessage(code: string): string {
  * error (the raw message is NEVER surfaced).
  */
 export function mapToolError(err: unknown): ToolError {
-  if (err instanceof ToolError) return err;
+  if (err instanceof ToolError) {
+    // A ToolError constructed elsewhere (e.g. a factory) keeps its own
+    // next_action; one without a mapped code is left untouched.
+    withNextAction(err.data, err.code);
+    return err;
+  }
   if (err instanceof DepixApiError) {
     const code = err.code;
     const retryable = AUTO_RETRY_CODES.has(code);
@@ -347,6 +362,11 @@ export function mapToolError(err: unknown): ToolError {
     // `message`.
     const apiMessage = truncate(err.legacyErrorMessage) ?? truncate(err.message);
     if (apiMessage !== undefined) data.untrusted_api_message = apiMessage;
+
+    // Didactic next_action for the agent-facing codes (§5.1). The wallet MCP is
+    // local-only, so a missing key resolves to register_account; retry_after is
+    // mirrored from the envelope, never invented.
+    withNextAction(data, code, { deployment: "local", retryAfterSeconds: err.retryAfter });
 
     return new ToolError(message, code, { retryable, data });
   }
@@ -376,6 +396,7 @@ export function mapToolError(err: unknown): ToolError {
           "Call wallet_quote with the same from/to/network/amount_sats to compare these candidate routes " +
           "(fees, receipts, custodial flags), then call wallet_convert again with `route` set to your chosen route id.";
       }
+      withNextAction(data, err.code, { deployment: "local" });
       return new ToolError(err.message, err.code, { retryable, data });
     }
 
@@ -392,6 +413,9 @@ export function mapToolError(err: unknown): ToolError {
     if (details) data.details = details;
     const providerText = truncate(err.message);
     if (providerText !== undefined) data.untrusted_api_message = providerText;
+    // Provider-transport codes carry no mapping — this is a no-op for them; an
+    // AgentError/MerchantError, however, took the SDK-authored branch above.
+    withNextAction(data, err.code, { deployment: "local" });
     return new ToolError(cannedTransportMessage(err.code), err.code, { data });
   }
 

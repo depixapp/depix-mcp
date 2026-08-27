@@ -1,4 +1,4 @@
-// Verifies the server registers EXACTLY the 22 tools (Appendix A's 16 gateway
+// Verifies the server registers EXACTLY the 26 tools (Appendix A's 20 gateway
 // tools + the 6 support-ticket proxies, SPEC_TICKETS §8) and that a tool call
 // flows through the McpServer to an isError result on an API error, with the key
 // never leaking.
@@ -30,6 +30,10 @@ const EXPECTED_TOOLS = [
   "get_account",
   "get_deposit_status",
   "get_withdrawal_status",
+  "get_onboarding_status",
+  "update_merchant_profile",
+  "get_vault_status",
+  "list_webhook_logs",
   "open_support_ticket",
   "get_support_ticket",
   "list_support_tickets",
@@ -46,15 +50,15 @@ async function connect(apiClient: ApiClient) {
   return { server, client };
 }
 
-describe("tool catalog (16 gateway tools + 6 support-ticket tools, no cancel_checkout)", () => {
-  it("registers exactly the 22 tools", async () => {
+describe("tool catalog (20 gateway tools + 6 support-ticket tools, no cancel_checkout)", () => {
+  it("registers exactly the 26 tools", async () => {
     const { fetchImpl } = makeFetch([]);
     const { client } = await connect(new ApiClient({ apiKey: KEY, apiBase: BASE, fetchImpl }));
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(EXPECTED_TOOLS);
     expect(names).not.toContain("cancel_checkout");
-    expect(names.length).toBe(22);
+    expect(names.length).toBe(26);
   });
 
   // The hosted deployment must never offer a way to mint a credential. Echoing a

@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.6.0 — agent onboarding tools, the sync rule, and a per-request credential
+
+Local agents can now create and run their own account without a key pasted into
+a config, the wallet syncs on the agent's behalf so incoming money is never
+invisible, and every typed error tells the agent what to do next. **Tool count:
+26 gateway (was 22) / 58 full (was 49) — 26 + 29 `wallet_*` + 3 agent-local.**
+
+- **The sync rule (§3.8).** The engine's scanner was never triggered by any tool,
+  so a pure on-chain receive stayed invisible and a spend built from a stale
+  snapshot. Now every balance READ and every SPEND syncs BEFORE, and every spend
+  and settled deposit syncs AFTER — decided in the MCP facade, not the engine.
+  Money-safe by construction: a read is fail-soft (serves the snapshot with
+  `stale: true`, never an error), a spend proceeds through a failed pre-sync with
+  a warning, and a post-broadcast sync failure reports `post_sync_failed` beside
+  the `txid` — it never turns a completed spend into an error. A ~10s dedup window
+  keeps N tools in one turn from paying for N scans. New `wallet_sync` (explicit
+  refresh; `rescan` for a deep cold re-scan) and `wallet_list_utxos` (read-only).
+- **Agent-local tools (§3.1/§3.2/§3.3), local server only.** `register_account`
+  creates the account + keys in-process and stores the `sk_` ENCRYPTED on disk —
+  the response carries only public facts (username, slug, limits, key ids), never
+  the secret. `agent_status` and `verify_domain` (two-phase DNS TXT) round it out.
+  The hosted catalog never offers a registration tool (D4).
+- **Per-request credential (§3.1).** `ApiClient` resolves its key per call, so the
+  key `register_account` mints is used on the very next request without a restart.
+  `DEPIX_API_KEY` in the env still wins, and the conflict is reported loudly.
+- **Gateway reads.** `get_onboarding_status` narrates the verification+store ladder
+  (hardcoded PT+EN copy, absolute deep links) and self-heals by triggering
+  verification when the steps complete. `update_merchant_profile`, `get_vault_status`
+  and `list_webhook_logs` round out the 4 new gateway tools.
+- **Typed errors carry `next_action` (§5.1/D13).** Every agent-facing code gets a
+  machine-readable next step (a closed set of 5 kinds; a PT+EN relay for human
+  steps), so an agent with no docs can walk the whole onboarding ladder.
+
 ## 2.5.1 — the catalog stops declaring a dialect the clients refuse
 
 Claude Desktop and Claude Code validate every tool call against the tool's

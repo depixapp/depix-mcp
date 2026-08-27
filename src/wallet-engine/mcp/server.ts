@@ -53,6 +53,7 @@ import {
   listGiftcardProductsTool,
   listGiftcardsTool,
   listTransactionsTool,
+  listUtxosTool,
   payLightningInvoiceTool,
   pendingTool,
   quoteTool,
@@ -63,6 +64,7 @@ import {
   statusTool,
   swapExecuteTool,
   swapQuoteTool,
+  syncTool,
   toStablecoinTool,
   waitDepositTool,
   waitWithdrawalTool,
@@ -71,6 +73,7 @@ import {
   type ToolContext,
 } from "./tools.js";
 import { SwapStreamRegistry } from "./swap-streams.js";
+import { SyncCoordinator } from "./sync-coordinator.js";
 import type { StablecoinAsset } from "../convert/boltz/stablecoin.js";
 import type { AssetKey } from "../assets.js";
 
@@ -118,6 +121,8 @@ export const WALLET_TOOL_NAMES = [
   "wallet_recover",
   "wallet_pending",
   "wallet_diagnostics",
+  "wallet_sync",
+  "wallet_list_utxos",
 ] as const;
 
 const WALLET_INSTRUCTION_SENTENCES = [
@@ -359,6 +364,64 @@ export function registerWalletTools(
       return fn(wallet);
     });
 
+  // ── the sync rule (§3.8) ──
+  //
+  // ONE coordinator per mounted server (one wallet per process): the ~10s dedup
+  // window is process-wide, so N tools in a turn pay for at most one scan. The
+  // rule and its fail-soft money semantics live HERE, in the facade — the engine
+  // stays a pure primitive that only scans WHEN asked.
+  const syncCoordinator = new SyncCoordinator();
+
+  // Merge the sync flags (stale / post_sync_failed) into a handler's result.
+  const withSyncMeta = (out: unknown, meta: Record<string, boolean>): unknown =>
+    out !== null && typeof out === "object" && Object.keys(meta).length > 0
+      ? { ...(out as Record<string, unknown>), ...meta }
+      : out;
+
+  // A balance READ: sync BEFORE (fail-soft → stale:true, never throws), then run.
+  const runBalanceRead = (fn: (wallet: McpWalletFacade) => Promise<unknown>): Promise<CallToolResult> =>
+    run(async () => {
+      const wallet = await resolveWallet();
+      const meta: Record<string, boolean> = {};
+      if ((await syncCoordinator.before(wallet)).stale) meta.stale = true;
+      return withSyncMeta(await fn(wallet), meta);
+    });
+
+  // A SPEND: sync BEFORE (fail-soft, warns) then AFTER (never an error). A
+  // handler that throws (guardrail block, insufficient funds) skips the
+  // after-sync — no money moved. `keyed` gates deposit/withdraw on an API key.
+  const runSpend = (
+    fn: (wallet: McpWalletFacade) => Promise<unknown>,
+    opts: { keyed?: boolean } = {},
+  ): Promise<CallToolResult> =>
+    run(async () => {
+      const wallet = await resolveWallet();
+      if (opts.keyed === true && !toolContext().apiKeyConfigured) throw missingApiKeyError();
+      const meta: Record<string, boolean> = {};
+      if ((await syncCoordinator.before(wallet)).stale) meta.stale = true;
+      const out = await fn(wallet);
+      if ((await syncCoordinator.after(wallet)).postSyncFailed) meta.post_sync_failed = true;
+      return withSyncMeta(out, meta);
+    });
+
+  // wallet_wait_deposit is an INFLOW: no sync before (nothing spent), and a sync
+  // AFTER only when the deposit actually SETTLED (status depix_sent) so the
+  // arriving DePix shows on the next balance read. A still-pending/failed wait
+  // syncs nothing.
+  const DEPOSIT_SETTLED_STATUS = "depix_sent";
+  const runWaitDeposit = (fn: (wallet: McpWalletFacade) => Promise<unknown>): Promise<CallToolResult> =>
+    run(async () => {
+      const wallet = await resolveWallet();
+      if (!toolContext().apiKeyConfigured) throw missingApiKeyError();
+      const out = await fn(wallet);
+      if (out !== null && typeof out === "object" && (out as Record<string, unknown>).status === DEPOSIT_SETTLED_STATUS) {
+        if ((await syncCoordinator.after(wallet)).postSyncFailed) {
+          return { ...(out as Record<string, unknown>), post_sync_failed: true };
+        }
+      }
+      return out;
+    });
+
   // Holds the OPEN SideSwap quote streams that wallet_swap_quote creates and
   // wallet_swap_execute runs on (the quote_id is socket-bound). Unlike the Boltz
   // watches — which wallet.close() disposes (§5.3) — these streams are owned by
@@ -433,7 +496,7 @@ export function registerWalletTools(
       outputSchema: s.getBalancesOutput,
       annotations: read,
     },
-    () => runWallet((wallet) => getBalancesTool(wallet)),
+    () => runBalanceRead((wallet) => getBalancesTool(wallet)),
   );
 
   server.registerTool(
@@ -447,7 +510,7 @@ export function registerWalletTools(
       outputSchema: s.listTransactionsOutput,
       annotations: read,
     },
-    () => runWallet((wallet) => listTransactionsTool(wallet)),
+    () => runBalanceRead((wallet) => listTransactionsTool(wallet)),
   );
 
   server.registerTool(
@@ -463,7 +526,7 @@ export function registerWalletTools(
       annotations: money,
     },
     (args) =>
-      runWallet((wallet) => sendTool(wallet, args as { asset: "DEPIX" | "LBTC" | "USDT"; amount_sats: string; address: string })),
+      runSpend((wallet) => sendTool(wallet, args as { asset: "DEPIX" | "LBTC" | "USDT"; amount_sats: string; address: string })),
   );
 
   server.registerTool(
@@ -493,7 +556,7 @@ export function registerWalletTools(
       annotations: read,
     },
     (args) =>
-      runKeyedWallet((wallet) =>
+      runWaitDeposit((wallet) =>
         waitDepositTool(
           wallet,
           args as { id: string; interval_seconds?: number; timeout_seconds?: number },
@@ -517,16 +580,18 @@ export function registerWalletTools(
       annotations: money,
     },
     (args) =>
-      runKeyedWallet((wallet) =>
-        createWithdrawalTool(
-          wallet,
-          args as {
-            pix_key: string;
-            recipient_tax_number: string;
-            amount_cents: number;
-            mode: "send" | "payout";
-          },
-        ),
+      runSpend(
+        (wallet) =>
+          createWithdrawalTool(
+            wallet,
+            args as {
+              pix_key: string;
+              recipient_tax_number: string;
+              amount_cents: number;
+              mode: "send" | "payout";
+            },
+          ),
+        { keyed: true },
       ),
   );
 
@@ -606,7 +671,7 @@ export function registerWalletTools(
       annotations: money,
     },
     (args) =>
-      runWallet((wallet) =>
+      runSpend((wallet) =>
         convertTool(
           wallet,
           args as unknown as McpIntentArgs & {
@@ -664,7 +729,7 @@ export function registerWalletTools(
     // wallet: a swap_quote_id can only exist if a wallet was open when
     // wallet_swap_quote ran, so with no wallet the honest answer is the actionable
     // wallet_not_configured, not "unknown quote id".
-    (args) => runWallet(() => swapExecuteTool(swapStreams, args as { swap_quote_id: string })),
+    (args) => runSpend(() => swapExecuteTool(swapStreams, args as { swap_quote_id: string })),
   );
 
   server.registerTool(
@@ -681,7 +746,7 @@ export function registerWalletTools(
       outputSchema: s.payLightningInvoiceOutput,
       annotations: money,
     },
-    (args) => runWallet((wallet) => payLightningInvoiceTool(wallet, args as { invoice: string })),
+    (args) => runSpend((wallet) => payLightningInvoiceTool(wallet, args as { invoice: string })),
   );
 
   server.registerTool(
@@ -713,7 +778,7 @@ export function registerWalletTools(
       annotations: money,
     },
     (args) =>
-      runWallet((wallet) =>
+      runSpend((wallet) =>
         toStablecoinTool(
           wallet,
           args as { asset: StablecoinAsset; network_id: string; amount_sats: string; claim_address: string },
@@ -792,7 +857,7 @@ export function registerWalletTools(
       annotations: money,
     },
     (args) =>
-      runWallet((wallet) =>
+      runSpend((wallet) =>
         buyGiftcardTool(
           wallet,
           args as {
@@ -854,7 +919,7 @@ export function registerWalletTools(
       annotations: money,
     },
     (args) =>
-      runWallet((wallet) =>
+      runSpend((wallet) =>
         shiftUsdtTool(
           wallet,
           args as { network: string; amount_sats: string; settle_address: string; refund_address?: string },
@@ -914,6 +979,40 @@ export function registerWalletTools(
       annotations: read,
     },
     () => runWallet((wallet) => diagnosticsTool(wallet)),
+  );
+
+  // ── sync primitives (§3.8): explicit refresh + read-only UTXO view ──
+
+  server.registerTool(
+    "wallet_sync",
+    {
+      title: "Sync the wallet",
+      description:
+        "Refresh on-chain state EXPLICITLY. You rarely need this — every balance read and every spend already syncs " +
+        "on your behalf (a received payment shows up on the next wallet_get_balances without a manual sync). Call it " +
+        "with rescan:true for a DEEP cold re-scan from zero when balances look desynchronized (missing transactions, " +
+        "stale amounts): that can take several MINUTES. The default incremental sync is ~seconds when warm. Signs " +
+        "nothing, moves no money.",
+      inputSchema: s.syncInput,
+      outputSchema: s.syncOutput,
+      annotations: read,
+    },
+    (args) => runWallet((wallet) => syncTool(wallet, args as { rescan?: boolean })),
+  );
+
+  server.registerTool(
+    "wallet_list_utxos",
+    {
+      title: "List unspent outputs (UTXOs)",
+      description:
+        "Return the wallet's unspent outputs — per UTXO: asset, amount (base units), the funding txid:vout, the " +
+        "holding address, block height and confirmations. Read-only: signs nothing, spends nothing, reserves nothing. " +
+        "Syncs before reading so the view is current (serves the last snapshot with stale:true if a provider is down).",
+      inputSchema: s.listUtxosInput,
+      outputSchema: s.listUtxosOutput,
+      annotations: read,
+    },
+    () => runBalanceRead((wallet) => listUtxosTool(wallet)),
   );
 
   return {
