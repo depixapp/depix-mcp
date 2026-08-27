@@ -57,6 +57,18 @@ describe("tool catalog (16 gateway tools + 6 support-ticket tools, no cancel_che
     expect(names.length).toBe(22);
   });
 
+  // The hosted deployment must never offer a way to mint a credential. Echoing a
+  // freshly created `sk_` back through an MCP response would put the account's
+  // root secret in the chat transcript, and the whole point of mcp.depixapp.com
+  // is that it holds no credential of yours. Account creation belongs to the
+  // local server, where the key can be written to the operator's own disk.
+  it("offers no registration tool at all", async () => {
+    const { fetchImpl } = makeFetch([]);
+    const { client } = await connect(new ApiClient({ apiKey: KEY, apiBase: BASE, fetchImpl }));
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).filter((n) => n.includes("register"))).toEqual([]);
+  });
+
   it("advertises structured output schemas", async () => {
     const { fetchImpl } = makeFetch([]);
     const { client } = await connect(new ApiClient({ apiKey: KEY, apiBase: BASE, fetchImpl }));
