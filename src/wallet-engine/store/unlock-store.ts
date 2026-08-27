@@ -26,7 +26,7 @@
 import { createHash } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { registerSecret } from "../logger.js";
 import { ensureDir, writeFileDurable } from "./fs-util.js";
 
@@ -126,6 +126,17 @@ function accountFor(dataDir: string): string {
   return dataDir;
 }
 
+/**
+ * A home dir the 0600 fallback may live under: an absolute path, never empty.
+ * With no HOME/USERPROFILE `homedir()` returns "", which would make the fallback
+ * path cwd-relative — possibly a project dir where the key could be committed.
+ * When this is false the fallback is REFUSED (backend "unavailable"): better to
+ * not persist the key than to persist it somewhere it could leak.
+ */
+function hasSafeHome(home: string): boolean {
+  return home !== "" && isAbsolute(home);
+}
+
 /** 0600 fallback path: a per-dataDir file, named by a hash so the real path never leaks into it. */
 export function fallbackFilePath(dataDir: string, home: string): string {
   const digest = createHash("sha256").update(dataDir).digest("hex").slice(0, 16);
@@ -197,6 +208,14 @@ export async function storeUnlockKey(
     }
     // code:null (no binary) or non-zero (locked/denied) → fall through to the file.
   }
+  if (!hasSafeHome(deps.home)) {
+    // No absolute home → a fallback path would be cwd-relative (possibly a
+    // project dir). Refuse rather than persist the key somewhere it could leak.
+    return {
+      backend: "unavailable",
+      detail: "no OS keychain and no absolute home dir for a fallback file — set DEPIX_WALLET_PASSPHRASE instead",
+    };
+  }
   try {
     await deps.files.write(fallbackFilePath(dataDir, deps.home), secret);
     return { backend: "file", detail: fallbackFilePath(dataDir, deps.home) };
@@ -229,10 +248,12 @@ export async function readUnlockKey(
       return secret;
     }
   }
-  const fromFile = await deps.files.read(fallbackFilePath(dataDir, deps.home));
-  if (fromFile !== undefined && fromFile !== "") {
-    registerSecret(fromFile);
-    return fromFile;
+  if (hasSafeHome(deps.home)) {
+    const fromFile = await deps.files.read(fallbackFilePath(dataDir, deps.home));
+    if (fromFile !== undefined && fromFile !== "") {
+      registerSecret(fromFile);
+      return fromFile;
+    }
   }
   return undefined;
 }

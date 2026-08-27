@@ -149,6 +149,32 @@ describe("storeUnlockKey — degradation (never fails init)", () => {
     expect(files.store.get(fallbackFilePath(DATA_DIR, HOME))).toBe("pp");
   });
 
+  it("REFUSES the file fallback when there is no absolute home (never writes a cwd-relative key)", async () => {
+    const files = memFiles();
+    // home === "" would make fallbackFilePath cwd-relative — possibly a project dir.
+    const res = await storeUnlockKey(DATA_DIR, "pp", { platform: "win32", home: "", run: fakeKeychain().run, files });
+    expect(res.backend).toBe("unavailable");
+    expect(files.store.size).toBe(0); // nothing was persisted anywhere
+    expect(res.detail).not.toContain("pp");
+    expect(res.detail).toMatch(/DEPIX_WALLET_PASSPHRASE/);
+  });
+
+  it("does not read a cwd-relative fallback file when home is empty", async () => {
+    let reads = 0;
+    const files: UnlockFileBackend = {
+      read: async () => {
+        reads++;
+        return "leaked-from-cwd";
+      },
+      write: async () => undefined,
+      remove: async () => undefined,
+    };
+    // Keychain empty + no safe home → undefined, WITHOUT touching the file backend.
+    const got = await readUnlockKey(DATA_DIR, { platform: "win32", home: "", run: fakeKeychain().run, files });
+    expect(got).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+
   it("reports 'unavailable' (and does NOT throw) when neither keychain nor file works", async () => {
     const throwing: UnlockFileBackend = {
       read: async () => undefined,
