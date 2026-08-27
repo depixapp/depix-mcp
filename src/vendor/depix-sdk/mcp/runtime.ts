@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
+ * Commit:    88228a10ca5fa275d64de9b3150bc75cc6a0bb8c
  * Path:      src/mcp/runtime.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *

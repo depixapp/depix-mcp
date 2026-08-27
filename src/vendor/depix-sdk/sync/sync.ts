@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
+ * Commit:    88228a10ca5fa275d64de9b3150bc75cc6a0bb8c
  * Path:      src/sync/sync.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -61,19 +61,25 @@ export interface EsploraProvider {
 }
 
 /**
- * Default chain (spec §2.6). Same proxy, `waterfalls` flag flips the
- * protocol. Public proxy, per-IP 600 GET / 30 POST.
+ * Default chain (spec §2.6). Same proxy, `waterfalls` flag flips the protocol.
+ * `concurrency: 8` mirrors the frontend's explicit bump (wallet.js, 2026-07-18):
+ * the proxy absorbs upstream rate limits server-side (per-upstream cooldown +
+ * in-request 429 retry) and its per-IP budget was raised to clear a pacing-free
+ * client at this parallelism. Without the field these records fell through to
+ * the conservative 4 below and silently ran at half the frontend's throughput.
  */
 export const DEFAULT_ESPLORA_PROVIDERS: readonly EsploraProvider[] = Object.freeze([
   Object.freeze({
     name: "depix-proxy-waterfalls",
     url: "https://api.depixapp.com/api/esplora",
-    waterfalls: true
+    waterfalls: true,
+    concurrency: 8
   }),
   Object.freeze({
     name: "depix-proxy-esplora",
     url: "https://api.depixapp.com/api/esplora",
-    waterfalls: false
+    waterfalls: false,
+    concurrency: 8
   })
 ]);
 
@@ -118,10 +124,11 @@ export interface SyncResult {
   updated: boolean;
 }
 
-function providerConcurrency(provider: EsploraProvider): number {
+export function providerConcurrency(provider: EsploraProvider): number {
   if (typeof provider.concurrency === "number") return provider.concurrency;
-  // The depix proxy absorbs bursts (edge cache); anything else stays at 1 to
-  // avoid tripping public per-IP limits (frontend parity).
+  // Fallback only for a proxy provider supplied without an explicit field (the
+  // defaults above carry 8). 4 mirrors the frontend's own fallback; anything
+  // else stays at 1 to avoid tripping public per-IP limits.
   return provider.name.startsWith("depix-proxy") ? 4 : 1;
 }
 

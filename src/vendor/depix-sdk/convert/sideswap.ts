@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
+ * Commit:    88228a10ca5fa275d64de9b3150bc75cc6a0bb8c
  * Path:      src/convert/sideswap.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -121,15 +121,22 @@ export interface SwapValidationExpectation {
   sendAmountSats: bigint;
   /**
    * Fees the dealer DECLARED in the quote (server_fee + fixed_fee, base units).
-   * SideSwap's quoted recv_amount is PRE-fee: the dealer nets these out of the
-   * recv output in the PSET it builds (observed live: quote 5945, PSET 5853,
-   * fixed network fee ≈ 92 — mainnet e2e P0, 2026-07-11). The recv check
-   * therefore accepts [recvAmountSats − declaredFeesSats − 1%, recvAmountSats
-   * + 1%] — the widening is bounded by fees the dealer COMMITTED to in the
-   * quote (visible to the caller pre-execute), never open-ended. Omitted/0n ⇒
-   * the strict pre-fee window (legacy behavior).
+   * When they fall on the recv leg (see `feeAssetId`), SideSwap's quoted recv is
+   * PRE-fee and the dealer nets them out of the recv output (observed live: quote
+   * 5945, PSET 5853, fixed network fee ≈ 92 — mainnet e2e P0, 2026-07-11), so the
+   * recv band widens down by exactly these committed fees — never open-ended.
+   * Omitted/0n ⇒ the strict pre-fee window.
    */
   declaredFeesSats?: bigint;
+  /**
+   * Asset id the declared fees are denominated in (the resolved fee leg). The
+   * fees only reduce what we RECEIVE when this equals `recvAssetId`; on the
+   * SENT leg they come out of what we part with and the recv output stays whole
+   * (frontend fix 82e9576). Null/omitted ⇒ leg unknown ⇒ the band does NOT
+   * widen by the fees (fail-closed: a short-paid recv must not hide behind a fee
+   * that never touched it).
+   */
+  feeAssetId?: string | null;
 }
 
 /**
@@ -260,18 +267,30 @@ function netSpentOf(netBalances: ReadonlyMap<string, bigint>, assetId: string): 
   return typeof net === "bigint" && net < 0n ? -net : 0n;
 }
 
+/** Reports whether two Liquid asset ids match, tolerating hex-case differences. */
+function assetIdEquals(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Smallest recv-band half-width (base units). 1% truncates toward zero in bigint,
+ * so below 10_000 base units the percentage alone would collapse the band onto
+ * the quote and reject ordinary few-sat jitter (frontend parity, wallet.js 83abe42).
+ */
+const MIN_RECV_TOLERANCE_SATS = 100n;
+
 /**
  * Validate a swap PSET inspection against the pinned quote (port of
  * validateSwapPsetOutput, wallet.js:2343-2432, with the G3 fail-closed change).
  *
  * PRIMARY (hard): an output MUST pay `expectedScriptHex` (our receive address).
  * SECONDARY (FAIL-CLOSED): the recv-asset net balance must be present, positive
- * and within [recvAmountSats − declaredFeesSats − 1%, recvAmountSats + 1%] —
- * SideSwap's quoted recv is PRE-fee and the dealer nets the declared fees out
- * of the recv output (see SwapValidationExpectation.declaredFeesSats). A null
- * inspection (read failed) or a missing recv-asset key ABORTS here — the SDK
- * has no human at a preview screen, so the amount check is the only
- * confirmation of value (§5.1/G3).
+ * and within [recvAmountSats − recvLegFees − tol, recvAmountSats + tol], where
+ * `recvLegFees` are the declared fees only when they fall on the recv asset
+ * (SideSwap prices the recv side gross and nets same-asset fees out of it) and
+ * `tol` is 1% floored at MIN_RECV_TOLERANCE_SATS. A null inspection (read
+ * failed) or a missing recv-asset key ABORTS here — the SDK has no human at a
+ * preview screen, so the amount check is the only confirmation of value (§5.1/G3).
  *
  * @returns the actual recv-asset net (base units) the PSET credits us — the
  * post-fee amount the wallet will really receive; callers surface this instead
@@ -298,12 +317,20 @@ export function assertSwapPsetPaysAndBalances(
   if (declaredFees < 0n) {
     throw validationFailed("declaredFeesSats must not be negative");
   }
-  if (declaredFees >= expect.recvAmountSats) {
-    // The dealer's own declared fees consume the whole receive side — the swap
+  // SideSwap denominates server_fee + fixed_fee in ONE leg of the pair. They only
+  // come out of the recv output when that leg IS the recv asset; on the sent leg
+  // they leave the recv whole (frontend fix 82e9576). So only a recv-leg fee may
+  // widen the recv band below — otherwise a short-paid recv would hide inside a
+  // band loosened for a fee that never touched it, AND `declaredFees` would be in
+  // the sent asset's units, not comparable to a recv-asset amount at all.
+  const feeOnRecvLeg = expect.feeAssetId != null && assetIdEquals(expect.feeAssetId, expect.recvAssetId);
+  const recvLegFees = feeOnRecvLeg ? declaredFees : 0n;
+  if (recvLegFees >= expect.recvAmountSats) {
+    // The dealer's own recv-leg fees consume the whole receive side — the swap
     // amount is too small for this route. Refuse with a diagnosis instead of a
     // divergence error the caller can't act on.
     throw validationFailed(
-      `declared fees (${declaredFees}) meet or exceed the quoted receive amount ` +
+      `declared fees (${recvLegFees}) meet or exceed the quoted receive amount ` +
         `(${expect.recvAmountSats}) — the swap amount is too small for this route.`
     );
   }
@@ -327,17 +354,18 @@ export function assertSwapPsetPaysAndBalances(
       `PSET net balance for the recv asset is non-positive (got ${net}, expected ~${expect.recvAmountSats}).`
     );
   }
-  // Tolerance is 1% of the QUOTED recv (price jitter); the floor additionally
-  // allows the dealer-declared fees to be netted from the recv output. The
-  // ceiling stays at quote + 1% — receiving MORE than quoted is as anomalous
-  // as receiving less.
-  const tolerance = expect.recvAmountSats / 100n; // 1%
-  const floor = expect.recvAmountSats - declaredFees - tolerance;
+  // Tolerance is 1% of the QUOTED recv (price jitter), floored so small swaps
+  // keep a usable band; the floor additionally allows a recv-leg fee to be
+  // netted from the recv output. The ceiling stays at quote + tolerance —
+  // receiving MORE than quoted is as anomalous as receiving less.
+  const pct = expect.recvAmountSats / 100n; // 1%
+  const tolerance = pct < MIN_RECV_TOLERANCE_SATS ? MIN_RECV_TOLERANCE_SATS : pct;
+  const floor = expect.recvAmountSats - recvLegFees - tolerance;
   const ceiling = expect.recvAmountSats + tolerance;
   if (net < floor || net > ceiling) {
     throw validationFailed(
-      `PSET amount diverges from the quote beyond the declared fees + 1% window ` +
-        `(got ${net}, quoted ${expect.recvAmountSats}, declared fees ${declaredFees}, ` +
+      `PSET amount diverges from the quote beyond the recv-leg fees + tolerance window ` +
+        `(got ${net}, quoted ${expect.recvAmountSats}, recv-leg fees ${recvLegFees}, ` +
         `accepted [${floor}, ${ceiling}]).`
     );
   }
@@ -458,7 +486,10 @@ export interface SideSwapQuote {
   recvAmountSats: bigint;
   serverFeeSats: bigint;
   fixedFeeSats: bigint;
+  /** Raw side the fees are denominated in ("Base" | "Quote"), as the server reports it. */
   feeAsset: string | null;
+  /** `feeAsset` resolved to an asset id; execute() checks whether it is the recv asset. */
+  feeAssetId?: string | null;
   ttlMs: number;
   /** now()+ttlMs at receipt — execute() refuses within QUOTE_MIN_REMAINING_MS of this. */
   expiresAt: number;
@@ -598,6 +629,7 @@ export class SwapQuoteStream {
       serverFeeSats: event.serverFee,
       fixedFeeSats: event.fixedFee,
       feeAsset: event.feeAsset,
+      feeAssetId: event.feeAssetId ?? null,
       ttlMs: event.ttlMs,
       expiresAt: this.deps.now() + event.ttlMs,
       receiveAddress: this.deps.receiveAddress
@@ -708,7 +740,8 @@ export class SwapQuoteStream {
           recvAmountSats: quote.recvAmountSats,
           fromAssetId,
           sendAmountSats: quote.sendAmountSats,
-          declaredFeesSats: quote.serverFeeSats + quote.fixedFeeSats
+          declaredFeesSats: quote.serverFeeSats + quote.fixedFeeSats,
+          feeAssetId: quote.feeAssetId
         });
       });
 

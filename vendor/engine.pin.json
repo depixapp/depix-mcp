@@ -1,7 +1,7 @@
 {
   "_comment": "THE single source of truth for the vendored engine (unified-MCP spec §2.1). scripts/vendor-engine.mjs reads only this file; CI (ci.yml + publish-mcp.yml) checks out `repository` at `ref` and re-runs the script in --check mode, so the committed tree under `target` can never silently drift from the pinned commit. Bump `ref` + re-run `npm run vendor:engine` to take new engine code.",
   "repository": "https://github.com/depixapp/depix-sdk",
-  "ref": "c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d",
+  "ref": "88228a10ca5fa275d64de9b3150bc75cc6a0bb8c",
   "sourceDir": "src",
   "target": "src/vendor/depix-sdk",
   "license": "Apache-2.0",

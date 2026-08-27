@@ -7,7 +7,7 @@
  *
  * VENDORED ENGINE SOURCE — DO NOT EDIT HERE.
  * Origin:    https://github.com/depixapp/depix-sdk
- * Commit:    c8abc2ca4fbf913591cfe0696793fc9d1cfb4a3d
+ * Commit:    88228a10ca5fa275d64de9b3150bc75cc6a0bb8c
  * Path:      src/convert/sideswap-client.ts
  * Generated: scripts/vendor-engine.mjs (npm run vendor:engine)
  *
@@ -113,7 +113,15 @@ export interface SideSwapQuoteEvent {
   recvAmount: bigint;
   serverFee: bigint;
   fixedFee: bigint;
+  /** Raw side the fees are denominated in ("Base" | "Quote"), as the server reports it. */
   feeAsset: string | null;
+  /**
+   * `feeAsset` resolved to a concrete asset id against the accepted market, or
+   * null when the server did not label the fee leg. Only the client knows the
+   * market's base/quote, so it resolves this here; consumers compare it to the
+   * recv asset to know whether the fees come out of what we receive.
+   */
+  feeAssetId?: string | null;
   ttlMs: number;
   sendAsset: string;
   recvAsset: string;
@@ -612,6 +620,10 @@ export function createSideSwapClient(options: SideSwapClientOptions = {}): SideS
           const recvAmount = sellingQuote
             ? safeBigInt(success.base_amount, "base_amount")
             : safeBigInt(success.quote_amount, "quote_amount");
+          // Resolve the "Base"/"Quote" fee label against the accepted market —
+          // the only place base/quote are known. Both directions of a market
+          // carry the same two labels, so this cannot be recovered downstream.
+          const feeAssetId = feeAsset === "Base" ? market.base : feeAsset === "Quote" ? market.quote : null;
           onQuote?.({
             quoteId: success.quote_id as number | string,
             sendAmount,
@@ -619,6 +631,7 @@ export function createSideSwapClient(options: SideSwapClientOptions = {}): SideS
             serverFee: safeBigInt(success.server_fee, "server_fee"),
             fixedFee: safeBigInt(success.fixed_fee, "fixed_fee"),
             feeAsset,
+            feeAssetId,
             ttlMs: (success.ttl as number) ?? 30_000,
             sendAsset,
             recvAsset
