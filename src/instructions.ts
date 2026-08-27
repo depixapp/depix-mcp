@@ -12,7 +12,7 @@
 // composition never includes (src/unified.ts + a test assert it is absent), and
 // each deployment builds its own text from the shared sentences.
 //
-// This module deliberately has NO import of the vendored engine: it is reachable
+// This module deliberately has NO import of the wallet engine: it is reachable
 // from `api/mcp.ts` (hosted) and must stay on the keyless side of the structural
 // separation (§2.1). The unified half — which merges the engine's own wallet
 // instructions — lives in src/unified.ts, reachable only from the stdio bin.

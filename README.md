@@ -46,10 +46,11 @@ no tool that exports the seed, edits guardrails, or pays a merchant checkout QR.
 ## Related — `@depixapp/sdk`
 
 The wallet engine started life as the standalone
-**[`@depixapp/sdk`](https://www.npmjs.com/package/@depixapp/sdk)** (still
-published, still supported for programmatic use in your own Node code). If what
-you want is **an agent with a wallet**, you want this package: `@depixapp/mcp`
-now embeds that engine and exposes it over MCP, so nothing has to be written.
+**[`@depixapp/sdk`](https://www.npmjs.com/package/@depixapp/sdk)**. It lives here
+now (`src/wallet-engine/`), and this package is where it is developed and
+released. The 1.2.x line of `@depixapp/sdk` stays on npm and keeps working; it
+is frozen, not deprecated. If what you want is **an agent with a wallet**, you
+want this package: it exposes the engine over MCP, so nothing has to be written.
 
 ## Quickstart 1 — Connect Claude Code (remote, HTTP)
 
@@ -320,41 +321,45 @@ npm install
 npm test           # vitest
 npm run typecheck  # tsc --noEmit
 npm run lint       # eslint
-npm run build      # compile src (incl. the vendored engine) → dist
+npm run build      # compile src (incl. the wallet engine) → dist
+npm run smoke      # run the compiled dist: wasm init, address goldens, seed roundtrip
 npm run guard:hosted   # the hosted deployment has no path to the wallet engine
 npm run licenses:check # THIRD_PARTY_LICENSES matches the prod dep tree
-npm run vendor:check   # src/vendor matches the pinned engine commit
 ```
 
 Set `DEPIX_TEST_KEY=sk_test_…` to run the real-sandbox e2e test
-(`test/e2e/sandbox.test.ts`), otherwise it is skipped.
+(`test/e2e/sandbox.test.ts`), otherwise it is skipped. Set `DEPIX_SDK_OFFLINE=1`
+(CI does) to skip the one engine test that reads mainnet Esplora for real.
 
-### The vendored engine (`src/vendor/`)
+### The wallet engine (`src/wallet-engine/`)
 
-The 27 wallet tools come from the DePix App wallet engine, whose source is
-**vendored** here from a pinned commit rather than taken as an npm dependency.
+The 27 wallet tools come from the DePix App wallet engine. It used to be vendored
+here from a pinned commit of a second repository; it is now simply part of this
+package's source, developed and released with it. Its tests live in
+`test/wallet-engine/`, mirroring the layout.
 
-- `vendor/engine.pin.json` is the single source of truth (repo + full 40-char SHA).
-- `npm run vendor:engine` regenerates `src/vendor/**` from that commit, stamping
-  each file with the Apache-2.0 header and its provenance. **Never hand-edit
-  anything under `src/vendor/`** — change it upstream and bump the pin.
-- The tree is **committed** because `npm ci` runs `prepare` → `build`: the sources
-  must exist before any install step could fetch them. Reproducibility comes from
-  `npm run vendor:check`, which CI runs against a fresh checkout of the pinned
-  commit and fails on a single byte of drift.
+Two settings the engine brings with it:
+
+- `tsconfig.wallet-engine.json` typechecks `src/wallet-engine/` +
+  `test/wallet-engine/` under the stricter options the engine was written with
+  (`noUncheckedIndexedAccess` and friends). `npm run typecheck` runs the
+  repo-wide pass and then this one; tsc has no per-directory options.
+- `floor-smoke` in CI runs the compiled artifact on Node **22.4** exactly — the
+  `engines` floor. The test matrix's "22" is whatever `latest-22` resolves to,
+  which never proves the floor.
 
 ### Why the hosted deployment cannot sign
 
 `api/mcp.ts` → `src/http.ts` → `src/server.ts` has **zero** import path to
-`src/vendor/**`. Neither repo runs a tree-shaking bundler, so that import graph is
-the whole guarantee. `scripts/check-hosted-isolation.mjs` enforces it twice — a
-static walk of the TypeScript sources and a `@vercel/nft` trace of the compiled
-entries — and its `--self-test` proves both checks reject a poisoned entry.
-Only `src/stdio.ts` → `src/unified.ts` may reach the engine.
+`src/wallet-engine/**`. Neither this repo nor Vercel runs a tree-shaking bundler,
+so that import graph is the whole guarantee. `scripts/check-hosted-isolation.mjs`
+enforces it twice — a static walk of the TypeScript sources and a `@vercel/nft`
+trace of the compiled entries — and its `--self-test` proves both checks reject a
+poisoned entry. Only `src/stdio.ts` → `src/unified.ts` may reach the engine.
 
-**CI** (`.github/workflows/ci.yml`) runs typecheck + lint + test + build + all
-three guards on every push to `main` and every PR, on Node 22 and 24 — that is the
-correctness gate.
+**CI** (`.github/workflows/ci.yml`) runs typecheck + lint + test + build + smoke +
+both guards on every push to `main` and every PR, on Node 22 and 24, plus the
+Node 22.4 floor smoke — that is the correctness gate.
 
 ## Releasing
 
@@ -377,9 +382,10 @@ To cut a release:
    git tag v2.0.0 && git push origin v2.0.0
    ```
 
-The workflow verifies the versions, re-checks the vendored engine against its
-pinned commit, publishes to npm with provenance, then publishes the registry entry
-(idempotent — re-running a tag is a safe no-op).
+The workflow verifies the versions, re-runs typecheck + lint + tests + both
+guards (`ci.yml` is not triggered by tags), publishes to npm with provenance,
+then publishes the registry entry (idempotent — re-running a tag is a safe
+no-op).
 Re-tagging an already-published version skips both publishes.
 
 One-time setup (already done): the package is registered as an npm **Trusted

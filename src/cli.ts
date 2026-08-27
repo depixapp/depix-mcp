@@ -7,7 +7,7 @@
 // Everything here is pure and injectable: the bin (src/stdio.ts) supplies the real
 // `serve` / `init` implementations, which is what makes the dispatch testable
 // without ever running the ceremony or opening a transport. This module must NOT
-// import the vendored engine — `init` arrives as a callback, so the engine is
+// import the wallet engine — `init` arrives as a callback, so the engine is
 // loaded only on the path that actually needs it.
 
 export interface CliDeps {

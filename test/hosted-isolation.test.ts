@@ -1,7 +1,7 @@
 // The structural-separation build guard (unified-MCP spec §2.1).
 //
 // This does not re-implement the guard; it RUNS it, including its `--self-test`,
-// which writes a poisoned api/ entry importing the vendored engine and asserts BOTH
+// which writes a poisoned api/ entry importing the wallet engine and asserts BOTH
 // checks reject it. A guard that cannot fail is not a guard, and the value of this
 // test is that the failure path is exercised on every CI run rather than the day
 // someone accidentally imports the wallet into the hosted function.

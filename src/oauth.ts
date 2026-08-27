@@ -17,7 +17,7 @@
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 // `JsonWebKey` used to be re-exported from node:crypto's types; @types/node >= 26
-// (required by the vendored engine) no longer exports it there. Declared locally
+// (required by the wallet engine) no longer exports it there. Declared locally
 // so this module owns the exact shape it reads instead of tracking a moving
 // @types export — structurally what createPublicKey({ format: "jwk" }) accepts.
 interface JsonWebKey {

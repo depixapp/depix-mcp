@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.4.0 — the wallet engine lives here now
+
+No tool changed, no behaviour changed, nothing on the wire moved. What changed is
+where the code lives: the wallet engine was a copy of another repository, kept in
+sync by a pinned commit and a vendoring script, and it is now simply this
+package's own source under `src/wallet-engine/`. Two repositories had to be
+edited, reviewed and released in step to change one line of wallet code; now one
+does.
+
+- **`src/vendor/depix-sdk/` → `src/wallet-engine/`**, with the per-file "VENDORED
+  ENGINE SOURCE — DO NOT EDIT HERE" headers gone. The dual-licensing fact they
+  carried — DePix App owns the engine, this copy is Apache-2.0, the
+  `@depixapp/sdk` tarball of the same source stays AGPL-3.0-only — now lives in
+  `NOTICE`, which ships in the tarball.
+- **The vendoring machinery is deleted**: the pin, the script, the `vendor:*`
+  npm scripts, the CI job and the release steps that checked the copy against its
+  upstream commit. They existed to prove a copy was faithful; there is no copy.
+- **The engine's tests came too** — 973 assertions under `test/wallet-engine/`,
+  with the timeouts (Argon2id is slow on purpose) and the environment they need
+  to be honest rather than merely green.
+- **The Node 22.4 floor is now proven.** `engines` has claimed `>=22.4` since
+  2.0.0 while CI's "22" was whatever `latest-22` resolved to. A new `floor-smoke`
+  job installs production dependencies only and runs the compiled artifact on
+  22.4 exactly.
+- **`wallet_diagnostics` reports a real version in more places.** The engine
+  found its manifest by counting directories, which worked only because the build
+  wrote a synthetic `package.json` into `dist/`. It now walks up to the package
+  it belongs to, and the build emits no manifest at all.
+
 ## 2.3.1 — the hold date now reads like every other timestamp
 
 Text only, no behavior change. API 0.40.0 moved every timestamp it emits to

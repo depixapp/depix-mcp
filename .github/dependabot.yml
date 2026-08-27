@@ -18,6 +18,12 @@ updates:
       # Low-risk, high-noise dev-dependency minor/patch bumps ride ONE PR.
       # Production/runtime deps get INDIVIDUAL PRs (and majors are always
       # individual) so each is reviewed on its own before CI + a human merge.
+      # This matters most for the crypto/wasm deps the wallet engine signs with
+      # (lwk_node, hash-wasm, @noble/*, boltz-*): a minor bump can change derived
+      # keys or wasm layout, so each is vetted on its own, gated by the floor
+      # smoke and the full suite. The grouping keys off dependency-type, so those
+      # deps MUST stay in `dependencies` — moving one to devDependencies would
+      # sweep it silently into this bundle.
       dev-dependencies:
         dependency-type: "development"
         update-types: ["minor", "patch"]
