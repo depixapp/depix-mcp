@@ -38,7 +38,7 @@ import {
   createShutdownHandler,
   resolveKeyMode,
   resolveMaxWaitSeconds as resolveWalletMaxWaitSeconds,
-} from "./vendor/depix-sdk/mcp/runtime.js";
+} from "./wallet-engine/mcp/runtime.js";
 
 function stderr(text: string): void {
   process.stderr.write(redact(text));
@@ -78,7 +78,7 @@ async function serve(): Promise<void> {
   // their summaries through wallet_status, exactly as the engine's own bin does.
   const runtime = createWalletRuntime({
     open: async () => {
-      const { DepixWallet } = await import("./vendor/depix-sdk/wallet.js");
+      const { DepixWallet } = await import("./wallet-engine/wallet.js");
       return DepixWallet.open({
         resumePendingWithdrawalsOnOpen: false,
         resumePendingConversionsOnOpen: false,
@@ -135,7 +135,7 @@ async function serve(): Promise<void> {
 async function init(opts: { restore: boolean }): Promise<void> {
   // Loaded lazily: the ceremony pulls the whole wallet engine (seed store, LWK),
   // which the serve path must not pay for before a wallet tool is actually called.
-  const { runWalletInit } = await import("./vendor/depix-sdk/mcp/init-flow.js");
+  const { runWalletInit } = await import("./wallet-engine/mcp/init-flow.js");
   await runWalletInit({ restore: opts.restore, packageName: UNIFIED_PACKAGE_NAME });
 }
 

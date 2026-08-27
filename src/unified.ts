@@ -31,10 +31,10 @@ import {
   walletMcpInstructions,
   type RegisterWalletToolsContext,
   type WalletToolsRegistration,
-} from "./vendor/depix-sdk/mcp/server.js";
-import { SeedStore } from "./vendor/depix-sdk/store/seed-store.js";
-import type { ConversionResumeSummary, ResumeSummary } from "./vendor/depix-sdk/wallet.js";
-import type { McpWalletFacade } from "./vendor/depix-sdk/mcp/tools.js";
+} from "./wallet-engine/mcp/server.js";
+import { SeedStore } from "./wallet-engine/store/seed-store.js";
+import type { ConversionResumeSummary, ResumeSummary } from "./wallet-engine/wallet.js";
+import type { McpWalletFacade } from "./wallet-engine/mcp/tools.js";
 
 /** npm package name the printed config block and the `init` guidance name. */
 export const UNIFIED_PACKAGE_NAME = "@depixapp/mcp";

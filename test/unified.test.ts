@@ -18,7 +18,7 @@ import { UNIFIED_SERVER_TITLE, SERVER_TITLE } from "../src/config.js";
 import { HOSTED_ONLY_CUSTODY_SENTENCE, hostedInstructions } from "../src/instructions.js";
 import { createServer } from "../src/server.js";
 import { UNIFIED_TOOL_COUNT, createUnifiedServer, createWalletRuntime, unifiedInstructions } from "../src/unified.js";
-import { WALLET_TOOL_NAMES } from "../src/vendor/depix-sdk/mcp/server.js";
+import { WALLET_TOOL_NAMES } from "../src/wallet-engine/mcp/server.js";
 import { makeFetch } from "./helpers/mockFetch.js";
 
 const BASE = "https://api.depixapp.com";
