@@ -216,6 +216,7 @@ describe("wallet_quote", () => {
         estimated_fee_total_sats: "31",
         fee_asset: "LBTC",
         estimate_complete: true,
+        available: true,
         notes: [],
         legs: [
           {

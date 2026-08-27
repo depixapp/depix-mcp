@@ -780,6 +780,7 @@ function routeQuoteToOutput(route: RouteQuote) {
       route.estimatedFeeTotalSats !== null ? route.estimatedFeeTotalSats.toString() : null,
     fee_asset: route.feeAsset,
     estimate_complete: route.estimateComplete,
+    available: route.available,
     notes: [...route.notes],
     legs: route.legs.map(legQuoteToOutput),
   };

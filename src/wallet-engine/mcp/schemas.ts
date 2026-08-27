@@ -749,6 +749,13 @@ export const walletQuoteOutput = {
           .describe("Sum of leg fees when every leg reported one in the SAME asset; otherwise null."),
         fee_asset: z.string().nullable(),
         estimate_complete: z.boolean().describe("true when every leg produced an estimate (the chain is complete)."),
+        available: z
+          .boolean()
+          .describe(
+            "false when a leg's swap provider is not creating swaps right now — wallet_convert refuses this " +
+              "route. Check it BEFORE comparing estimates. Unrelated to funds already in flight, which still " +
+              "claim and refund.",
+          ),
         notes: z.array(z.string()).describe("Per-leg caveats (missing estimators, mixed fee assets, …)."),
         legs: z.array(routeLegQuoteOutput()),
       }),

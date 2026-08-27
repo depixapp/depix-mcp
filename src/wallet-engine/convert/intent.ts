@@ -35,6 +35,12 @@
 
 import { ASSETS, MAINNET_ASSET_ID_TO_KEY, type AssetKey } from "../assets.js";
 import { ConversionError, WalletError, type ErrorDetails } from "../errors.js";
+import {
+  boltzRouteAvailability,
+  noSwapProviderError,
+  stablecoinProviderUnavailableError,
+  type BoltzRouteAvailability
+} from "./boltz/providers.js";
 import { estimateReverseReceive, getReverseLimits } from "./boltz/reverse.js";
 import {
   estimateStablecoinOut,
@@ -125,6 +131,13 @@ export interface IntentDeps {
   }) => Promise<StablecoinEstimate>;
   /** Reverse (BTC-lightning → L-BTC) pair fees (default: getReverseLimits). */
   reverseLimits?: () => Promise<{ fees: unknown }>;
+  /**
+   * Which provider-backed rails can be created right now (default: the liveness
+   * probe). quote() flags a route the backend would refuse; convert() refuses it
+   * outright. Recovery never consults this — a dead backend still claims and
+   * refunds what it already holds.
+   */
+  boltzAvailability?: () => Promise<BoltzRouteAvailability>;
   /** Settle-poll cadence (default 5 s). Tests inject 1 ms. */
   pollIntervalMs?: number;
   /** Default settle wait bound (default 15 min); per-call timeoutMs overrides. */
@@ -152,6 +165,7 @@ export interface IntentDeps {
 export interface ConvertIntentOptions {
   estimateStablecoin?: IntentDeps["estimateStablecoin"];
   reverseLimits?: IntentDeps["reverseLimits"];
+  boltzAvailability?: IntentDeps["boltzAvailability"];
   pollIntervalMs?: number;
   settleTimeoutMs?: number;
 }
@@ -187,6 +201,11 @@ export interface RouteQuote {
   feeAsset: AssetKey | null;
   /** true when every leg produced an estimate (the chain is complete). */
   estimateComplete: boolean;
+  /**
+   * false when a leg's provider is not creating swaps right now — convert()
+   * would refuse this route. Compare candidates on this BEFORE the estimates.
+   */
+  available: boolean;
   notes: readonly string[];
 }
 
@@ -475,14 +494,62 @@ async function estimateLeg(leg: RouteLeg, amountIn: bigint, deps: IntentDeps): P
   }
 }
 
-async function quoteRoute(route: Route, intent: ConvertIntent, deps: IntentDeps): Promise<RouteQuote> {
+/**
+ * Which rail a leg is created on, or null when nothing gates it. Recovery of an
+ * EXISTING swap never asks — a backend that stopped creating swaps still claims
+ * and refunds the ones it holds.
+ */
+function boltzRailOf(leg: RouteLeg): keyof Pick<BoltzRouteAvailability, "lightning" | "stablecoin"> | null {
+  if (leg.provider !== "boltz") return null;
+  return leg.method === "toStablecoin" ? "stablecoin" : "lightning";
+}
+
+/** The typed refusal for a leg whose backend is not creating swaps. */
+function routeUnavailableError(leg: RouteLeg): ConversionError {
+  return boltzRailOf(leg) === "stablecoin"
+    ? stablecoinProviderUnavailableError()
+    : noSwapProviderError(`${leg.provider}.${leg.method}`);
+}
+
+/**
+ * Refuse a route whose provider is not creating swaps BEFORE anything moves.
+ * For a multi-hop that is the whole point: discovering it at leg 2 leaves the
+ * value converted into the wrong asset behind a parked plan.
+ */
+async function assertRouteCreatable(route: Route, deps: IntentDeps): Promise<void> {
+  const gated = route.legs.filter((leg) => boltzRailOf(leg) !== null);
+  if (gated.length === 0) return;
+  const availability = await (deps.boltzAvailability ?? boltzRouteAvailability)();
+  for (const leg of gated) {
+    if (!availability[boltzRailOf(leg)!]) throw routeUnavailableError(leg);
+  }
+}
+
+async function quoteRoute(
+  route: Route,
+  intent: ConvertIntent,
+  deps: IntentDeps,
+  availability: BoltzRouteAvailability | null
+): Promise<RouteQuote> {
   const legs: RouteLegQuote[] = [];
   const notes: string[] = [];
   let carry: bigint | null = intent.amount;
+  let available = true;
 
   for (const [index, leg] of route.legs.entries()) {
+    const rail = boltzRailOf(leg);
     let estimate: LegEstimate;
-    if (carry === null) {
+    if (rail !== null && availability !== null && !availability[rail]) {
+      // Estimating a route the backend will refuse would advertise a receipt
+      // nobody can deliver — and the pair matrix answers 200 either way.
+      available = false;
+      estimate = {
+        receivedSats: null,
+        feeSats: null,
+        feeAsset: null,
+        note: routeUnavailableError(leg).message
+      };
+    } else if (carry === null) {
       estimate = {
         receivedSats: null,
         feeSats: null,
@@ -527,6 +594,7 @@ async function quoteRoute(route: Route, intent: ConvertIntent, deps: IntentDeps)
     estimatedFeeTotalSats,
     feeAsset,
     estimateComplete,
+    available,
     notes
   };
 }
@@ -539,9 +607,14 @@ async function quoteRoute(route: Route, intent: ConvertIntent, deps: IntentDeps)
 export async function quoteRoutes(intent: ConvertIntent, deps: IntentDeps): Promise<RouteQuote[]> {
   validateIntent(intent);
   const routes = resolveRoutesOrThrow(intent);
+  // One probe for the whole enumeration; skipped entirely when no candidate
+  // transits a provider that can switch creation off.
+  const availability = routes.some((r) => r.legs.some((l) => boltzRailOf(l) !== null))
+    ? await (deps.boltzAvailability ?? boltzRouteAvailability)()
+    : null;
   const quotes: RouteQuote[] = [];
   for (const route of routes) {
-    quotes.push(await quoteRoute(route, intent, deps));
+    quotes.push(await quoteRoute(route, intent, deps, availability));
   }
   return quotes;
 }
@@ -966,6 +1039,7 @@ export async function executeLeg(
 export async function convertIntent(params: ConvertParams, deps: IntentDeps): Promise<ConvertResult> {
   validateIntent(params);
   const route = resolveSingleRoute(params);
+  await assertRouteCreatable(route, deps);
   const ctx: ExecuteContext = {
     route,
     wait: params.wait ?? true,
@@ -1103,6 +1177,7 @@ export function intentDepsFromNamespace(ns: ConvertNamespace, options: ConvertIn
     getBoltz: () => ns.boltz,
     ...(options.estimateStablecoin ? { estimateStablecoin: options.estimateStablecoin } : {}),
     ...(options.reverseLimits ? { reverseLimits: options.reverseLimits } : {}),
+    ...(options.boltzAvailability ? { boltzAvailability: options.boltzAvailability } : {}),
     ...(options.pollIntervalMs !== undefined ? { pollIntervalMs: options.pollIntervalMs } : {}),
     ...(options.settleTimeoutMs !== undefined ? { settleTimeoutMs: options.settleTimeoutMs } : {})
   };

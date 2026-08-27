@@ -89,5 +89,20 @@ export {
   type StoredSubmarineSwap,
   type StoredReverseSwap
 } from "./store.js";
+export {
+  SWAP_PROVIDERS,
+  STABLECOIN_PROVIDER,
+  boltzRouteAvailability,
+  forceSwapProvider,
+  getProviderById,
+  getSelectedProvider,
+  isStablecoinProviderLive,
+  probeProvider,
+  selectSwapProvider,
+  type BoltzRouteAvailability,
+  type SwapProvider,
+  type SwapProviderId
+} from "./providers.js";
 export { resetBoltzConfigForTests } from "./client.js";
+export { resetSwapProviderSelection } from "./providers.js";
 export { resetBoltzSecpForTests } from "./secp.js";

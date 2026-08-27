@@ -355,9 +355,14 @@ export function mapToolError(err: unknown): ToolError {
     if (hasSdkAuthoredMessage(err)) {
       // An SDK-own SEMANTIC error — the message is canned English written in this
       // codebase. Surface it, with the code and a sanitized details block.
-      const data: Record<string, unknown> = { code: err.code, retryable: false };
+      // `retryable` and `nextStep` are hoisted out of the details because that is
+      // where a host looks to decide whether to try again and what to do (G3);
+      // both are SDK-authored, never upstream text.
+      const data: Record<string, unknown> = { code: err.code, retryable: err.details?.retryable === true };
       const details = sanitizeDetails(err.details);
       if (details) data.details = details;
+      const nextStep = truncate(err.details?.nextStep);
+      if (nextStep !== undefined) data.next_step = nextStep;
       // wallet_convert refuses to choose among several candidate routes (the
       // locked no-policy rule). The tool is STATELESS, so the candidates must
       // ride in the error itself: surface them (allowlist-shaped) plus an

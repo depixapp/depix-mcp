@@ -289,6 +289,30 @@ export async function assertStablecoinProviderLive(options: SelectProviderOption
   if (!(await isStablecoinProviderLive(options))) throw stablecoinProviderUnavailableError();
 }
 
+// ─── what the route table may honestly offer right now ────────────────────────
+
+/** Which provider-backed rails can be CREATED right now. Recovery is unaffected. */
+export interface BoltzRouteAvailability {
+  /** Lightning send + receive — follows the provider list. */
+  lightning: boolean;
+  /** L-BTC → USDC/USDT — pinned to Boltz, so it can be down while Lightning is up. */
+  stablecoin: boolean;
+  /** Who would serve a Lightning swap, when one is answering. */
+  lightningProvider: SwapProvider | null;
+}
+
+/**
+ * Probe both rails so route discovery can flag a route the backend will refuse.
+ * Never throws — an unavailable rail is an answer, not an error.
+ */
+export async function boltzRouteAvailability(
+  options: SelectProviderOptions = {}
+): Promise<BoltzRouteAvailability> {
+  const lightningProvider = await selectSwapProvider(options).catch(() => null);
+  const stablecoin = await isStablecoinProviderLive(options).catch(() => false);
+  return { lightning: lightningProvider !== null, stablecoin, lightningProvider };
+}
+
 // ─── per-call provider routing over a process-wide SDK config ─────────────────
 
 /**

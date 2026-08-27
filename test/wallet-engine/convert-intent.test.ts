@@ -1087,3 +1087,98 @@ describe("makeConvertFacade — sub-namespace getters are non-enumerable", () =>
     expect((facade.sideswap as unknown as { tag: string }).tag).toBe("sideswap");
   });
 });
+
+// A route the backend will refuse is worse than no route: the agent picks it,
+// and a multi-hop can strand value mid-plan. Discovery signals it; execution
+// refuses with a typed, retryable error.
+describe("a dead provider is signalled, not advertised", () => {
+  const ALL_DOWN = { lightning: false, stablecoin: false, lightningProvider: null };
+  const ALL_UP = { lightning: true, stablecoin: true, lightningProvider: null };
+
+  it("marks the boltz route unavailable and never asks its estimator", async () => {
+    const estimateStablecoin = vi.fn();
+    const { deps } = makeDeps({
+      estimateStablecoin: estimateStablecoin as never,
+      boltzAvailability: async () => ALL_DOWN
+    });
+
+    const routes = await quoteRoutes(
+      { from: "DEPIX", to: "USDT", network: "ethereum", amount: 100_000_000n },
+      deps
+    );
+    const viaBoltz = routes.find((r) => r.id === ROUTE_DEPIX_BOLTZ)!;
+    const viaSideshift = routes.find((r) => r.id === ROUTE_DEPIX_SIDESHIFT)!;
+
+    expect(viaBoltz.available).toBe(false);
+    expect(viaBoltz.estimateComplete).toBe(false);
+    expect(viaBoltz.estimatedReceivedSats).toBe(null);
+    expect(viaBoltz.notes.join(" ")).toMatch(/not creating swaps/i);
+    expect(estimateStablecoin).not.toHaveBeenCalled();
+    // The route that does not transit the dead backend is untouched.
+    expect(viaSideshift.available).toBe(true);
+    expect(viaSideshift.estimateComplete).toBe(true);
+  });
+
+  it("marks the Lightning entry unavailable without quoting a minimum nobody will honour", async () => {
+    const reverseLimits = vi.fn(async () => ({ fees: {} }));
+    const { deps } = makeDeps({ reverseLimits, boltzAvailability: async () => ALL_DOWN });
+
+    const [route] = await quoteRoutes(
+      { from: "BTC", to: "LBTC", network: "liquid", fromNetwork: "lightning", amount: 100_000n },
+      deps
+    );
+
+    expect(route!.available).toBe(false);
+    expect(route!.legs[0]!.note).toMatch(/no swap provider/i);
+    expect(reverseLimits).not.toHaveBeenCalled();
+  });
+
+  it("still advertises every route when the backends are answering", async () => {
+    const { deps } = makeDeps({ boltzAvailability: async () => ALL_UP });
+    const routes = await quoteRoutes({ from: "DEPIX", to: "LBTC", amount: 1_000n }, deps);
+    expect(routes.every((r) => r.available)).toBe(true);
+  });
+
+  it("refuses to execute a boltz leg whose rail is down, before the provider is called", async () => {
+    const { deps, boltz } = makeDeps({ boltzAvailability: async () => ALL_DOWN });
+    let caught: unknown;
+    try {
+      await convertIntent(
+        { from: "LBTC", to: "BTC", network: "lightning", amount: 10_000n, invoice: "lnbc1test" },
+        deps
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(isDepixSdkError(caught, "SWAP_PROVIDER_UNAVAILABLE")).toBe(true);
+    expect((caught as { details?: Record<string, unknown> }).details).toMatchObject({ retryable: true });
+    expect((caught as { details?: Record<string, unknown> }).details?.nextStep).toEqual(expect.any(String));
+    expect(boltz.payLightningInvoice).not.toHaveBeenCalled();
+  });
+
+  it("refuses the pinned stablecoin route with its own guidance (no fallback operator exists)", async () => {
+    const { deps, boltz } = makeDeps({
+      boltzAvailability: async () => ({ lightning: true, stablecoin: false, lightningProvider: null })
+    });
+    await expect(
+      convertIntent(
+        {
+          from: "LBTC",
+          to: "USDT",
+          network: "ethereum",
+          amount: 10_000n,
+          address: "0x" + "a".repeat(40)
+        },
+        deps
+      )
+    ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "SWAP_PROVIDER_UNAVAILABLE"));
+    expect(boltz.toStablecoin).not.toHaveBeenCalled();
+  });
+
+  it("leaves non-boltz routes alone — a dead swap backend never blocks a market swap", async () => {
+    const { deps, ss } = makeDeps({ boltzAvailability: async () => ALL_DOWN });
+    const res = await convertIntent({ from: "DEPIX", to: "LBTC", amount: 1_000n }, deps);
+    expect(res.status).toBe("settled");
+    expect(ss.executed).toHaveLength(1);
+  });
+});

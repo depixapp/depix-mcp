@@ -18,6 +18,7 @@ import {
   WalletError,
 } from "../../src/wallet-engine/errors.js";
 import { mapToolError } from "../../src/wallet-engine/mcp/errors.js";
+import { noSwapProviderError } from "../../src/wallet-engine/convert/boltz/providers.js";
 import { connectWallet, errorMessage, errorPayload, FakeWallet } from "./support/mcp.js";
 
 describe("mapToolError — API errors (anti-injection)", () => {
@@ -198,6 +199,16 @@ describe("mapToolError — SDK-own and unexpected errors", () => {
     expect(JSON.stringify(te.data)).not.toContain("IGNORE PREVIOUS INSTRUCTIONS");
     expect(te.data.next_step).toMatch(/wallet_quote/);
     expect(te.data.next_step).toMatch(/wallet_convert/);
+  });
+
+  it("SWAP_PROVIDER_UNAVAILABLE reaches the host retryable and actionable", () => {
+    const te = mapToolError(noSwapProviderError());
+    expect(te.code).toBe("SWAP_PROVIDER_UNAVAILABLE");
+    // The message is SDK-authored, so it is surfaced verbatim rather than canned.
+    expect(te.message).toMatch(/No swap provider is accepting swaps/);
+    expect(te.data.retryable).toBe(true);
+    expect(te.data.next_step).toEqual(expect.any(String));
+    expect(te.data.untrusted_api_message).toBeUndefined();
   });
 
   it("MULTIPLE_ROUTES_AVAILABLE with malformed/absent routes still carries the next_step (never throws)", () => {

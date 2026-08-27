@@ -305,6 +305,33 @@ describe("multi-hop execution — legs run in sequence on REAL settled amounts",
     expect(await store.count()).toBe(0);
   });
 
+  it("REFUSES to start a plan whose boltz leg is dead — nothing moves, nothing is persisted", async () => {
+    // The stranding case: leg 1 swaps DePix into L-BTC, then leg 2 discovers the
+    // backend is not creating swaps and the value sits in the wrong asset behind
+    // a parked plan. Check before the first leg, not between them.
+    const { deps, ss, bz } = makeDeps({
+      boltzAvailability: async () => ({ lightning: true, stablecoin: false, lightningProvider: null })
+    });
+
+    await expect(
+      convertIntent(
+        {
+          from: "DEPIX",
+          to: "USDT",
+          network: "ethereum",
+          amount: 100_000_000n,
+          route: ROUTE_DEPIX_BOLTZ,
+          address: EVM_DEST
+        },
+        deps
+      )
+    ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "SWAP_PROVIDER_UNAVAILABLE"));
+
+    expect(ss.executed).toHaveLength(0);
+    expect(bz.stablecoinCalls).toHaveLength(0);
+    expect(await store.count()).toBe(0);
+  });
+
   it("DEPIX → USDT@ethereum (sideshift route): swap then send; the final receipt comes from the SETTLED shift", async () => {
     const { deps, shift } = makeDeps();
     shift.setStatusQueue([{ status: "settled", settleAmount: "19.9" }]);

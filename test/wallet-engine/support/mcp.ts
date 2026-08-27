@@ -327,6 +327,7 @@ export class FakeWallet implements McpWalletFacade {
       estimatedFeeTotalSats: 31n,
       feeAsset: "LBTC",
       estimateComplete: true,
+      available: true,
       notes: [],
       legs: [
         {
