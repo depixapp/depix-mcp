@@ -50,8 +50,8 @@ jobs:
         run: npm run build
 
       # The hosted (mcp.depixapp.com) function must have ZERO import path to the
-      # vendored wallet engine. This is the guarantee that keeps the hosted
-      # deployment structurally non-custodial (spec §2.1) — not a promise, a graph.
+      # wallet engine. This is the guarantee that keeps the hosted deployment
+      # structurally non-custodial (spec §2.1) — not a promise, a graph.
       - name: Guard — hosted deployment is structurally keyless
         run: npm run guard:hosted
 
@@ -60,40 +60,3 @@ jobs:
       # never silently drop a required attribution notice.
       - name: Guard — THIRD_PARTY_LICENSES is current
         run: npm run licenses:check
-
-  vendor:
-    name: vendored engine matches the pinned commit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Read the engine pin
-        id: pin
-        run: |
-          echo "ref=$(node -p "require('./vendor/engine.pin.json').ref")" >> "$GITHUB_OUTPUT"
-          echo "repo=$(node -p "new URL(require('./vendor/engine.pin.json').repository).pathname.slice(1)")" >> "$GITHUB_OUTPUT"
-
-      # depix-sdk is PRIVATE: authenticate over SSH with a read-only deploy key
-      # (secret DEPIX_SDK_DEPLOY_KEY, installed on depixapp/depix-sdk). Note this
-      # job cannot run from a fork PR — forks get no secrets — which is fine: the
-      # engine is first-party and the repo takes no external contributions today.
-      - name: Checkout the engine at the pinned commit
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ steps.pin.outputs.repo }}
-          ref: ${{ steps.pin.outputs.ref }}
-          ssh-key: ${{ secrets.DEPIX_SDK_DEPLOY_KEY }}
-          path: .vendor-src
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-
-      # No npm install needed: the vendoring script is plain Node + git. It
-      # regenerates the tree from the pinned commit and fails on ANY byte of drift,
-      # which is what makes the COMMITTED src/vendor/** provably reproducible.
-      - name: Verify src/vendor matches the pin
-        run: node scripts/vendor-engine.mjs --from .vendor-src --check

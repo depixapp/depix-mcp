@@ -45,8 +45,6 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "vendor:engine": "node scripts/vendor-engine.mjs",
-    "vendor:check": "node scripts/vendor-engine.mjs --check",
     "guard:hosted": "node scripts/check-hosted-isolation.mjs",
     "licenses": "node scripts/gen-third-party-licenses.mjs",
     "licenses:check": "node scripts/gen-third-party-licenses.mjs --check",

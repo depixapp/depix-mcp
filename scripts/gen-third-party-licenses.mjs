@@ -171,10 +171,10 @@ for (const { name, version, path: nodePath } of deps) {
 const header = `THIRD-PARTY SOFTWARE NOTICES AND LICENSES
 ${pkg.name}
 
-${pkg.name} is licensed under Apache-2.0 (see LICENSE / NOTICE). It EMBEDS the DePix
-App wallet engine (relicensed Apache-2.0 by its owner; see src/vendor/) and INSTALLS
-the third-party packages inventoried below. Their licenses require that their
-copyright and permission notices travel with every copy — this file is that notice.
+${pkg.name} is licensed under Apache-2.0 (see LICENSE / NOTICE). It CONTAINS the DePix
+App wallet engine (src/wallet-engine/, Apache-2.0 by its owner) and INSTALLS the
+third-party packages inventoried below. Their licenses require that their copyright
+and permission notices travel with every copy — this file is that notice.
 
 This inventory is VERSION-AGNOSTIC by design: it tracks the dependency tree, not
 releases of ${pkg.name}, so it changes only when a dependency does.
