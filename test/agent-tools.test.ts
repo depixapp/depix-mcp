@@ -164,6 +164,34 @@ describe("register_account (§3.1)", () => {
     expect(result.isError).toBe(true);
     expect(payloadText(result)).toContain("wallet_not_configured");
   });
+
+  it("falls back to DEPIX_OPERATOR_TOKEN when the tool arg is omitted (§3.7 #7)", async () => {
+    const agent = new FakeAgent();
+    process.env.DEPIX_OPERATOR_TOKEN = "op_from_env";
+    try {
+      const client = await connect(baseDeps({ openAgent: async () => agent }));
+      // No operator_token arg — init's "connect now" wrote it to the config env.
+      const result = await client.callTool({
+        name: "register_account",
+        arguments: { name: "Acme", operator_email: "op@acme.com" },
+      });
+      expect(result.isError).toBeFalsy();
+      expect((agent.registered as { operatorToken: string }).operatorToken).toBe("op_from_env");
+    } finally {
+      delete process.env.DEPIX_OPERATOR_TOKEN;
+    }
+  });
+
+  it("returns a typed operator_token_required step when neither the arg nor the env is set", async () => {
+    delete process.env.DEPIX_OPERATOR_TOKEN;
+    const client = await connect(baseDeps());
+    const result = await client.callTool({
+      name: "register_account",
+      arguments: { name: "Acme", operator_email: "op@acme.com" },
+    });
+    expect(result.isError).toBe(true);
+    expect(payloadText(result)).toContain("operator_token_required");
+  });
 });
 
 describe("agent_status / verify_domain (§3.2/§3.3)", () => {

@@ -121,7 +121,7 @@ async function registerAccount(
   deps: AgentToolDeps,
   args: {
     name: string;
-    operator_token: string;
+    operator_token?: string;
     operator_email: string;
     username?: string;
     default_callback_url?: string;
@@ -131,13 +131,28 @@ async function registerAccount(
 ) {
   const wallet = await deps.getWallet();
   if (!wallet) throw walletNotConfiguredError();
+
+  // The op_ code can come from the tool arg (pasted in chat) or from
+  // DEPIX_OPERATOR_TOKEN in the host config — what `init`'s "connect now" writes
+  // (§3.7 #7). A missing token is a typed step, not a crash, and it is resolved
+  // BEFORE deriving the payout address so a fresh receive index is not burned on
+  // a call that cannot proceed.
+  const operatorToken = args.operator_token ?? process.env.DEPIX_OPERATOR_TOKEN;
+  if (operatorToken === undefined || operatorToken === "") {
+    throw new ToolError(
+      "This account needs the operator's op_ code. Paste it here, or set DEPIX_OPERATOR_TOKEN in the host config.",
+      "operator_token_required",
+      { data: withNextAction({}, "operator_token_required") },
+    );
+  }
+
   // Payout is the wallet's OWN address; the server fixes it at registration.
   const liquidAddress = await wallet.getReceiveAddress();
 
   const agent = (await deps.openAgent()) ?? (await deps.createAgent());
   const result = await agent.register({
     name: args.name,
-    operatorToken: args.operator_token,
+    operatorToken,
     operatorEmail: args.operator_email,
     liquidAddress,
     ...(args.username !== undefined ? { username: args.username } : {}),
@@ -298,7 +313,11 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
         operator_token: z
           .string()
           .min(1)
-          .describe("The op_ operator code the human gets at https://api.depixapp.com/api/agents/oauth/start."),
+          .optional()
+          .describe(
+            "The op_ operator code the human gets at https://api.depixapp.com/api/agents/oauth/start. " +
+              "Optional when DEPIX_OPERATOR_TOKEN is set in the host config (init's \"connect now\" writes it there).",
+          ),
         operator_email: z.string().min(1).describe("Operator notification email (never becomes the account login)."),
         username: z.string().min(1).optional().describe("Optional username (defaults server-side to agent_<pubkey-prefix>)."),
         default_callback_url: z.string().min(1).optional().describe("Optional default webhook callback URL."),
@@ -330,7 +349,7 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       run(() =>
         registerAccount(deps, args as {
           name: string;
-          operator_token: string;
+          operator_token?: string;
           operator_email: string;
           username?: string;
           default_callback_url?: string;

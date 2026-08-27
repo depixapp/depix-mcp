@@ -1,17 +1,28 @@
-// Interactive backup ritual (spec §2.9 — TTY mode of create()).
+// Interactive backup ritual (spec §2.9 / §3.7 #2 — TTY mode of create()).
 //
-// Parity with the app's onboarding: print the 12 words, require re-typing 2-3
-// of them at random positions (proof of possession), then an explicit "saved"
-// declaration (the app's checkbox equivalent). Only a fully passed ritual
-// confirms the backup; any failure leaves the gate closed.
+// Print the 12 words, let the operator write them down, then CLEAR the screen
+// (and scrollback) and challenge 2-3 of them at random positions. Clearing
+// first is the whole point (§3.7 #2): re-typing words that are still on screen
+// proves nothing — only an operator who actually copied them onto paper can
+// answer once they are hidden. Only a fully passed challenge confirms the
+// backup; any failure leaves the receive gate closed.
 //
-// I/O is injected so the ritual is unit-testable; create() wires it to
-// readline on a real TTY. The words go to the interactive terminal — never
-// through the logger (which would try to redact them anyway).
+// I/O is injected so the ritual is unit-testable; create() wires it to readline
+// on a real TTY. The words go to the interactive terminal — never through the
+// logger (which would try to redact them anyway).
+
+/** Clears the visible screen AND the scrollback, then homes the cursor. */
+export const CLEAR_SCREEN_AND_SCROLLBACK = "\u001b[2J\u001b[3J\u001b[H";
 
 export interface RitualIo {
   write(text: string): void;
   question(prompt: string): Promise<string>;
+  /**
+   * Wipe the screen and scrollback (the §3.7 #2 cleanup). A real TTY emits
+   * CLEAR_SCREEN_AND_SCROLLBACK; some terminals ignore the 3J (scrollback) half,
+   * so callers still print a residual-scrollback warning.
+   */
+  clear(): void;
 }
 
 export interface RitualOptions {
@@ -38,8 +49,9 @@ function pickPositions(total: number, count: number, random: () => number): numb
 }
 
 /**
- * Run the full ritual. Returns true only when the user re-typed the
- * challenged words and typed the "saved" declaration.
+ * Run the full ritual. Returns true only when, AFTER the words are cleared from
+ * the screen, the operator answers the challenged positions from their paper
+ * backup. The screen-clear is what makes the challenge meaningful (§3.7 #2).
  */
 export async function runBackupRitual(
   mnemonic: string,
@@ -60,29 +72,27 @@ export async function runBackupRitual(
   }
   io.write("");
 
+  // The pacing gate: nothing is challenged while the words are still readable.
+  // The prompt accepts any input — its only job is to wait for the operator to
+  // finish copying before the screen is wiped.
+  await io.question("Written them all down? Press Enter to HIDE them and prove it: ");
+  io.clear();
+  io.write("The 12 words are hidden now — answer from your paper backup, not the screen.");
+
   let challengePassed = false;
   for (let attempt = 0; attempt < maxAttempts && !challengePassed; attempt++) {
     const positions = pickPositions(words.length, challengeCount, random);
-    io.write("Prove you saved them — type the requested words.");
     challengePassed = true;
     for (const pos of positions) {
       const answer = await io.question(`Word #${pos + 1}: `);
       if (normalizeAnswer(answer) !== words[pos]) {
-        io.write("That word does not match. Check your backup and try again.");
+        io.write("That word does not match your backup. Check the paper and try again.");
         challengePassed = false;
         break;
       }
     }
   }
   if (!challengePassed) {
-    io.write("Backup NOT confirmed. Receive addresses stay blocked until you run confirmBackup().");
-    return false;
-  }
-
-  const declaration = await io.question(
-    'Type "saved" to declare you stored the words safely: '
-  );
-  if (normalizeAnswer(declaration) !== "saved") {
     io.write("Backup NOT confirmed. Receive addresses stay blocked until you run confirmBackup().");
     return false;
   }

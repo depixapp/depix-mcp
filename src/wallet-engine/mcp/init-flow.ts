@@ -1,6 +1,13 @@
 // First-run ceremony for the local wallet — the engine half of `init`
-// (unified-MCP spec §1.5). The unified bin (`npx -y @depixapp/mcp init`) parses
-// argv and calls runWalletInit(); this module owns everything human.
+// (unified-MCP spec §1.5 / §3.7). The unified bin (`npx -y @depixapp/mcp init`)
+// parses argv and calls runWalletInit(); this module owns everything human.
+//
+// The v2 rite (§3.7): the passphrase never lands in a host config (an OS-keychain
+// unlock key does, §3.7 #8); the backup challenge runs AFTER the screen is
+// cleared, so re-typing proves paper (§3.7 #2); spending limits + an allowlist
+// are a step, not a surprise-at-first-failure (§3.7 #1); the host is registered
+// for the operator, no JSON pasted by hand (§3.7 #6); and there is NO API key in
+// the rite — the agent opens its own account with register_account (§3.7 #3).
 //
 // INVARIANTS (each one is a rule, not a preference):
 //   1. NEVER an MCP tool. Seed creation is a human act at a terminal: as a tool
@@ -13,10 +20,11 @@
 //      must type `continue`; detected multiplexer/agent env markers are named in
 //      that warning.
 //   3. The passphrase is never echoed: prompts read with terminal echo
-//      suppressed (raw-mode stdin, no dependency), and the printed `mcpServers`
-//      block carries a PLACEHOLDER, never the real value. A generated
-//      passphrase is displayed exactly once, in the same TTY, because the
-//      operator cannot use a passphrase they were never shown.
+//      suppressed (raw-mode stdin, no dependency). It is NEVER written into a
+//      config file or the printed block — the OS keychain holds the unlock key,
+//      and the printed block carries only non-secret env. A generated passphrase
+//      is displayed exactly once, in the same TTY, because the operator cannot
+//      use a passphrase they were never shown.
 //   4. The mnemonic goes to the ritual's own output path and nowhere else: not
 //      logged, not returned, not written to disk by this module.
 //   5. The wallet is CLOSED before returning — the dataDir lock is released, so
@@ -25,19 +33,44 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { runBackupRitual, type RitualIo, type RitualOptions } from "../backup-ritual.js";
+import { CLEAR_SCREEN_AND_SCROLLBACK, runBackupRitual, type RitualIo, type RitualOptions } from "../backup-ritual.js";
 import { WalletError } from "../errors.js";
+import {
+  DEFAULT_DAILY_LIMIT_BRL_CENTS,
+  DEFAULT_PER_TX_LIMIT_BRL_CENTS,
+  ENV_ALLOWLIST,
+  ENV_DAILY,
+  ENV_PER_TX,
+} from "../guardrails/config.js";
 import { registerSecret } from "../logger.js";
 import { MIN_PASSPHRASE_LENGTH } from "../store/crypto.js";
 import { SeedStore } from "../store/seed-store.js";
+import {
+  storeUnlockKey,
+  type StoreUnlockResult,
+  type UnlockBackend,
+  type UnlockStoreDeps,
+} from "../store/unlock-store.js";
 import { DepixWallet, type CreateOptions, type OpenOptions, type RestoreOptions } from "../wallet.js";
 import { DEFAULT_WALLET_INIT_COMMAND } from "./errors.js";
+import {
+  defaultHostDetectDeps,
+  defaultHostRegisterEffects,
+  detectHosts,
+  registerWithHost,
+  type HostDetectDeps,
+  type HostRegisterEffects,
+  type HostTarget,
+  type McpServerSpec,
+} from "./host-register.js";
 
 /** Default npm package of the unified MCP — what the printed block runs. */
 export const DEFAULT_MCP_PACKAGE = "@depixapp/mcp";
 /** Default key of the printed `mcpServers` entry. */
 export const DEFAULT_MCP_SERVER_KEY = "depix";
-/** Attempts allowed on the passphrase / mnemonic prompts before giving up. */
+/** Where the human proves their identity to authorize the agent's account (§3.7 #4/#7). */
+export const OPERATOR_OAUTH_START_URL = "https://api.depixapp.com/api/agents/oauth/start";
+/** Attempts allowed on the passphrase / mnemonic / amount prompts before giving up. */
 const MAX_PROMPT_ATTEMPTS = 3;
 
 /**
@@ -58,7 +91,7 @@ const SHARED_TERMINAL_ENV_MARKERS = [
   "VSCODE_INJECTION",
 ] as const;
 
-/** Terminal I/O for the ceremony: the ritual's pair plus an echo-free read. */
+/** Terminal I/O for the ceremony: the ritual's trio plus an echo-free read. */
 export interface WalletInitIo extends RitualIo {
   /** Read one line with terminal echo suppressed (passphrase, mnemonic). */
   secret(prompt: string): Promise<string>;
@@ -85,6 +118,14 @@ export interface InitWalletBackend {
   restore(options: RestoreOptions): Promise<InitWallet>;
 }
 
+/** The owner-set spending limits + allowlist gathered in the limits step (§3.7 #1). */
+export interface WalletLimits {
+  perTxBrlCents: number;
+  dailyBrlCents: number;
+  /** Liquid addresses the agent may send to. Empty = any address (the caps still apply). */
+  allowlistLiquidAddresses: string[];
+}
+
 /** What the ceremony did. */
 export type WalletInitAction =
   /** A new wallet was created (backupConfirmed says whether the ritual passed). */
@@ -101,10 +142,21 @@ export interface WalletInitResult {
   dataDir: string;
   backupConfirmed: boolean;
   /**
-   * The `mcpServers` block that was printed. Safe to log/return: the passphrase
-   * is a placeholder and no seed material is in it.
+   * The `mcpServers` block that was printed / registered. Safe to log/return: it
+   * carries NO passphrase and NO API key — only the wallet dir, guardrail limits
+   * and (if connected) the op_ operator token.
    */
   configBlock: string;
+  /** The non-secret env the block/registration carries. */
+  env: Record<string, string>;
+  /** The limits the operator chose (null on a pure reprint). */
+  limits: WalletLimits | null;
+  /** Where the unlock key ended up (null on a pure reprint — nothing was stored). */
+  unlock: StoreUnlockResult | null;
+  /** Host ids the server was registered with (empty when it printed the block instead). */
+  registeredHosts: string[];
+  /** true when the operator pasted an op_ token during init. */
+  operatorConnected: boolean;
 }
 
 export interface RunWalletInitOptions {
@@ -128,12 +180,20 @@ export interface RunWalletInitOptions {
   backend?: InitWalletBackend;
   /** Passphrase generator (tests). Default: 24 CSPRNG chars in 4 groups. */
   generatePassphrase?: () => string;
+  /** Default limits offered at the limits step (tests). Default: R$100/tx + R$500/day. */
+  limitsDefaults?: { perTxBrlCents: number; dailyBrlCents: number };
+  /** OS-keychain backends for storing the unlock key (tests). Default: real store. */
+  unlock?: Partial<UnlockStoreDeps>;
+  /** MCP-host detection (tests). Default: real PATH/fs detection. */
+  hostDetect?: HostDetectDeps;
+  /** MCP-host registration effects (tests). Default: real spawn/fs. */
+  hostEffects?: HostRegisterEffects;
 }
 
 // ── passphrase generation ────────────────────────────────────────────────────
 
-// Look-alike-free alphabet (no 0/O/1/l/I): the operator retypes this into a
-// config file. 56 symbols ≈ 5.8 bits/char → 24 chars ≈ 139 bits.
+// Look-alike-free alphabet (no 0/O/1/l/I): the operator transcribes this into a
+// password manager. 56 symbols ≈ 5.8 bits/char → 24 chars ≈ 139 bits.
 const PASSPHRASE_ALPHABET = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const GENERATED_PASSPHRASE_CHARS = 24;
 const GENERATED_PASSPHRASE_GROUP = 6;
@@ -161,31 +221,50 @@ export function generateStrongPassphrase(length = GENERATED_PASSPHRASE_CHARS): s
   return groups.join("-");
 }
 
-// ── the paste-ready config block ─────────────────────────────────────────────
-
-/** Placeholder that stands in for the real passphrase in the printed block. */
-export const PASSPHRASE_PLACEHOLDER = "<the passphrase you typed>";
-const API_KEY_PLACEHOLDER = "<your DePix API key: sk_test_… or sk_live_…>";
+// ── the non-secret config block ──────────────────────────────────────────────
 
 /**
- * The `mcpServers` JSON the operator pastes into Claude/Cursor. Secrets are
- * PLACEHOLDERS by construction — this function has no access to the real ones.
+ * Compose the non-secret env the block/registration installs (§3.7 #3/#8): the
+ * wallet dir, the guardrail limits, an allowlist when the operator set one, and
+ * the op_ operator token when they connected. NEVER the passphrase or an API key.
+ */
+export function buildServerEnv(opts: {
+  dataDir: string;
+  limits: WalletLimits;
+  operatorToken?: string;
+}): Record<string, string> {
+  const env: Record<string, string> = {
+    DEPIX_WALLET_DIR: opts.dataDir,
+    [ENV_PER_TX]: String(opts.limits.perTxBrlCents),
+    [ENV_DAILY]: String(opts.limits.dailyBrlCents),
+  };
+  if (opts.limits.allowlistLiquidAddresses.length > 0) {
+    env[ENV_ALLOWLIST] = JSON.stringify({
+      enabled: true,
+      liquidAddresses: opts.limits.allowlistLiquidAddresses,
+    });
+  }
+  if (opts.operatorToken !== undefined && opts.operatorToken !== "") {
+    env.DEPIX_OPERATOR_TOKEN = opts.operatorToken;
+  }
+  return env;
+}
+
+/**
+ * The `mcpServers` JSON the operator's host runs. Secrets are absent BY
+ * CONSTRUCTION — this function only ever receives the non-secret env map.
  */
 export function renderWalletMcpConfigBlock(opts: {
-  dataDir: string;
   packageName?: string;
   serverKey?: string;
+  env: Record<string, string>;
 }): string {
   const block = {
     mcpServers: {
       [opts.serverKey ?? DEFAULT_MCP_SERVER_KEY]: {
         command: "npx",
         args: ["-y", opts.packageName ?? DEFAULT_MCP_PACKAGE],
-        env: {
-          DEPIX_API_KEY: API_KEY_PLACEHOLDER,
-          DEPIX_WALLET_PASSPHRASE: PASSPHRASE_PLACEHOLDER,
-          DEPIX_WALLET_DIR: opts.dataDir,
-        },
+        env: opts.env,
       },
     },
   };
@@ -207,7 +286,7 @@ export const defaultInitWalletBackend: InitWalletBackend = {
   restore: (options) => DepixWallet.restore(options),
 };
 
-/** Real-terminal I/O: readline for prompts, raw-mode stdin for secrets. */
+/** Real-terminal I/O: readline for prompts, raw-mode stdin for secrets, ANSI clear. */
 export function createTtyInitIo(): WalletInitIo {
   return {
     write: (text: string) => {
@@ -225,6 +304,9 @@ export function createTtyInitIo(): WalletInitIo {
       }
     },
     secret: (prompt: string) => readHiddenLine(prompt),
+    clear: () => {
+      process.stdout.write(CLEAR_SCREEN_AND_SCROLLBACK);
+    },
   };
 }
 
@@ -334,7 +416,7 @@ export function detectSharedTerminalMarkers(env: Record<string, string | undefin
 }
 
 /**
- * Run the first-run ceremony (spec §1.5). Creates, restores, resumes an
+ * Run the first-run ceremony (spec §1.5/§3.7). Creates, restores, resumes an
  * unfinished ritual, or just reprints the config — decided by what is already in
  * the dataDir. Returns WITHOUT the mnemonic or the passphrase, ever.
  */
@@ -370,21 +452,19 @@ export async function runWalletInit(options: RunWalletInitOptions = {}): Promise
   io.write(`Wallet dir: ${dataDir}`);
   io.write("Everything below happens on THIS machine. The seed is generated here, encrypted here, and never sent anywhere.");
 
+  const common: FlowArgs = { io, backend, dataDir, packageName, options, initCommand };
   if (options.restore === true) {
-    return restoreFlow({ io, backend, dataDir, packageName, options, existing: existing !== null });
+    return restoreFlow({ ...common, env, existing: existing !== null });
   }
   if (existing === null) {
-    return createFlow({ io, backend, dataDir, packageName, options, env, initCommand });
+    return createFlow({ ...common, env });
   }
   if (existing.backupConfirmed) {
-    // Second run, nothing to do (§1.5 fix #11): create() would throw
-    // WALLET_ALREADY_EXISTS, which is not an error the operator caused. Reprint.
-    io.write("");
-    io.write("A wallet is already set up here and its backup is confirmed — nothing to create.");
-    const configBlock = finish({ io, dataDir, packageName, options, secretShown: false });
-    return { action: "already_configured", dataDir, backupConfirmed: true, configBlock };
+    // Second run, nothing to create (§1.5 fix #11): reprint, ZERO prompts. The
+    // unlock key and limits were stored on the first run.
+    return alreadyConfiguredFlow(common);
   }
-  return resumeRitualFlow({ io, backend, dataDir, packageName, options, env, initCommand });
+  return resumeRitualFlow({ ...common, env });
 }
 
 interface FlowArgs {
@@ -393,12 +473,11 @@ interface FlowArgs {
   dataDir: string;
   packageName: string;
   options: RunWalletInitOptions;
+  initCommand: string;
 }
 
-async function createFlow(
-  args: FlowArgs & { env: Record<string, string | undefined>; initCommand: string },
-): Promise<WalletInitResult> {
-  const { io, backend, dataDir, packageName, options, env, initCommand } = args;
+async function createFlow(args: FlowArgs & { env: Record<string, string | undefined> }): Promise<WalletInitResult> {
+  const { io, backend, dataDir, options, env } = args;
   const { passphrase } = await promptNewPassphrase(io, options);
 
   // Warn + require an explicit "continue" BEFORE any seed is generated: an abort
@@ -422,15 +501,14 @@ async function createFlow(
     await wallet.close();
   }
 
-  if (!backupConfirmed) {
-    warnBackupUnconfirmed(io, initCommand);
-  }
-  const configBlock = finish({ io, dataDir, packageName, options, secretShown: true });
-  return { action: "created", dataDir, backupConfirmed, configBlock };
+  // The 12 words were on screen: the end-of-flow cleanup will wipe them.
+  return completeSetup({ ...args, passphrase, secretShown: true, backupConfirmed, action: "created" });
 }
 
-async function restoreFlow(args: FlowArgs & { existing: boolean }): Promise<WalletInitResult> {
-  const { io, backend, dataDir, packageName, options, existing } = args;
+async function restoreFlow(
+  args: FlowArgs & { env: Record<string, string | undefined>; existing: boolean },
+): Promise<WalletInitResult> {
+  const { io, backend, dataDir, options, existing } = args;
   io.write("");
   io.write("Restoring from an existing 12-word mnemonic. A restored wallet is born backup-confirmed —");
   io.write("typing the words IS the proof you have them.");
@@ -444,20 +522,20 @@ async function restoreFlow(args: FlowArgs & { existing: boolean }): Promise<Wall
   const mnemonic = await promptMnemonic(io);
   const wallet = await backend.restore({ dataDir, passphrase, mnemonic });
   await wallet.close();
-  const configBlock = finish({ io, dataDir, packageName, options, secretShown: passphraseShown });
-  return { action: "restored", dataDir, backupConfirmed: true, configBlock };
+  // A restore never DISPLAYS the words (they are typed); only a GENERATED
+  // passphrase would have been on screen.
+  return completeSetup({ ...args, passphrase, secretShown: passphraseShown, backupConfirmed: true, action: "restored" });
 }
 
-async function resumeRitualFlow(
-  args: FlowArgs & { env: Record<string, string | undefined>; initCommand: string },
-): Promise<WalletInitResult> {
-  const { io, backend, dataDir, packageName, options, env, initCommand } = args;
+async function resumeRitualFlow(args: FlowArgs & { env: Record<string, string | undefined> }): Promise<WalletInitResult> {
+  const { io, backend, dataDir, options, env } = args;
   io.write("");
   io.write("A wallet already exists here, but its backup was never confirmed — the words were shown and the");
   io.write("challenge was not completed. Receive addresses stay blocked until it is. Let's finish it now.");
 
-  const wallet = await openWithPassphrase(io, backend, dataDir);
-  let backupConfirmed = wallet.isBackupConfirmed();
+  const { wallet, passphrase } = await openWithPassphrase(io, backend, dataDir);
+  const initiallyConfirmed = wallet.isBackupConfirmed();
+  let backupConfirmed = initiallyConfirmed;
   try {
     if (!backupConfirmed) {
       await confirmSeedDisplay(io, env);
@@ -471,19 +549,99 @@ async function resumeRitualFlow(
     await wallet.close();
   }
 
-  if (!backupConfirmed) {
-    warnBackupUnconfirmed(io, initCommand);
-  }
-  const configBlock = finish({ io, dataDir, packageName, options, secretShown: true });
-  return { action: "backup_ritual_rerun", dataDir, backupConfirmed, configBlock };
+  return completeSetup({
+    ...args,
+    passphrase,
+    // The words were on screen only if the ritual actually ran this time.
+    secretShown: !initiallyConfirmed,
+    backupConfirmed,
+    action: "backup_ritual_rerun",
+  });
 }
 
-/** Open an existing wallet, re-prompting on a wrong passphrase. */
+/**
+ * The common tail once a wallet is set up: save the unlock key, warn if the
+ * backup gate is still closed, gather limits, offer the operator connect, then
+ * clear the screen and register/print the block.
+ */
+async function completeSetup(
+  args: FlowArgs & {
+    passphrase: string;
+    secretShown: boolean;
+    backupConfirmed: boolean;
+    action: WalletInitAction;
+  },
+): Promise<WalletInitResult> {
+  const { io, dataDir, packageName, options, passphrase, secretShown, backupConfirmed, action, initCommand } = args;
+
+  // §3.7 #8 — the unlock key goes to the OS keychain, never a config file. This
+  // never fails init: a missing keychain falls through to a 0600 file, and even
+  // that failing only downgrades to "set DEPIX_WALLET_PASSPHRASE yourself".
+  const unlock = await storeUnlockKey(dataDir, passphrase, options.unlock);
+
+  if (!backupConfirmed && (action === "created" || action === "backup_ritual_rerun")) {
+    warnBackupUnconfirmed(io, initCommand);
+  }
+
+  const limits = await promptLimits(io, options);
+  const operatorToken = await promptOperatorConnect(io);
+  const serverEnv = buildServerEnv({ dataDir, limits, operatorToken });
+
+  const { block, registered } = await finish({
+    io,
+    packageName,
+    serverKey: options.serverKey,
+    env: serverEnv,
+    unlock,
+    limits,
+    secretShown,
+    options,
+  });
+
+  return {
+    action,
+    dataDir,
+    backupConfirmed,
+    configBlock: block,
+    env: serverEnv,
+    limits,
+    unlock,
+    registeredHosts: registered.map((h) => h.id),
+    operatorConnected: operatorToken !== undefined,
+  };
+}
+
+/** Second run over a finished wallet: reprint the wiring block, prompt for nothing. */
+async function alreadyConfiguredFlow(args: FlowArgs): Promise<WalletInitResult> {
+  const { io, dataDir, packageName, options } = args;
+  io.write("");
+  io.write("A wallet is already set up here and its backup is confirmed — nothing to create.");
+  io.write("Its unlock key and limits were saved on the first run. This block wires a host to this wallet:");
+  const env = { DEPIX_WALLET_DIR: dataDir };
+  const block = renderWalletMcpConfigBlock({ packageName, serverKey: options.serverKey, env });
+  io.write("");
+  io.write(block);
+  io.write("");
+  io.write("Then open your assistant and say:  create your DePix account");
+  return {
+    action: "already_configured",
+    dataDir,
+    backupConfirmed: true,
+    configBlock: block,
+    env,
+    limits: null,
+    unlock: null,
+    registeredHosts: [],
+    operatorConnected: false,
+  };
+}
+
+/** Open an existing wallet, re-prompting on a wrong passphrase; returns the wallet AND the passphrase. */
 async function openWithPassphrase(
   io: WalletInitIo,
   backend: InitWalletBackend,
   dataDir: string,
-): Promise<InitWallet> {
+): Promise<{ wallet: InitWallet; passphrase: string }> {
   let lastError: unknown;
   for (let attempt = 0; attempt < MAX_PROMPT_ATTEMPTS; attempt++) {
     const passphrase = await io.secret("Passphrase for this wallet (not echoed): ");
@@ -491,12 +649,13 @@ async function openWithPassphrase(
     try {
       // No crash-resume on this open: `init` is a local, offline ceremony — it
       // must not start re-broadcasting withdrawals or re-driving swaps.
-      return await backend.open({
+      const wallet = await backend.open({
         dataDir,
         passphrase,
         resumePendingWithdrawalsOnOpen: false,
         resumePendingConversionsOnOpen: false,
       });
+      return { wallet, passphrase };
     } catch (err) {
       lastError = err;
       const code = err instanceof WalletError ? err.code : undefined;
@@ -512,7 +671,7 @@ async function openWithPassphrase(
 /**
  * Prompt for the passphrase that encrypts the seed at rest, twice (a typo here
  * is unrecoverable without the mnemonic), or generate one on an empty answer.
- * Nothing typed is ever echoed.
+ * Nothing typed is ever echoed. Copy: §3.7 step 2.
  */
 async function promptNewPassphrase(
   io: WalletInitIo,
@@ -520,11 +679,11 @@ async function promptNewPassphrase(
 ): Promise<{ passphrase: string; displayed: boolean }> {
   const generate = options.generatePassphrase ?? (() => generateStrongPassphrase());
   io.write("");
-  io.write(
-    `Choose a passphrase (min ${MIN_PASSPHRASE_LENGTH} chars). It encrypts the seed on this disk and is NOT stored: ` +
-      "the MCP server reads it from DEPIX_WALLET_PASSPHRASE at start-up.",
-  );
-  io.write("Nothing you type at these prompts is echoed.");
+  io.write("Create a passphrase — it locks the wallet on this computer.");
+  io.write("Save it in your password manager or on paper: you'll need it to RESTORE the wallet someday.");
+  io.write("It is NOT written into any config file. The wallet keeps its own unlock key in your computer's password");
+  io.write("store — the same protected place your browser keeps passwords — so it can start by itself.");
+  io.write(`Minimum ${MIN_PASSPHRASE_LENGTH} characters. Nothing you type at these prompts is echoed.`);
   for (let attempt = 0; attempt < MAX_PROMPT_ATTEMPTS; attempt++) {
     const typed = await io.secret("Passphrase (or press Enter to generate a strong one): ");
     if (typed === "") {
@@ -574,6 +733,117 @@ async function promptMnemonic(io: WalletInitIo): Promise<string> {
   return mnemonic;
 }
 
+// ── limits + allowlist step (§3.7 #1) ────────────────────────────────────────
+
+/**
+ * Parse a BRL amount the operator typed (reais) into integer cents, or null when
+ * it is not a clean amount. Accepts `100`, `100.50`, `100,50`, an optional `R$`
+ * and surrounding space; rejects thousands separators (ambiguous) and anything
+ * else — the caller re-prompts rather than guessing a money ceiling.
+ */
+export function parseBrlToCents(input: string): number | null {
+  const cleaned = input.trim().replace(/^r\$\s*/i, "").replace(/\s+/g, "");
+  if (cleaned === "") return null;
+  if (cleaned.includes(".") && cleaned.includes(",")) return null; // ambiguous thousands sep
+  const normalized = cleaned.replace(",", ".");
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return null;
+  const reais = Number(normalized);
+  if (!Number.isFinite(reais) || reais <= 0) return null;
+  return Math.round(reais * 100);
+}
+
+/**
+ * Split the allowlist answer into Liquid addresses. Space- or comma-separated,
+ * de-duplicated, empty tokens dropped. Address SHAPE is validated by the engine
+ * at signing time (by derived scriptPubkey) — here we only collect.
+ */
+export function parseAllowlistInput(raw: string): string[] {
+  const seen = new Set<string>();
+  for (const token of raw.split(/[\s,]+/)) {
+    const t = token.trim();
+    if (t !== "") seen.add(t);
+  }
+  return [...seen];
+}
+
+/** R$ amount from cents, two decimals (e.g. 10000 → "100.00"). */
+function formatBrl(cents: number): string {
+  return (cents / 100).toFixed(2);
+}
+
+/** Prompt for one BRL ceiling; Enter accepts the default; a bad value re-prompts. */
+async function promptBrlCeiling(io: WalletInitIo, label: string, defaultCents: number): Promise<number> {
+  for (let attempt = 0; attempt < MAX_PROMPT_ATTEMPTS; attempt++) {
+    const raw = await io.question(`${label} — R$ [default ${formatBrl(defaultCents)}]: `);
+    if (raw.trim() === "") return defaultCents;
+    const cents = parseBrlToCents(raw);
+    if (cents !== null) return cents;
+    io.write('  Enter an amount like "100" or "100.50" (or just press Enter for the default).');
+  }
+  io.write(`  Keeping the default (R$ ${formatBrl(defaultCents)}).`);
+  return defaultCents;
+}
+
+/** The limits + allowlist step. Copy: §3.7 step 3 (the honest note is verbatim). */
+async function promptLimits(io: WalletInitIo, options: RunWalletInitOptions): Promise<WalletLimits> {
+  const defaults = options.limitsDefaults ?? {
+    perTxBrlCents: DEFAULT_PER_TX_LIMIT_BRL_CENTS,
+    dailyBrlCents: DEFAULT_DAILY_LIMIT_BRL_CENTS,
+  };
+  io.write("");
+  io.write("=== SPENDING LIMITS ===");
+  io.write("These caps apply to every send, withdraw and convert your agent asks for, BEFORE anything is signed.");
+  io.write("If your agent can use the terminal (like Claude Code), these limits stop mistakes and trickery —");
+  io.write("not a hostile agent. The real safety is simple: keep in this wallet only what you'd be OK losing.");
+  io.write("Press Enter at each prompt to accept the default.");
+  const perTxBrlCents = await promptBrlCeiling(io, "Max per transaction", defaults.perTxBrlCents);
+  const dailyBrlCents = await promptBrlCeiling(io, "Max per 24 hours", defaults.dailyBrlCents);
+  io.write("");
+  io.write("Allowlist — the Liquid addresses your agent may send to (space- or comma-separated).");
+  io.write("Leave empty to allow ANY address (the caps above still apply).");
+  const allow = await io.question("Allowed Liquid addresses (Enter for any): ");
+  return { perTxBrlCents, dailyBrlCents, allowlistLiquidAddresses: parseAllowlistInput(allow) };
+}
+
+// ── operator connect step (§3.7 #7) ──────────────────────────────────────────
+
+/**
+ * Optionally collect the op_ operator token now. [1] connect now (open the OAuth
+ * page, paste the code) → returned so it is written into the config; [2] later →
+ * undefined, and the agent asks for it via next_action the first time it needs
+ * it. Copy: §3.7 step 4.
+ */
+async function promptOperatorConnect(io: WalletInitIo): Promise<string | undefined> {
+  io.write("");
+  io.write("=== AUTHORIZE THE AGENT'S ACCOUNT (optional) ===");
+  io.write("Your agent opens its own account, in its first conversation. To authorize it, connect your identity");
+  io.write("(GitHub or Google) once. You can do it now or let the agent ask you later.");
+  io.write(`  [1] Connect now  — open ${OPERATOR_OAUTH_START_URL}, sign in, paste the op_ code here.`);
+  io.write("  [2] Later        — the agent asks for it the first time it opens the account.");
+  const choice = await io.question("Choose [1/2] (Enter = later): ");
+  if (normalize(choice) !== "1") return undefined;
+  io.write(`Open ${OPERATOR_OAUTH_START_URL}, sign in with GitHub or Google, and copy the code (starts with op_).`);
+  const token = (await io.question("Paste your op_ code (Enter to skip): ")).trim();
+  if (token === "") return undefined;
+  if (!token.startsWith("op_")) {
+    io.write("That does not look like an op_ code — skipping. The agent will ask for it later.");
+    return undefined;
+  }
+  return token;
+}
+
+// ── finishing: clear, register/print, account step ───────────────────────────
+
+function unlockNote(unlock: StoreUnlockResult): string {
+  if (unlock.backend === "keychain") {
+    return `Unlock key saved in ${unlock.detail}. The wallet starts on its own; your passphrase stays in your password manager.`;
+  }
+  if (unlock.backend === "file") {
+    return `No OS keychain available — unlock key saved to a 0600 file (${unlock.detail}). It is outside any project.`;
+  }
+  return "Could NOT save an unlock key — set DEPIX_WALLET_PASSPHRASE in your host config, or re-run init.";
+}
+
 /**
  * The abort window before the words appear (spec §1.5 fix #6). TTY-ness proves
  * a terminal, never a PRIVATE one — so say it plainly and make the operator act.
@@ -608,32 +878,102 @@ function warnBackupUnconfirmed(io: WalletInitIo, initCommand: string): void {
   io.write("it picks up exactly here (it will not create a second wallet).");
 }
 
-/** Print the paste-ready block + the closing hygiene advice. */
-function finish(args: {
+/**
+ * Clear the scrollback (§3.7 #3), recap the limits and unlock store, register the
+ * server with the operator's host (§3.7 #6) or print the block, then the account
+ * step (§3.7 #4). Returns the block + the hosts actually registered.
+ */
+async function finish(args: {
   io: WalletInitIo;
-  dataDir: string;
   packageName: string;
-  options: RunWalletInitOptions;
+  serverKey?: string;
+  env: Record<string, string>;
+  unlock: StoreUnlockResult;
+  limits: WalletLimits;
   /** Was ANY secret on screen — the 12 words, or a GENERATED passphrase? */
   secretShown: boolean;
-}): string {
-  const { io, dataDir, packageName, options, secretShown } = args;
-  const configBlock = renderWalletMcpConfigBlock({
-    dataDir,
-    packageName,
-    serverKey: options.serverKey,
-  });
-  io.write("");
-  io.write("=== PASTE THIS INTO YOUR MCP HOST (Claude Desktop/Code, Cursor, …) ===");
-  io.write(configBlock);
-  io.write("");
-  io.write(`Replace the two placeholders: your DePix API key, and the passphrase you just used (${PASSPHRASE_PLACEHOLDER}).`);
-  io.write("The passphrase is deliberately NOT printed here — this terminal just showed secrets.");
-  io.write("Then restart the host and call wallet_status to confirm the connection.");
+  options: RunWalletInitOptions;
+}): Promise<{ block: string; registered: HostTarget[] }> {
+  const { io, packageName, serverKey, env, unlock, limits, secretShown, options } = args;
+
+  // §3.7 #3 — auto scrollback cleanup. Wiping BEFORE printing the block keeps the
+  // block + next steps readable while the words/passphrase leave the history.
   if (secretShown) {
+    io.clear();
+    io.write("Screen cleared, scrollback included. If your terminal cannot clear its scrollback, the 12 words or a");
+    io.write("generated passphrase may still be in this window's history — close the window to be safe.");
     io.write("");
-    io.write("Last step — CLEAR THIS TERMINAL'S SCROLLBACK: a secret was on screen (the 12 words, or the generated passphrase).");
-    io.write("  macOS Terminal/iTerm: Cmd+K · elsewhere: clear && printf '\\033[3J'");
   }
-  return configBlock;
+
+  // §3.7 #7 — limits are visible, always.
+  io.write(`Limits: R$ ${formatBrl(limits.perTxBrlCents)} per transaction, R$ ${formatBrl(limits.dailyBrlCents)} per 24h.`);
+  if (limits.allowlistLiquidAddresses.length > 0) {
+    io.write(`Allowlist: ${limits.allowlistLiquidAddresses.length} address(es) — anything else is refused.`);
+  } else {
+    io.write("Allowlist: any address (the caps above still apply).");
+  }
+  io.write(unlockNote(unlock));
+  io.write("");
+
+  const spec: McpServerSpec = { serverKey: serverKey ?? DEFAULT_MCP_SERVER_KEY, packageName, env };
+  const detectDeps = options.hostDetect ?? defaultHostDetectDeps();
+  const effects = options.hostEffects ?? defaultHostRegisterEffects;
+  const { registered, block } = await offerHostRegistration(io, spec, detectDeps, effects);
+
+  // §3.7 #4 — the account step. No API key here.
+  io.write("");
+  io.write("=== YOUR AGENT'S ACCOUNT ===");
+  io.write("Open your assistant and say:  create your DePix account");
+  io.write("It opens its own account and mints its own keys — you never paste an API key into this rite.");
+
+  return { block, registered };
 }
+
+/**
+ * Detect the operator's AI hosts and, with their confirmation, register the
+ * server (§3.7 #6). Falls back to printing the block when nothing is detected or
+ * no host was registered.
+ */
+async function offerHostRegistration(
+  io: WalletInitIo,
+  spec: McpServerSpec,
+  detectDeps: HostDetectDeps,
+  effects: HostRegisterEffects,
+): Promise<{ registered: HostTarget[]; block: string }> {
+  const block = renderWalletMcpConfigBlock({ packageName: spec.packageName, serverKey: spec.serverKey, env: spec.env });
+  let hosts: HostTarget[] = [];
+  try {
+    hosts = detectHosts(detectDeps);
+  } catch {
+    hosts = [];
+  }
+
+  if (hosts.length === 0) {
+    io.write("No known AI host detected. Paste this into your host's MCP config:");
+    io.write("");
+    io.write(block);
+    return { registered: [], block };
+  }
+
+  io.write(`Detected: ${hosts.map((h) => h.label).join(", ")}. I can register the DePix server for you.`);
+  const registered: HostTarget[] = [];
+  for (const host of hosts) {
+    const answer = await io.question(`Register with ${host.label}? [Y/n]: `);
+    if (normalize(answer) === "n" || normalize(answer) === "no") continue;
+    const outcome = await registerWithHost(host, spec, effects);
+    io.write(outcome.ok ? `  OK — ${outcome.detail}` : `  Skipped — ${outcome.detail}`);
+    if (outcome.ok) registered.push(host);
+  }
+
+  if (registered.length === 0) {
+    io.write("");
+    io.write("Not registered automatically. Paste this into your host's MCP config:");
+    io.write("");
+    io.write(block);
+  } else {
+    io.write("Restart the host(s) above so they pick up the new server.");
+  }
+  return { registered, block };
+}
+
+export type { StoreUnlockResult, UnlockBackend };

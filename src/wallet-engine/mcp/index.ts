@@ -42,7 +42,6 @@ export {
   generateStrongPassphrase,
   DEFAULT_MCP_PACKAGE,
   DEFAULT_MCP_SERVER_KEY,
-  PASSPHRASE_PLACEHOLDER,
   type InitWallet,
   type InitWalletBackend,
   type RunWalletInitOptions,

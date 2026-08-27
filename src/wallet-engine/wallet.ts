@@ -18,7 +18,7 @@ import { join, sep } from "node:path";
 import { base64 } from "@scure/base";
 import type { Wollet } from "lwk_node";
 import { ASSETS, MAINNET_ASSET_ID_TO_KEY, type AssetKey } from "./assets.js";
-import { runBackupRitual, type RitualIo } from "./backup-ritual.js";
+import { CLEAR_SCREEN_AND_SCROLLBACK, runBackupRitual, type RitualIo } from "./backup-ritual.js";
 import {
   Address,
   AssetId,
@@ -72,6 +72,7 @@ import {
 import { acquireDirLock, type DirLock } from "./store/dir-lock.js";
 import { ensureDir } from "./store/fs-util.js";
 import { SeedStore, type WalletFileV1 } from "./store/seed-store.js";
+import { readUnlockKey, type UnlockStoreDeps } from "./store/unlock-store.js";
 import { UpdateStore } from "./store/update-store.js";
 import { SyncEngine, type EsploraClientLike, type EsploraProvider } from "./sync/sync.js";
 import { ConvertNamespace, type ConvertNamespaceOptions } from "./convert/namespace.js";
@@ -157,8 +158,19 @@ export interface WalletSyncCallOptions {
 export interface OpenOptions {
   /** Default: $DEPIX_WALLET_DIR ?? ~/.depix-wallet */
   dataDir?: string;
-  /** Default: $DEPIX_WALLET_PASSPHRASE (required when a seed exists) */
+  /**
+   * The passphrase that unlocks the seed. Precedence (spec §3.7 #8): this option
+   * (an explicit override, e.g. CI) → $DEPIX_WALLET_PASSPHRASE → the OS keychain
+   * unlock key `init` stored (`unlock` below). When a seed exists and none of the
+   * three yields a value, open() fails with WALLET_LOCKED.
+   */
   passphrase?: string;
+  /**
+   * Advanced/testing: inject the OS-keychain backends used to read the unlock
+   * key when no explicit passphrase/env is set (§3.7 #8). Default: the real
+   * `security`/`secret-tool`/0600-file store. NEVER carries a secret itself.
+   */
+  unlock?: Partial<UnlockStoreDeps>;
   sync?: WalletSyncOptions;
   /**
    * Guardrail config (§4.2). Option > env (DEPIX_GUARDRAIL_*) > default
@@ -536,6 +548,25 @@ function resolvePassphrase(explicit?: string): string | undefined {
   return explicit ?? process.env.DEPIX_WALLET_PASSPHRASE;
 }
 
+/**
+ * The boot-time unlock resolution (spec §3.7 #8): explicit option/env first (an
+ * intentional override, e.g. CI), then the OS keychain unlock key `init` stored.
+ * The keychain is consulted ONLY when a seed exists and neither option nor env
+ * gave a passphrase — so an operator who still passes the env is entirely
+ * unaffected, and a keychain read is skipped for an empty dataDir.
+ */
+async function resolveUnlockPassphrase(
+  explicit: string | undefined,
+  dataDir: string,
+  encryptedSeed: boolean,
+  unlockDeps: Partial<UnlockStoreDeps> | undefined,
+): Promise<string | undefined> {
+  const direct = resolvePassphrase(explicit);
+  if (direct !== undefined) return direct;
+  if (!encryptedSeed) return undefined;
+  return readUnlockKey(dataDir, unlockDeps);
+}
+
 function resolveApiKey(explicit?: string): string | undefined {
   return explicit ?? process.env.DEPIX_API_KEY;
 }
@@ -553,7 +584,8 @@ async function runRitual(mnemonic: string, io?: RitualIo): Promise<boolean> {
       // The ritual only runs on a real TTY (checked by the caller): stdout is
       // the interactive terminal here, not an MCP JSON-RPC channel.
       write: (text) => void process.stdout.write(`${text}\n`),
-      question: (prompt) => rl.question(prompt)
+      question: (prompt) => rl.question(prompt),
+      clear: () => void process.stdout.write(CLEAR_SCREEN_AND_SCROLLBACK)
     });
   } finally {
     rl.close();
@@ -977,7 +1009,6 @@ export class DepixWallet {
    */
   static async open(options: OpenOptions = {}): Promise<DepixWallet> {
     const dataDir = resolveDataDir(options.dataDir);
-    const passphrase = resolvePassphrase(options.passphrase);
     // Resolve the (immutable) guardrail config up front so a bad option/env
     // fails fast with GUARDRAIL_CONFIG_INVALID before any lock is taken (§4.2).
     const guardrailConfig = resolveGuardrailConfig(options.guardrails);
@@ -992,6 +1023,17 @@ export class DepixWallet {
           "the SDK never creates a seed automatically."
       );
     }
+    // Passphrase precedence (§3.7 #8): option → env → the OS keychain unlock key
+    // `init` stored. The keychain is consulted only for an encrypted seed with no
+    // explicit passphrase — env users are untouched, and a view-only dataDir
+    // never spawns a keychain probe. A still-missing passphrase falls through to
+    // assertStrongPassphrase (WEAK_PASSPHRASE), which names DEPIX_WALLET_PASSPHRASE.
+    const passphrase = await resolveUnlockPassphrase(
+      options.passphrase,
+      dataDir,
+      Boolean(file.encryptedSeed),
+      options.unlock,
+    );
     if (file.encryptedSeed) {
       assertStrongPassphrase(passphrase as string);
       registerSecret(passphrase);
