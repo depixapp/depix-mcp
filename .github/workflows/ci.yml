@@ -44,10 +44,20 @@ jobs:
         run: npm run lint
 
       - name: Test
+        env:
+          # The engine reads the affiliate id at module load; a placeholder keeps
+          # the SideShift paths on their "configured" branch. DEPIX_SDK_OFFLINE
+          # skips the read-only Esplora integration test — without it CI reaches
+          # mainnet and a provider hiccup fails a run that found no defect.
+          SIDESHIFT_AFFILIATE_ID: test-affiliate
+          DEPIX_SDK_OFFLINE: "1"
         run: npm test
 
       - name: Build
         run: npm run build
+
+      - name: Smoke (built artifact)
+        run: npm run smoke
 
       # The hosted (mcp.depixapp.com) function must have ZERO import path to the
       # wallet engine. This is the guarantee that keeps the hosted deployment
@@ -60,3 +70,68 @@ jobs:
       # never silently drop a required attribution notice.
       - name: Guard — THIRD_PARTY_LICENSES is current
         run: npm run licenses:check
+
+  # ── Build dist once for the floor-smoke job ────────────────────────────────
+  # The floor cell must not install devDeps (see floor-smoke), so it cannot run
+  # tsc. Build here on a modern Node and hand the artifact over.
+  build-dist:
+    name: build dist (for the floor smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install (npm ci)
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Engines FLOOR proof — Node 22.4 ────────────────────────────────────────
+  # `engines` says node >= 22.4, and the matrix above proves 22.x and 24.x —
+  # where 22.x is whatever `latest-22` resolves to, never the floor itself. This
+  # job runs the compiled artifact on 22.4 exactly: wasm init, the descriptor and
+  # address goldens, and a seed encrypt/decrypt roundtrip.
+  #
+  # --ignore-scripts is load-bearing: `prepare` -> `npm run build` runs on `npm
+  # ci`, and with --omit=dev there is no tsc to run it with, so the install would
+  # fail before the smoke ever started. Nothing in the PRODUCTION tree has an
+  # install script (the one that does, esbuild, arrives through vitest and is a
+  # devDependency), so skipping scripts costs this job nothing.
+  floor-smoke:
+    name: floor smoke · node 22.4
+    needs: build-dist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node 22.4 (engines floor)
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22.4"
+
+      - name: Install runtime deps only
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Download the prebuilt dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Smoke (built artifact on the 22.4 floor)
+        run: npm run smoke

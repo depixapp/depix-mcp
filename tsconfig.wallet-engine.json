@@ -1,0 +1,20 @@
+{
+  // The wallet engine, under the stricter settings it was written and
+  // typechecked with before it lived here. tsc has no per-directory
+  // compilerOptions, so the override is a second project over the same files:
+  // `npm run typecheck` runs the repo-wide pass and then this one.
+  //
+  // Relaxing these for the engine would be silent: `noUncheckedIndexedAccess`
+  // in particular is load-bearing in the money paths, where an array index that
+  // is really `T | undefined` decides whether a fee leg or a UTXO exists. The
+  // gateway half of src/ does not compile under them today, which is why this
+  // is a separate project and not four lines in tsconfig.json.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "checkJs": true
+  },
+  "include": ["src/wallet-engine", "test/wallet-engine"]
+}

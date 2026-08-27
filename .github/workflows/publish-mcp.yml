@@ -95,6 +95,11 @@ jobs:
       # that never touched main — publishes to npm and to the immutable MCP
       # Registry with nothing but tsc and eslint having looked at it.
       - name: Test
+        env:
+          # Same reasoning as ci.yml: a placeholder affiliate id, and no live
+          # Esplora call — a release must not hinge on a third party being up.
+          SIDESHIFT_AFFILIATE_ID: test-affiliate
+          DEPIX_SDK_OFFLINE: "1"
         run: npm test
 
       - name: Guard — hosted deployment is structurally keyless

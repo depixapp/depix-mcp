@@ -22,4 +22,22 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // No `console.*` in shipped source. In stdio mode STDOUT is the JSON-RPC
+    // channel, so a stray log line corrupts the protocol; the engine also routes
+    // every message through a redacting logger (src/wallet-engine/logger.ts) that
+    // console bypasses. Inherited from the engine's own config, applied to all of
+    // src/ because the same two reasons hold for the gateway half.
+    files: ["src/**/*.ts", "src/**/*.js"],
+    rules: {
+      "no-console": "error",
+    },
+  },
+  {
+    files: ["test/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+    },
+  },
 );

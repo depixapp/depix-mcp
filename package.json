@@ -41,11 +41,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.wallet-engine.json",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "guard:hosted": "node scripts/check-hosted-isolation.mjs",
+    "smoke": "node scripts/smoke.mjs",
     "licenses": "node scripts/gen-third-party-licenses.mjs",
     "licenses:check": "node scripts/gen-third-party-licenses.mjs --check",
     "prepare": "npm run build"
