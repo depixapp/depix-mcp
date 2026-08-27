@@ -358,7 +358,8 @@ export function mapToolError(err: unknown): ToolError {
       // `retryable` and `nextStep` are hoisted out of the details because that is
       // where a host looks to decide whether to try again and what to do (G3);
       // both are SDK-authored, never upstream text.
-      const data: Record<string, unknown> = { code: err.code, retryable: err.details?.retryable === true };
+      const retryable = err.details?.retryable === true;
+      const data: Record<string, unknown> = { code: err.code, retryable };
       const details = sanitizeDetails(err.details);
       if (details) data.details = details;
       const nextStep = truncate(err.details?.nextStep);
@@ -375,7 +376,7 @@ export function mapToolError(err: unknown): ToolError {
           "Call wallet_quote with the same from/to/network/amount_sats to compare these candidate routes " +
           "(fees, receipts, custodial flags), then call wallet_convert again with `route` set to your chosen route id.";
       }
-      return new ToolError(err.message, err.code, { data });
+      return new ToolError(err.message, err.code, { retryable, data });
     }
 
     // Any OTHER DepixSdkError is a provider-transport error whose `.message` is

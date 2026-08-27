@@ -278,6 +278,16 @@ export class WithdrawContractError extends DepixSdkError {
  *                              never acted upon (PR-C).
  *   ROUTE_NOT_FOUND            — a `route` id that is not among the intent's
  *                              candidates (details.availableRouteIds lists them).
+ *   SWAP_PROVIDER_UNAVAILABLE  — no swap backend is CREATING swaps right now, so
+ *                              this route cannot be started. `details.retryable`
+ *                              is true: the operators run a switch, not an
+ *                              outage. Funds already in flight are unaffected —
+ *                              a backend that stopped creating swaps still
+ *                              claims and refunds the ones it holds, and
+ *                              recovery never consults availability. The
+ *                              L-BTC → stablecoin route raises the same code
+ *                              with its own guidance: it rides one operator's
+ *                              hosted engine and has no fallback to move to.
  */
 export class ConversionError extends DepixSdkError {
   constructor(code: string, message?: string, options?: DepixSdkErrorOptions) {

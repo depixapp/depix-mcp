@@ -204,6 +204,9 @@ describe("mapToolError — SDK-own and unexpected errors", () => {
   it("SWAP_PROVIDER_UNAVAILABLE reaches the host retryable and actionable", () => {
     const te = mapToolError(noSwapProviderError());
     expect(te.code).toBe("SWAP_PROVIDER_UNAVAILABLE");
+    // On the instance too, not only in the payload — that is what internal
+    // callers branch on.
+    expect(te.retryable).toBe(true);
     // The message is SDK-authored, so it is surfaced verbatim rather than canned.
     expect(te.message).toMatch(/No swap provider is accepting swaps/);
     expect(te.data.retryable).toBe(true);

@@ -304,13 +304,13 @@ describe("quoteRoutes — enumerates ALL candidates with chained estimates", () 
     // Implicit sideshift fee = deposited − settled = 50_000_000 (USDT sats).
     expect(viaSideshift!.legs[1]!.estimatedFeeSats).toBe(50_000_000n);
     expect(viaSideshift!.legs[1]!.feeAsset).toBe("USDT");
-    // The swap leg's server omitted fee_asset → the SDK defaults it to the
-    // recv asset (fees are netted from the recv side — e2e P2, 2026-07-11).
-    // Both legs are then USDT-denominated, so the total IS computable:
-    // 0 (zero-fee swap leg) + 50_000_000 (sideshift implicit fee).
-    expect(viaSideshift!.legs[0]!.feeAsset).toBe("USDT");
-    expect(viaSideshift!.estimatedFeeTotalSats).toBe(50_000_000n);
-    expect(viaSideshift!.feeAsset).toBe("USDT");
+    // The swap leg's server sent no resolvable fee leg, so its fee asset is an
+    // honest unknown rather than an assumed recv side. With the legs no longer
+    // agreeing on one asset, the route total is suppressed and says so.
+    expect(viaSideshift!.legs[0]!.feeAsset).toBe(null);
+    expect(viaSideshift!.estimatedFeeTotalSats).toBe(null);
+    expect(viaSideshift!.feeAsset).toBe(null);
+    expect(viaSideshift!.notes.join(" ")).toMatch(/different assets/);
   });
 
   it("an unestimatable leg yields null estimates, flags the route and SKIPS downstream estimators", async () => {
@@ -390,6 +390,24 @@ describe("quoteRoutes — enumerates ALL candidates with chained estimates", () 
       expect(leg.feeAsset).toBe("DEPIX");
       expect(leg.note).toBeUndefined();
       expect(route!.estimateComplete).toBe(true);
+    });
+
+    it("reports an unresolvable fee leg as unknown, never as the received asset", async () => {
+      // Without a resolved id there is no evidence for which side the fee fell
+      // on. Labelling it the recv asset would let two legs whose fees are
+      // denominated differently be summed into one same-asset total.
+      const { deps } = makeDeps({
+        sideswap: makeFakeSideswap({
+          LBTC: { recvAmountSats: 20_000n, serverFeeSats: 110n, fixedFeeSats: 0n, feeAsset: "Base", feeAssetId: null }
+        }).sideswap
+      });
+      const [route] = await quoteRoutes({ from: "DEPIX", to: "LBTC", amount: 1_000n }, deps);
+      const leg = route!.legs[0]!;
+      expect(leg.feeAsset).toBe(null);
+      expect(leg.estimatedFeeSats).toBe(110n);
+      // Gross, because nothing proved the fee came out of the receipt.
+      expect(leg.estimatedReceivedSats).toBe(20_000n);
+      expect(route!.estimatedFeeTotalSats).toBe(null);
     });
 
     it("still diagnoses 'too small' when the RECV-leg fee eats the whole receipt", async () => {

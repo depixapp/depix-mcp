@@ -17,7 +17,7 @@
 // `withProvider` for how a per-call provider survives that.
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { ConversionError } from "../../errors.js";
+import { ConversionError, GuardrailError, WalletError } from "../../errors.js";
 
 export type SwapProviderId = "boltz" | "coinos";
 
@@ -226,16 +226,21 @@ export function getSelectedProvider(): SwapProvider | null {
  * Drop the cached selection when a CREATION call failed in a way that blames the
  * provider, so the next attempt re-probes the list instead of retrying a dead
  * backend for the life of the process. Reports whether it invalidated.
+ *
+ * The test is DELIBERATELY inverted — anything that is not one of OUR OWN typed
+ * guards counts as the backend refusing. Matching the refusal by its wording
+ * instead would fail in both directions at once the day an operator rewords it:
+ * the probe would read the new text as alive, and this would read it as our
+ * fault, pinning the process to a dead backend for its whole life with the
+ * fallback silently never firing. The cost of being wrong the other way is one
+ * cached re-probe.
  */
 export function invalidateSelectionOnCreationFailure(err: unknown): boolean {
-  const msg = String((err as { message?: unknown } | null | undefined)?.message ?? err ?? "");
-  const status = (err as { status?: unknown } | null | undefined)?.status;
-  const providerSide =
-    (typeof status === "number" && status >= 500) ||
-    CREATION_DISABLED.test(msg) ||
-    /failed to fetch|networkerror|fetch failed|econnrefused|enotfound|etimedout/i.test(msg);
-  if (providerSide) selection = null;
-  return providerSide;
+  const ours =
+    err instanceof ConversionError || err instanceof WalletError || err instanceof GuardrailError;
+  if (ours) return false;
+  selection = null;
+  return true;
 }
 
 /**

@@ -26,7 +26,13 @@ import {
   type ProbeFetch,
   type SwapProvider
 } from "../../src/wallet-engine/convert/boltz/providers.js";
-import { isDepixSdkError } from "../../src/wallet-engine/errors.js";
+import {
+  BoltzApiError,
+  ConversionError,
+  GuardrailError,
+  WalletError,
+  isDepixSdkError
+} from "../../src/wallet-engine/errors.js";
 
 const BOLTZ = SWAP_PROVIDERS[0]!;
 const COINOS = SWAP_PROVIDERS[1]!;
@@ -160,19 +166,51 @@ describe("invalidateSelectionOnCreationFailure — a dead pick is not retried fo
     expect((await selectSwapProvider({ fetchImpl: second.fetchImpl })).id).toBe("coinos");
   });
 
-  it("blames the provider on 5xx and on transport failures, but not on our own bad input", async () => {
-    expect(invalidateSelectionOnCreationFailure(Object.assign(new Error("boom"), { status: 502 }))).toBe(true);
-    expect(invalidateSelectionOnCreationFailure(new TypeError("fetch failed"))).toBe(true);
-    expect(invalidateSelectionOnCreationFailure(new Error("invoice has no amount"))).toBe(false);
-    expect(invalidateSelectionOnCreationFailure(Object.assign(new Error("bad"), { status: 400 }))).toBe(false);
+  it("blames the backend for anything that is not one of OUR typed guards", async () => {
+    for (const err of [
+      new BoltzApiError("swaps are paused for maintenence", { status: 400 }),
+      new BoltzApiError("Internal Server Error", { status: 502 }),
+      new TypeError("fetch failed"),
+      new Error("some wording nobody has written a regex for yet")
+    ]) {
+      expect(invalidateSelectionOnCreationFailure(err)).toBe(true);
+    }
+    // Our own fail-closed guards and the wallet's own refusals are not the
+    // backend's fault — re-probing there would just churn.
+    for (const err of [
+      new ConversionError("INVOICE_NO_AMOUNT", "This invoice has no defined amount"),
+      new ConversionError("LOCKUP_INFLATED", "expectedAmount exceeds the invoice + margin"),
+      new WalletError("INSUFFICIENT_FUNDS", "not enough L-BTC"),
+      new GuardrailError("GUARDRAIL_PER_TX_LIMIT", "over cap")
+    ]) {
+      expect(invalidateSelectionOnCreationFailure(err)).toBe(false);
+    }
   });
 
   it("keeps the cached selection when the failure was ours", async () => {
     const { fetchImpl, calls } = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE });
     await selectSwapProvider({ fetchImpl });
-    invalidateSelectionOnCreationFailure(new Error("invoice has no amount"));
+    invalidateSelectionOnCreationFailure(new ConversionError("INVOICE_NO_AMOUNT", "no amount"));
     await selectSwapProvider({ fetchImpl });
     expect(calls).toHaveLength(1);
+  });
+
+  it("REGRESSION: a refusal nobody wrote a regex for still frees the process to fall back", async () => {
+    const first = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE, [COINOS.apiUrl]: ALIVE });
+    expect((await selectSwapProvider({ fetchImpl: first.fetchImpl })).id).toBe("boltz");
+
+    // Creation refused in wording no pattern here matches. Under a
+    // wording-matched rule this read as OUR fault: the cached pick survived and
+    // the fallback never fired again for the life of the process.
+    expect(
+      invalidateSelectionOnCreationFailure(
+        new BoltzApiError("swaps are paused for maintenence", { status: 400 })
+      )
+    ).toBe(true);
+
+    const second = scriptedProbe({ [BOLTZ.apiUrl]: DISABLED, [COINOS.apiUrl]: ALIVE });
+    expect((await selectSwapProvider({ fetchImpl: second.fetchImpl })).id).toBe("coinos");
+    expect(second.calls).toHaveLength(2); // it really walked the list again
   });
 });
 

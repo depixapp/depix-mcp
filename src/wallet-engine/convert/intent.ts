@@ -418,14 +418,12 @@ async function estimateLeg(leg: RouteLeg, amountIn: bigint, deps: IntentDeps): P
         }
         // `quote.feeAsset` is the SIDE label the server sends ("Base"/"Quote"),
         // never an asset id — only the client can resolve it against the accepted
-        // market, which it does into `feeAssetId`. An unresolved label falls back
-        // to the recv asset, matching the observed netting side; that is a
-        // reporting default only, since the arithmetic above still requires an
-        // explicit match.
+        // market, which it does into `feeAssetId`. Without that, the leg is an
+        // honest unknown: labelling it the recv asset would assert a side we have
+        // no evidence for, and downstream would then sum fees denominated in
+        // different assets into a same-asset total. A null suppresses that total.
         const feeAssetKey: AssetKey | null =
-          quote.feeAssetId != null
-            ? (MAINNET_ASSET_ID_TO_KEY[quote.feeAssetId] ?? null)
-            : (leg.to as AssetKey);
+          quote.feeAssetId != null ? (MAINNET_ASSET_ID_TO_KEY[quote.feeAssetId] ?? null) : null;
         return {
           receivedSats: netRecv,
           feeSats: declaredFees,

@@ -4,6 +4,7 @@
 // the RECORD. Getting that backwards is what strands money: a Coinos lockup
 // asked of Boltz gets "swap not found", and the refund key in the record is the
 // only thing that can sweep it back.
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,10 +39,11 @@ import {
   type RefundResult,
   type SubmarineRefundRecord
 } from "../../src/wallet-engine/convert/boltz/refund.js";
+import { receiveViaLightning, type ReverseDeps } from "../../src/wallet-engine/convert/boltz/reverse.js";
 import { executeStablecoinRoute } from "../../src/wallet-engine/convert/boltz/stablecoin.js";
 import type { Logger } from "../../src/wallet-engine/logger.js";
 import { isDepixSdkError } from "../../src/wallet-engine/errors.js";
-import { TEST_INVOICE } from "./support/boltz.js";
+import { TEST_INVOICE, TEST_PAYMENT_HASH } from "./support/boltz.js";
 
 const BOLTZ = SWAP_PROVIDERS[0]!;
 const COINOS = SWAP_PROVIDERS[1]!;
@@ -324,6 +326,68 @@ describe("the stablecoin route stays on Boltz and refuses when Boltz is off", ()
 describe("a Lightning flow on the fallback runs CONCURRENTLY with a stablecoin flow on Boltz", () => {
   beforeEach(() => {
     resetBoltzConfigForTests();
+  });
+
+  it("claims a Coinos receive on Coinos even when the socket fires from its own context", async () => {
+    // The claim does NOT run inside the call that created the swap: a status
+    // socket wakes it later, from an async context that never entered the
+    // provider's. Re-declaring the provider there is the one line holding the
+    // whole design at that boundary — without it the claim, the co-signature and
+    // the broadcast all go to whoever the process last selected.
+    await ensureBoltzConfig();
+    const { getBoltzApiUrl } = (await import("boltz-swaps/config")) as unknown as {
+      getBoltzApiUrl: () => string;
+    };
+    forceSwapProvider("boltz"); // the process is on Boltz; the swap is not
+    const bus = new EventEmitter();
+    const urls: Record<string, string> = {};
+
+    const outcome = await receiveViaLightning(
+      { amountSats: 50_000, pairHash: "reverse-pair-hash" },
+      {
+        provider: COINOS,
+        deriveSecrets: async () => ({
+          preimage: new Uint8Array(32).fill(1),
+          // The invoice binding is checked against OUR hash, so the fixture
+          // invoice's payment hash has to be the one we claim to have derived.
+          preimageHash: Uint8Array.from(Buffer.from(TEST_PAYMENT_HASH, "hex")),
+          claimKeys: { privateKey: new Uint8Array(32).fill(3), publicKey: new Uint8Array(33).fill(4) }
+        }),
+        getClaimAddress: async () => LOCKUP_ADDRESS,
+        createReverseSwap: async () => ({
+          id: "rev-coinos",
+          invoice: TEST_INVOICE,
+          lockupAddress: LOCKUP_ADDRESS,
+          onchainAmount: 49_000,
+          swapTree: {},
+          refundPublicKey: "03" + "cc".repeat(32),
+          timeoutBlockHeight: 1_000_100
+        }),
+        getLockupTx: async () => {
+          urls.getLockupTx = getBoltzApiUrl();
+          return { hex: "deadbeef" };
+        },
+        claim: async () => {
+          urls.claim = getBoltzApiUrl();
+          return "cafe";
+        },
+        broadcast: async () => {
+          urls.broadcast = getBoltzApiUrl();
+          return { id: "claim_txid" };
+        },
+        // Opened OUTSIDE any provider context, and fired from a timer — exactly
+        // how the real status WebSocket delivers.
+        subscribe: (_id, onRaw) => {
+          bus.on("s", onRaw);
+          setTimeout(() => bus.emit("s", "transaction.mempool"), 5);
+          setTimeout(() => bus.emit("s", "invoice.settled"), 60);
+          return () => bus.removeAllListeners("s");
+        }
+      } satisfies ReverseDeps
+    );
+
+    expect(outcome.phase).toBe("completed");
+    expect(Object.values(urls)).toEqual([COINOS.apiUrl, COINOS.apiUrl, COINOS.apiUrl]);
   });
 
   it("a Coinos refund co-signs against Coinos while a Boltz stablecoin execution runs", async () => {
