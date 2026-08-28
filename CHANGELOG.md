@@ -1,12 +1,52 @@
 # Changelog
 
-## 2.8.0 — re-reading the 12 words is a ceremony, not a one-liner
+## 2.8.0 — sign in as yourself, and re-read the 12 words as a ceremony
+
+Two doors this release, both for the human at the keyboard. The operator can now
+link the local server to their own DePix account with a browser sign-in — no API
+key typed anywhere — and the seed can be re-read only through the same rite that
+first displayed it. Under the hood, the Lightning fallback stopped trusting a
+backend it has not proven alive. **Tool count unchanged: 26 gateway / 59 full —
+`backup`, `login`, `logout` and `account` are CLI subcommands, deliberately not
+tools.**
+
+- **`npx -y @depixapp/mcp login`.** Opens the browser on the DePix sign-in
+  (Google/GitHub) and stores the operator's own session sealed on disk — its own
+  file, its own cipher context, so an agent credential blob cannot masquerade as
+  it. The flow is discovered from the server (RFC 9728/8414), PKCE-only, public
+  client; the loopback listener binds BEFORE the browser opens (a port squatter
+  gets nothing), accepts exactly one callback on 127.0.0.1, and no token ever
+  reaches a log or an error message. `logout` unlinks the session; `account
+  use agent|owner` and `account status` switch and report the persona.
+- **One credential ladder everywhere.** `DEPIX_API_KEY` > explicit `account use`
+  > agent account > owner session — the resolver, the boot line and `account
+  status` all derive from the same function, so the surfaces cannot disagree
+  about who is acting. Session refresh is single-flight: two concurrent 401s
+  present one refresh token once, never a spent one twice.
+- **The schema now walks a doc-less agent through onboarding.** Two failures
+  seen in the field: the operator-code link only lived in the deepest error, and
+  precondition errors were mute. Now the operator URL is in the
+  `register_account`/`operator_token` descriptions themselves, every register
+  precondition error carries a `next_action`, and the handshake sentence
+  branches per deployment — an OAuth user is never told to paste an `sk_` they
+  do not have.
+- **The Lightning fallback proves a backend alive before trusting it.** Only a
+  recognized amount-refusal counts as proof of life (an unknown 400 reads DEAD —
+  fail-safe), the selection expires after 10 minutes so a recovered Boltz wins
+  traffic back, and a refusal mid-call walks the provider list inside that call.
+  The retry happens only BEFORE anything is locked or signed, the guardrail
+  charges once, and every swap record keeps the `providerId` that owns it.
+- **`operator_register_cap_exceeded` narrated.** The backend is gaining a
+  per-operator registration cap (the §9.4 containment for a leaked `op_` code);
+  this release already knows the code and answers it with a typed wait that
+  mirrors `retry_after`.
+
+### The `backup` ceremony
 
 `init` puts the seed behind a rite; reading it back had no door at all. The only
 way was a developer one-liner around `exportMnemonic()`, whose output is loose
 text in whatever ran it — a scrolling terminal, a log, a chat transcript. One of
-those leaked a seed into a chat. **Tool count unchanged: 26 gateway / 59 full —
-`backup` is a CLI subcommand, deliberately not a tool.**
+those leaked a seed into a chat.
 
 - **`npx -y @depixapp/mcp backup`.** Shows an existing wallet's 12 words again
   under the same guards as `init`: TTY-only (the refusal IS what keeps the words
@@ -41,6 +81,11 @@ agent-local.**
   unblind payments to that one script) and NEVER reaches the tool response or a
   log — the tool returns only public facts (the address, the rail state). The
   hosted catalog never offers it (D4).
+
+## 2.6.0 — the local agent onboards itself
+
+*(This version was never published to npm — its changes first shipped inside
+2.7.0.)*
 
 Local agents can now create and run their own account without a key pasted into
 a config, the wallet syncs on the agent's behalf so incoming money is never
@@ -139,8 +184,19 @@ healthy route as "amount too small". The fee is netted only when it is charged o
 the asset being received — the same rule the PSET validator already enforced at
 execution — and a fee whose side cannot be resolved is reported as unknown rather
 than assumed.
+- **A peg-out below the SideSwap minimum is refused before broadcast.**
+  *(Shipped in this release, first narrated later.)* SideSwap discards a
+  below-minimum peg-out as a final state with no refund — the funds are simply
+  gone, and the peg RPC never carries the amount, so the only place this can be
+  stopped is the client, before signing. `wallet_convert` and the multi-hop
+  planner now read the live minimum (`server_status`/`peg_quote`, conservative
+  floor of 100,000 sats when the server is silent) and refuse with a typed
+  error instead of broadcasting.
 
 ## 2.4.0 — the wallet engine lives here now
+
+*(This version was never published to npm — its changes first shipped inside
+2.5.0.)*
 
 No tool changed, no behaviour changed, nothing on the wire moved. What changed is
 where the code lives: the wallet engine was a copy of another repository, kept in

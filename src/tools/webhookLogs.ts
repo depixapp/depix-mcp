@@ -2,13 +2,9 @@
 // (one delivery). Read-only: did the webhook arrive, and what did the endpoint
 // answer? Newest first.
 //
-// REACHABILITY (documented divergence): on origin/main the backend exposes webhook
-// logs at /api/webhook-logs (auth "jwt", app dashboard) and /api/agents/webhook-logs
-// (auth "agent-key", the Ed25519 agent). NEITHER accepts an sk_ API key or the
-// OAuth-forwarded WorkOS JWT this gateway uses — so until a jwt-or-api variant
-// lands on the backend (F4), this tool surfaces a typed unauthorized/invalid_token
-// (with its next_action) rather than a log list. The tool + schema are shipped now
-// so the catalog is complete and the client is ready the moment the route is.
+// The backend route is auth "jwt-or-api" with scope merchant_read (§3.9b), so a
+// key or the OAuth-forwarded credential this gateway uses both reach it. The
+// Ed25519 agent has its own twin at /api/agents/webhook-logs.
 
 import type { ApiClient } from "../apiClient.js";
 import { arr, numOrNull, rec, str, strOrNull } from "./access.js";

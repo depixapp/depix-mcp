@@ -1,4 +1,4 @@
-// The 3 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
+// The 4 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
 // client. The load-bearing proofs (smoke S3.1–S3.5):
 //   - register_account returns PUBLIC facts only — NO sk_, keypair or webhook
 //     secret ever reaches the transcript;
@@ -118,6 +118,26 @@ describe("register_account (§3.1)", () => {
     expect(out.test_key_id).toBe("key_test_1");
     expect(out.active_key_mode).toBe("test");
     expect(out.warning).toBeNull();
+  });
+
+  it("R6: an owner login selected on this machine leaves the new key IDLE, and says so", async () => {
+    // Persisting a key is not the same as USING it. `account use owner` shadows
+    // it just as an env key does — reporting only the env case left this one
+    // silent, and the agent went on believing it operated the account it had
+    // just created.
+    const client = await connect(
+      baseDeps({ persistKeys: async () => ({ activeMode: "test", source: "owner", envOverride: false }) }),
+    );
+    const out = structured(
+      await client.callTool({
+        name: "register_account",
+        arguments: { name: "Acme", operator_token: "op_xyz", operator_email: "op@acme.com" },
+      }),
+    );
+    expect(out.active_key_source).toBe("owner");
+    expect(out.env_override).toBe(false);
+    expect(String(out.warning)).toMatch(/IDLE/);
+    expect(String(out.warning)).toContain("account use agent");
   });
 
   it("S3.4: an env key overriding the new one is reported LOUDLY", async () => {

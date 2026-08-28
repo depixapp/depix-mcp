@@ -130,6 +130,42 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
         },
       };
 
+    // ── the local credential vault (§3.1) ──
+    // A model that hits this has NO way to guess the cause from the code alone:
+    // the vault is sealed with DEPIX_WALLET_PASSPHRASE (or DEPIX_AGENT_PASSPHRASE),
+    // which `init` is what sets. Name the passphrase, not just the command.
+    case "agent_key_unreadable":
+    case "agent_store_corrupted":
+      return {
+        kind: "human_step",
+        relay: {
+          pt:
+            "O cofre de credenciais deste computador não abre — falta a senha que o protege, ou ela mudou. " +
+            "Peça ao operador para rodar `npx -y @depixapp/mcp init` num terminal (cria a carteira e define essa " +
+            "senha), ou para conferir DEPIX_WALLET_PASSPHRASE na configuração do servidor — e DEPIX_AGENT_PASSPHRASE, " +
+            "que tem precedência sobre ela se estiver definida —, e reiniciar.",
+          en:
+            "The credential vault on this machine will not open — the passphrase that seals it is missing or changed. " +
+            "Ask the operator to run `npx -y @depixapp/mcp init` in a terminal (it creates the wallet and sets that " +
+            "passphrase), or to check DEPIX_WALLET_PASSPHRASE in the server config — and DEPIX_AGENT_PASSPHRASE, which " +
+            "takes precedence over it when set — then restart.",
+        },
+      };
+
+    // ── the operator's own login (`depix-mcp login`) ──
+    case "owner_session_expired":
+      return {
+        kind: "human_step",
+        relay: {
+          pt:
+            "O login do dono neste computador expirou. Peça ao operador para rodar `npx -y @depixapp/mcp login` " +
+            "num terminal e entrar de novo com Google ou GitHub.",
+          en:
+            "The owner's login on this machine expired. Ask the operator to run `npx -y @depixapp/mcp login` in a " +
+            "terminal and sign in again with Google or GitHub.",
+        },
+      };
+
     // ── operator token (§3.5) ──
     case "invalid_operator_token":
     case "operator_token_required":
@@ -205,6 +241,7 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
     case "payer_velocity_limit":
     case "platform_shutdown":
     case "service_unavailable":
+    case "operator_register_cap_exceeded":
       return { kind: "wait", ...(ctx.retryAfterSeconds !== undefined ? { retry_after_seconds: ctx.retryAfterSeconds } : {}) };
 
     // ── register conflicts (retry with different params) ──

@@ -257,6 +257,10 @@ drive them with `simulate_checkout_payment`.
 | `set_featured_products` | POST /api/products/featured | `merchant_write` |
 | `list_product_checkouts` | GET /api/products/:id/checkouts | `merchant_read` |
 | `get_account` | GET /api/me | `merchant_read` |
+| `get_onboarding_status` | GET /api/verification + GET /api/me probe (self-heals via POST when every step is done) | `merchant_read` |
+| `update_merchant_profile` | PATCH /api/merchants/me | `merchant_write` |
+| `get_vault_status` | GET /api/vault/status | `wallet_read` (read-only) |
+| `list_webhook_logs` | GET /api/webhook-logs, /api/webhook-logs/:id | `merchant_read` |
 | `get_deposit_status` | GET /api/deposits/:id | `wallet_read` (read-only) |
 | `get_withdrawal_status` | GET /api/withdrawals/:id | `wallet_read` (read-only) |
 | `open_support_ticket` | POST /api/tickets | any key (scope-less) |
@@ -282,7 +286,8 @@ your seed; without one they return `wallet_not_configured`.
 
 | Group | Tools |
 |---|---|
-| Status & reads | `wallet_status`, `wallet_get_address`, `wallet_get_balances`, `wallet_list_transactions`, `wallet_get_guardrails`, `wallet_diagnostics` |
+| Status & reads | `wallet_status`, `wallet_get_address`, `wallet_get_balances`, `wallet_list_transactions`, `wallet_list_utxos`, `wallet_get_guardrails`, `wallet_diagnostics` |
+| Sync | `wallet_sync` (explicit refresh; `rescan` for a deep cold re-scan) |
 | Move money | `wallet_send`, `wallet_create_deposit`, `wallet_wait_deposit`, `wallet_create_withdrawal`, `wallet_wait_withdrawal` |
 | Convert | `wallet_quote`, `wallet_convert`, `wallet_swap_quote`, `wallet_swap_execute`, `wallet_to_stablecoin`, `wallet_shift_usdt` |
 | Lightning | `wallet_pay_lightning_invoice`, `wallet_receive_lightning` |

@@ -106,6 +106,8 @@ export interface CreateServerOptions {
   apiKey?: ApiKeySource;
   /** "oauth" when the connection authenticated via a WorkOS token (no sk_). */
   authMode?: "oauth";
+  /** Renew an expired OAuth session on a 401 (local `depix-mcp login` only). */
+  onUnauthorized?: () => Promise<boolean>;
   /** Which deployment this is — steers the missing_api_key next_action (§5.1).
    * Default "hosted"; the unified npx bin passes "local". */
   deployment?: "hosted" | "local";
@@ -135,7 +137,13 @@ export interface CreateServerOptions {
 export function createServer(opts: CreateServerOptions): McpServer {
   const client =
     opts.apiClient ??
-    new ApiClient({ apiKey: opts.apiKey, apiBase: opts.apiBase, authMode: opts.authMode, deployment: opts.deployment });
+    new ApiClient({
+      apiKey: opts.apiKey,
+      apiBase: opts.apiBase,
+      authMode: opts.authMode,
+      deployment: opts.deployment,
+      ...(opts.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
+    });
   const version = opts.version ?? resolveServerVersion();
 
   const server = new McpServer(
@@ -385,7 +393,9 @@ export function createServer(opts: CreateServerOptions): McpServer {
         "WhatsApp, deposit+convert+withdraw to verify, create the store), each with a plain PT+EN title and " +
         "instruction to relay to the human, an absolute app deep link, and the current numbers. Composes the " +
         "verification progress with a store probe, and — when every step is complete — triggers verification itself " +
-        "so the account never sits 'all green but not verified'. Read-first; the only write is that self-heal trigger.",
+        "so the account never sits 'all green but not verified'. Read-first; the only write is that self-heal trigger. " +
+        "Every incomplete step is a HUMAN step: relay its instruction and deep link to the operator and wait — no tool " +
+        "here can complete one for them.",
       inputSchema: s.getOnboardingStatusInput,
       outputSchema: s.getOnboardingStatusOutput,
       annotations: write,

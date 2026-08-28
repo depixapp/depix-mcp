@@ -288,7 +288,7 @@ export interface RegisterWalletToolsContext {
 
 /** Handle returned by registerWalletTools() for the MCP-layer teardown. */
 export interface WalletToolsRegistration {
-  /** The names registered on the server — WALLET_TOOL_NAMES, all 27. */
+  /** The names registered on the server — WALLET_TOOL_NAMES, all 29. */
   readonly toolNames: readonly string[];
   /**
    * Dispose the MCP-layer resources these tools own (the open SideSwap quote

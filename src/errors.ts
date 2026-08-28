@@ -57,9 +57,14 @@ export function missingApiKeyError(authMode?: "oauth", deployment?: "hosted" | "
   }
   if (deployment === "local") {
     // Local (npx): the operator can mint a key in-process with register_account.
+    // The other two doors are named too, with the restart caveat that made the
+    // second one look broken — the owner session is read at boot, so a `login`
+    // run while this server is up does nothing until the host restarts it.
     return new ToolError(
       "No DePix App API key is configured. On this local server you can create an account and its key with the " +
-        "register_account tool (it needs the operator's op_ code and a wallet), or set DEPIX_API_KEY and restart. See https://depixapp.com/docs/en/",
+        "register_account tool (it needs the operator's op_ code and a wallet). The operator can instead sign in as " +
+        "themselves with `npx -y @depixapp/mcp login`, or set DEPIX_API_KEY — both take effect only after this " +
+        "server is restarted, because the stored credentials are read at boot. See https://depixapp.com/docs/en/",
       "missing_api_key",
       { data: next() },
     );
@@ -71,12 +76,29 @@ export function missingApiKeyError(authMode?: "oauth", deployment?: "hosted" | "
   );
 }
 
+/**
+ * The operator's `depix-mcp login` session expired and could not be renewed
+ * (the refresh token was revoked, rotated away, or the sign-in server refused
+ * it). Only a human at a terminal can fix it, so this is a human_step — and it
+ * is raised INSTEAD of the bare 401 the API answered, which would have told the
+ * agent nothing about which of the two identities went stale.
+ */
+export function ownerSessionExpiredError(): ToolError {
+  return new ToolError(
+    "The owner's DePix login on this machine expired and could not be renewed. Ask the operator to run " +
+      "`npx -y @depixapp/mcp login` in a terminal to sign in again.",
+    "owner_session_expired",
+    { data: withNextAction({}, "owner_session_expired") },
+  );
+}
+
 // ── Shapes we read from the envelope (all optional / defensively typed) ──
 interface ApiErrorDetails {
   field?: unknown;
   required_scope?: unknown;
   scope?: unknown;
   window_minutes?: unknown;
+  window_hours?: unknown;
   max_per_window?: unknown;
   limit?: unknown;
   limit_cents?: unknown;
@@ -163,6 +185,7 @@ export function mapApiError(
   const usedCents = asInt(details.used_cents);
   const windowMinutes = asInt(details.window_minutes);
   const maxPerWindow = asInt(details.max_per_window);
+  const windowHours = asInt(details.window_hours);
   // discount_changed only becomes actionable through these two: they are the
   // merchant's CURRENT values, which the caller must re-price from before
   // retrying. Structured numbers, so they pass the anti-injection boundary.
@@ -288,6 +311,12 @@ export function mapApiError(
     case "merchant_rate_limited":
       message = `Rate limited (merchant, 30/min). Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
+    case "operator_register_cap_exceeded":
+      message =
+        maxPerWindow !== undefined && windowHours !== undefined
+          ? `This operator already registered ${maxPerWindow} agent accounts in the last ${windowHours}h. Retry after ${retryAfterPhrase(retryAfter)} — and if the operator did not open those accounts, their op_ code has leaked: tell them to revoke it.`
+          : `This operator hit the agent-registration cap. Retry after ${retryAfterPhrase(retryAfter)} — and if the operator did not open those accounts, their op_ code has leaked: tell them to revoke it.`;
+      break;
     case "platform_shutdown":
       message = `The DePix App platform is temporarily shut down. Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
@@ -321,6 +350,7 @@ export function mapApiError(
   if (limitCents !== undefined) safeDetails.limit_cents = limitCents;
   if (usedCents !== undefined) safeDetails.used_cents = usedCents;
   if (windowMinutes !== undefined) safeDetails.window_minutes = windowMinutes;
+  if (windowHours !== undefined) safeDetails.window_hours = windowHours;
   if (maxPerWindow !== undefined) safeDetails.max_per_window = maxPerWindow;
   if (discountPct !== undefined) safeDetails.discount_pct = discountPct;
   if (dueCents !== undefined) safeDetails.amount_cents = dueCents;

@@ -34,6 +34,7 @@ const MAPPED_CODES = [
   "account_suspended",
   "agents_disabled",
   "rate_limited",
+  "operator_register_cap_exceeded",
   "agent_pubkey_exists",
   "username_taken",
 ];

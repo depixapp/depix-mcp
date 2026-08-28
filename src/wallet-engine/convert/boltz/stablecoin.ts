@@ -336,7 +336,7 @@ export async function loadViem(importer?: ViemImporter): Promise<LoadedViem> {
   } catch (err) {
     throw new ConversionError(
       "STABLECOIN_DEPS_MISSING",
-      "The EVM signing stack (viem) could not be loaded — reinstall @depixapp/sdk with its viem dependency to use stablecoin conversions.",
+      "The EVM signing stack (viem) could not be loaded — reinstall @depixapp/mcp with its viem dependency to use stablecoin conversions.",
       { cause: err }
     );
   }
@@ -1053,7 +1053,7 @@ export async function ensureStablecoinConfig(): Promise<void> {
   } catch (err) {
     throw new ConversionError(
       "STABLECOIN_DEPS_MISSING",
-      "The boltz-swaps stablecoin engine (with viem) could not be loaded — reinstall @depixapp/sdk to use stablecoin conversions.",
+      "The boltz-swaps stablecoin engine (with viem) could not be loaded — reinstall @depixapp/mcp to use stablecoin conversions.",
       { cause: err }
     );
   }
