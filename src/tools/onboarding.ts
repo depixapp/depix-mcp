@@ -142,12 +142,13 @@ function stepNumbers(bs: Record<string, unknown>): Record<string, number | null>
   return Object.values(numbers).some((v) => v !== null) ? numbers : null;
 }
 
-/** whatsapp_verified is not on the reachable endpoints yet — read it opportunistically. */
+// The API serializes whatsapp_verified as 0/1 (a SQLite integer) — booleans
+// never appear on the wire. "unknown" stays the answer when the field is absent.
 function whatsappState(v: Record<string, unknown>): "done" | "pending" | "unknown" {
   const progress = rec(v.progress);
   const flag = v.whatsapp_verified ?? progress.whatsapp_verified;
-  if (flag === true) return "done";
-  if (flag === false) return "pending";
+  if (flag === 1 || flag === true) return "done";
+  if (flag === 0 || flag === false) return "pending";
   return "unknown";
 }
 

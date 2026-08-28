@@ -22,6 +22,22 @@ const step = (id: string, state: string, extra: Record<string, unknown> = {}) =>
 });
 
 describe("get_onboarding_status (§4.3)", () => {
+  it("reads whatsapp_verified as the wire spells it (0/1), not booleans", async () => {
+    for (const [wire, want] of [
+      [1, "done"],
+      [0, "pending"],
+    ] as const) {
+      const out = await getOnboardingStatus(
+        client([
+          { status: 200, json: { verified: false, enabled: true, whatsapp_verified: wire, steps: [] } },
+          { status: 404, json: { error: { code: "not_found" } } },
+        ]),
+      );
+      const wa = out.steps.find((s) => s.id === "whatsapp")!;
+      expect(wa.state).toBe(want);
+    }
+  });
+
   it("unverified/no store: prepends the wallet step, includes WhatsApp, ends with merchant", async () => {
     const out = await getOnboardingStatus(
       client([
