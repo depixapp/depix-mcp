@@ -12,6 +12,7 @@ import { AgentError, DepixApiError } from "../src/wallet-engine/errors.js";
 // The §5.1 map — the codes the builder covers that the local/gateway tools reach.
 const MAPPED_CODES = [
   "missing_api_key",
+  "credentials_locked",
   "api_key_required",
   "wallet_not_configured",
   "invalid_operator_token",

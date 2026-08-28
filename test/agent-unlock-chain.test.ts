@@ -166,6 +166,26 @@ describe("the owner session opens through the wallet's unlock chain (§3.7 #8)",
     expect(unlock.reads()).toBe(0);
   });
 
+  it("an EMPTY env var is not a passphrase — the keychain still decides", async () => {
+    // A host config with a placeholder `"DEPIX_WALLET_PASSPHRASE": ""` must not
+    // shut the door the keychain opens: "" seals nothing and opens nothing.
+    process.env.DEPIX_WALLET_PASSPHRASE = "";
+    await sealOwnerSession(KEYCHAIN_PASS);
+    const unlock = keychainHolding({ [walletDir]: KEYCHAIN_PASS });
+
+    const resolver = new CredentialResolver({});
+    expect(await seedOwnerSession(resolver, { unlock: unlock.deps })).toBe("active");
+    expect(unlock.reads()).toBeGreaterThan(0);
+  });
+
+  it("an EMPTY DEPIX_AGENT_PASSPHRASE falls through to DEPIX_WALLET_PASSPHRASE", async () => {
+    process.env.DEPIX_AGENT_PASSPHRASE = "";
+    process.env.DEPIX_WALLET_PASSPHRASE = ENV_PASS;
+    await sealOwnerSession(ENV_PASS);
+
+    expect(await seedOwnerSession(new CredentialResolver({}), { unlock: emptyChain().deps })).toBe("active");
+  });
+
   it("DEPIX_AGENT_PASSPHRASE still outranks DEPIX_WALLET_PASSPHRASE", async () => {
     process.env.DEPIX_AGENT_PASSPHRASE = ENV_PASS;
     process.env.DEPIX_WALLET_PASSPHRASE = "the wrong one for this vault";
@@ -210,6 +230,21 @@ describe("a vault that exists and will not open is LOCKED, never absent", () => 
       await seedResolverFromStore(resolver, { unlock: keychainHolding({ [walletDir]: KEYCHAIN_PASS }).deps }),
     ).toBe("active");
     expect(resolver.resolve()).toBe("sk_test_STORED");
+  });
+
+  it("the sk_ vault reports `locked` when the chain answers with the WRONG passphrase", async () => {
+    // Distinct from the empty chain above, which never reaches the decrypt: here
+    // a passphrase IS resolved and the GCM tag rejects it. Both roads have to
+    // end at "locked" — the one that goes through the failed open included.
+    await new AgentCredentialStore({ dataDir: agentDir, passphrase: KEYCHAIN_PASS }).save({
+      testKey: "sk_test_STORED",
+      active: "test",
+    });
+    const unlock = keychainHolding({ [walletDir]: "a stale unlock key from another wallet" });
+
+    const resolver = new CredentialResolver({});
+    expect(await seedResolverFromStore(resolver, { unlock: unlock.deps })).toBe("locked");
+    expect(resolver.hasAgentKey()).toBe(false);
   });
 
   it("the gateway credential error names the locked vault instead of asking for a key", () => {
@@ -372,6 +407,21 @@ describe("`account status` on a locked machine", () => {
     expect(text).toMatch(/agent account:.*LOCKED/);
     expect(text).toMatch(/owner login:.*LOCKED/);
     expect(text).not.toMatch(/no credentials/i);
+  });
+
+  it("prints LOCKED for an sk_ vault the chain opens with the WRONG passphrase", async () => {
+    await new AgentCredentialStore({ dataDir: agentDir, passphrase: KEYCHAIN_PASS }).save({
+      testKey: "sk_test_STORED",
+      active: "test",
+    });
+
+    const out: string[] = [];
+    const deps = buildAccountDeps((t) => out.push(t), {
+      unlock: keychainHolding({ [walletDir]: "a stale unlock key from another wallet" }).deps,
+    });
+    await runAccountCommand(["status"], deps);
+
+    expect(out.join("")).toMatch(/agent account:.*LOCKED/);
   });
 
   it("with the keychain in place the same machine reports neither as locked", async () => {

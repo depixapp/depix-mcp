@@ -31,6 +31,9 @@ export interface AgentVaultOptions {
   unlock?: Partial<UnlockStoreDeps>;
 }
 
+/** An env var that actually carries a value — "" and unset are the same fact. */
+const set = (value: string | undefined): string | undefined => (value ? value : undefined);
+
 /**
  * The passphrase that seals the agent's three vaults — the Ed25519 identity, the
  * sk_ credentials and the owner session — resolved through the SAME chain the
@@ -49,7 +52,10 @@ export interface AgentVaultOptions {
  */
 export async function resolveAgentPassphrase(opts: AgentVaultOptions = {}): Promise<string | undefined> {
   const env = opts.env ?? process.env;
-  const fromEnv = env.DEPIX_AGENT_PASSPHRASE ?? env.DEPIX_WALLET_PASSPHRASE;
+  // An empty var is NOT a pinned passphrase — it is a host config carrying a
+  // placeholder. It seals nothing and opens nothing, so letting it win would
+  // shut the very door below. Same reading CredentialResolver gives DEPIX_API_KEY.
+  const fromEnv = set(env.DEPIX_AGENT_PASSPHRASE) ?? set(env.DEPIX_WALLET_PASSPHRASE);
   if (fromEnv !== undefined) return fromEnv;
   // Lazy, like every other engine import here: a gateway-only boot that finds a
   // passphrase in its env never loads the unlock store at all.

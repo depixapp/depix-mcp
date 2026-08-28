@@ -84,6 +84,7 @@ describe("the register preconditions all carry a next_action", () => {
   const codes = [
     "agent_key_unreadable",
     "agent_store_corrupted",
+    "credentials_locked",
     "agent_not_initialized",
     "wallet_not_configured",
     "operator_token_required",
