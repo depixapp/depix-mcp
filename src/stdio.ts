@@ -85,13 +85,14 @@ async function serve(): Promise<void> {
         "DePix App API return a missing_api_key error until you set a key, run `npx -y @depixapp/mcp login`, or " +
         "create an account with the register_account tool.\n",
     );
-  } else if (credentials.bothPersonasPresent() || credentials.selectionUnavailable()) {
-    // Two identities on one machine: never leave which one is acting implicit.
+  } else if (credentials.bothPersonasPresent() || credentials.selectionUnavailable() || credentials.hasEnvOverride()) {
+    // More than one credential on this machine: never leave which one is acting
+    // implicit. The sentence comes from the SAME ladder that picks the
+    // credential, so the boot line cannot contradict `account status`.
+    const { active, reason } = credentials.verdict();
     stderr(
-      `depix-mcp: acting as the ${credentials.persona()} account` +
-        (credentials.preference() !== undefined ? ` (selected with \`account use ${credentials.preference()}\`)` : " (default order)") +
-        (credentials.selectionUnavailable() ? " — the selected account has no credential here, so this is a fallback" : "") +
-        ". Run `npx -y @depixapp/mcp account status` for the full picture.\n",
+      `depix-mcp: acting as the ${active} account — ${reason}. ` +
+        "Run `npx -y @depixapp/mcp account status` for the full picture.\n",
     );
   }
   if (!walletConfigured) {

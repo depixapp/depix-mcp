@@ -56,15 +56,18 @@ function harness(overrides: Partial<OwnerLoginDeps> = {}, opts: { tokenResponse?
     fetchImpl,
     waitForCallback: () => {
       order.push("listen");
-      return new Promise((resolve) => {
-        release = (q) =>
-          resolve({
-            query: q,
-            respond: (page) => {
-              order.push("respond");
-              pages.push(page);
-            },
-          });
+      return Promise.resolve({
+        callback: new Promise((resolve) => {
+          release = (q) =>
+            resolve({
+              query: q,
+              respond: (page) => {
+                order.push("respond");
+                pages.push(page);
+              },
+            });
+        }),
+        close: () => order.push("close"),
       });
     },
     openBrowser: (url) => {
@@ -141,8 +144,11 @@ describe("runOwnerLogin", () => {
       openBrowser: () => Promise.resolve(true),
       waitForCallback: () =>
         Promise.resolve({
-          query: new URLSearchParams({ code: "AUTHCODE", state: "NOT-THE-STATE" }),
-          respond: () => {},
+          callback: Promise.resolve({
+            query: new URLSearchParams({ code: "AUTHCODE", state: "NOT-THE-STATE" }),
+            respond: () => {},
+          }),
+          close: () => {},
         }),
     });
     expect(await runOwnerLogin(h.deps)).toBe(1);
@@ -159,13 +165,27 @@ describe("runOwnerLogin", () => {
     expect(msg).toMatch(/DEPIX_API_KEY|register_account/);
   });
 
-  it("a busy port is reported as a port conflict, not as a generic failure", async () => {
+  it("a busy port fails BEFORE the browser opens — the code must not reach the squatter", async () => {
+    // Proven live: with something else on 47617 the old flow printed "opening
+    // your browser…", opened it, and only then reported EADDRINUSE — handing the
+    // authorization code to whoever held the port. Binding must therefore
+    // complete before the browser is ever launched.
     const h = harness({
       waitForCallback: () => Promise.reject(Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" })),
     });
     expect(await runOwnerLogin(h.deps)).toBe(1);
+    expect(h.order).not.toContain("open");
+    expect(h.out.join("")).not.toMatch(/opening your browser/i);
     expect(h.out.join("")).toContain(String(OWNER_LOOPBACK_PORT));
     expect(h.out.join("")).toMatch(/already in use|already listening/i);
+  });
+
+  it("an abandoned flow closes the listener instead of leaving the port held", async () => {
+    const h = harness({
+      openBrowser: () => Promise.reject(new Error("spawn blew up")),
+    });
+    expect(await runOwnerLogin(h.deps)).toBe(1);
+    expect(h.order).toContain("close");
   });
 
   it("prints the URL for the operator when the browser cannot be opened", async () => {
@@ -173,9 +193,13 @@ describe("runOwnerLogin", () => {
     // it just means the human pastes the URL themselves.
     let release: ((q: URLSearchParams) => void) | undefined;
     const h = harness({
-      waitForCallback: () => new Promise((resolve) => {
-        release = (q) => resolve({ query: q, respond: () => {} });
-      }),
+      waitForCallback: () =>
+        Promise.resolve({
+          callback: new Promise((resolve) => {
+            release = (q) => resolve({ query: q, respond: () => {} });
+          }),
+          close: () => {},
+        }),
       openBrowser: (url) => {
         const state = new URL(url).searchParams.get("state") ?? "";
         setTimeout(() => release?.(new URLSearchParams({ code: "AUTHCODE", state })), 0);
@@ -259,5 +283,46 @@ describe("runOwnerLogout", () => {
     });
     expect(code).toBe(0);
     expect(out.join("")).toMatch(/no owner login/i);
+  });
+});
+
+describe("the session carries WHO signed in (R5)", () => {
+  const idToken = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(
+    JSON.stringify({ sub: "user_01", email: "dono@example.com", provider: "GoogleOAuth" }),
+  ).toString("base64url")}.SIG`;
+
+  function withIdToken(overrides: Partial<OwnerLoginDeps> = {}) {
+    return harness(overrides, {
+      tokenResponse: json({ access_token: ACCESS, refresh_token: REFRESH, expires_in: 900, id_token: idToken }),
+    });
+  }
+
+  it("stores the email and provider even when --provider was not given", async () => {
+    const h = withIdToken();
+    expect(await runOwnerLogin(h.deps)).toBe(0);
+    expect(h.saved[0]).toMatchObject({ email: "dono@example.com", provider: "GoogleOAuth" });
+  });
+
+  it("an explicit --provider wins over the claim", async () => {
+    const h = withIdToken({ provider: "github" });
+    await runOwnerLogin(h.deps);
+    expect(h.saved[0]?.provider).toBe("github");
+  });
+
+  it("names the account on the terminal — and still prints no token", async () => {
+    const h = withIdToken();
+    await runOwnerLogin(h.deps);
+    const printed = h.out.join("");
+    expect(printed).toContain("dono@example.com");
+    expect(printed).not.toContain(ACCESS);
+    expect(printed).not.toContain(REFRESH);
+    expect(printed).not.toContain(idToken);
+  });
+
+  it("a login with no id_token still succeeds, just without a label", async () => {
+    const h = harness();
+    expect(await runOwnerLogin(h.deps)).toBe(0);
+    expect(h.saved[0]?.email).toBeUndefined();
+    expect(h.out.join("")).toMatch(/signed in\./i);
   });
 });

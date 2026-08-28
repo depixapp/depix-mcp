@@ -4,10 +4,12 @@
 // store), so the whole flow is exercised in unit tests without binding a socket
 // or opening a window. src/owner-deps.ts supplies the real ones.
 //
-// ORDER IS LOAD-BEARING: the loopback listener is bound BEFORE the browser is
-// opened. The other way round, a fast redirect reaches a socket that is not
-// listening yet and the operator sees "connection refused" on a login that
-// actually started fine.
+// ORDER IS LOAD-BEARING, and it is enforced by the TYPES, not by a convention:
+// `waitForCallback` resolves only once the socket is listening, and `login`
+// awaits it before opening the browser. Opening first raced the redirect
+// against an unbound socket — and worse, when the port was already taken the
+// browser opened anyway and the authorization code went to whatever held it.
+// A test pins both halves.
 //
 // NOTHING SECRET IS EVER PRINTED. The success page carries no token (the code
 // arrives in the query, is exchanged, and is discarded), and the terminal
@@ -24,6 +26,7 @@ import {
   discoverAuthServer,
   exchangeCode,
   readCallbackParams,
+  readIdTokenClaims,
   type OwnerProvider,
 } from "./owner-oauth.js";
 import { UNIFIED_INIT_COMMAND } from "./instructions.js";
@@ -40,11 +43,24 @@ export interface LoopbackCallback {
   respond(page: { status: number; html: string }): void;
 }
 
+/** A listener that is ALREADY bound — see the ordering note in the header. */
+export interface LoopbackListener {
+  /** The single callback the browser delivers. */
+  callback: Promise<LoopbackCallback>;
+  /** Stop listening. Idempotent; for the paths that abandon the flow. */
+  close(): void;
+}
+
+/**
+ * Bind the loopback listener. The promise resolves ONLY once the socket is
+ * listening, so awaiting it is what proves the redirect has somewhere to land
+ * before a browser is ever opened. A busy port rejects here.
+ */
 export type WaitForCallback = (opts: {
   port: number;
   path: string;
   timeoutMs: number;
-}) => Promise<LoopbackCallback>;
+}) => Promise<LoopbackListener>;
 
 export interface OwnerLoginDeps {
   /** Human output. STDOUT is the JSON-RPC channel, so this MUST be stderr. */
@@ -106,6 +122,7 @@ export async function runOwnerLogin(deps: OwnerLoginDeps): Promise<number> {
   }
 
   let callback: LoopbackCallback | undefined;
+  let listener: LoopbackListener | undefined;
   try {
     const endpoints = await discoverAuthServer({ resourceUrl: deps.resourceUrl, fetchImpl: deps.fetchImpl });
     const pkce = createPkce();
@@ -120,16 +137,14 @@ export async function runOwnerLogin(deps: OwnerLoginDeps): Promise<number> {
       ...(deps.provider ? { provider: deps.provider } : {}),
     });
 
-    // Bind first, open second — see the header note.
-    const pending = deps.waitForCallback({
+    // BIND FIRST, and wait for it. Everything after this line can assume the
+    // redirect has somewhere to land; a port conflict throws here, with no
+    // browser opened and no code in flight.
+    listener = await deps.waitForCallback({
       port: OWNER_LOOPBACK_PORT,
       path: OWNER_LOOPBACK_PATH,
       timeoutMs: deps.timeoutMs ?? CALLBACK_TIMEOUT_MS,
     });
-    // Mark it handled now: the browser is opened before `pending` is awaited,
-    // and a listener that fails to bind must not surface as an unhandled
-    // rejection in the gap.
-    void pending.catch(() => {});
     const opened = await deps.openBrowser(authorizeUrl);
     deps.write(
       opened
@@ -137,7 +152,7 @@ export async function runOwnerLogin(deps: OwnerLoginDeps): Promise<number> {
         : `depix-mcp: could not open a browser. Open this URL to sign in:\n\n  ${authorizeUrl}\n\n`,
     );
 
-    callback = await pending;
+    callback = await listener.callback;
     const code = readCallbackParams(callback.query, state);
     const tokens = await exchangeCode({
       tokenEndpoint: endpoints.tokenEndpoint,
@@ -152,18 +167,30 @@ export async function runOwnerLogin(deps: OwnerLoginDeps): Promise<number> {
     callback.respond({ status: 200, html: SUCCESS_PAGE });
     callback = undefined;
 
+    // Display labels only — `account status` has to be able to answer WHICH
+    // login is stored, and "signed in" alone does not. The claims are not
+    // verified and steer nothing (see readIdTokenClaims).
+    const claims = readIdTokenClaims(tokens.idToken);
+    const provider = deps.provider ?? claims.provider;
     await deps.saveSession({
       accessToken: tokens.accessToken,
       ...(tokens.refreshToken !== undefined ? { refreshToken: tokens.refreshToken } : {}),
       expiresAt: tokens.expiresAt,
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(provider !== undefined ? { provider } : {}),
+      ...(claims.email !== undefined ? { email: claims.email } : {}),
     });
 
-    deps.write("depix-mcp: signed in. The owner's DePix account is now available to this server.\n");
+    const who = [claims.email, provider].filter((v) => typeof v === "string" && v.length > 0).join(" via ");
+    deps.write(
+      `depix-mcp: signed in${who ? ` as ${who}` : ""}. The owner's DePix account is now available to this server.\n`,
+    );
     await announceActivePersona(deps);
     return 0;
   } catch (err) {
     callback?.respond({ status: 400, html: FAILURE_PAGE });
+    // Whatever went wrong, do not leave the fixed port held: the next `login`
+    // would then fail with the conflict this very flow created.
+    listener?.close();
     deps.write(explain(err));
     return 1;
   }

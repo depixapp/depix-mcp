@@ -21,6 +21,7 @@ import {
   exchangeCode,
   pkceChallengeFor,
   readCallbackParams,
+  readIdTokenClaims,
   refreshOwnerTokens,
   resolveOwnerClientId,
 } from "../src/owner-oauth.js";
@@ -365,5 +366,51 @@ describe("refreshOwnerTokens", () => {
       const dump = `${(err as Error).message} ${JSON.stringify((err as OwnerLoginError).data)}`;
       expect(dump).not.toContain("RT.SECRET.VALUE");
     }
+  });
+});
+
+describe("readIdTokenClaims (display only — R5)", () => {
+  const encode = (claims: Record<string, unknown>) =>
+    `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.SIG`;
+
+  it("reads the email so `account status` can say WHICH owner is signed in", () => {
+    expect(readIdTokenClaims(encode({ sub: "user_01", email: "dono@example.com" }))).toEqual({
+      email: "dono@example.com",
+    });
+  });
+
+  it("takes a provider claim when the server sends one, and omits it otherwise", () => {
+    expect(readIdTokenClaims(encode({ email: "a@b.c", provider: "GoogleOAuth" })).provider).toBe("GoogleOAuth");
+    expect(readIdTokenClaims(encode({ email: "a@b.c" })).provider).toBeUndefined();
+  });
+
+  it("returns nothing rather than throwing on garbage — a bad label must not fail a login", () => {
+    expect(readIdTokenClaims(undefined)).toEqual({});
+    expect(readIdTokenClaims("not-a-jwt")).toEqual({});
+    expect(readIdTokenClaims("a.!!!!.c")).toEqual({});
+    expect(readIdTokenClaims(encode({ email: 42, provider: [] }))).toEqual({});
+  });
+
+  it("drops an absurdly long claim instead of printing it", () => {
+    expect(readIdTokenClaims(encode({ email: "x".repeat(400) })).email).toBeUndefined();
+  });
+
+  it("exchangeCode carries the id_token through so login can label the session", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({ access_token: "AT", expires_in: 60, id_token: encode({ email: "dono@example.com" }) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const tokens = await exchangeCode({
+      tokenEndpoint: `${AS}/oauth2/token`,
+      clientId: "c",
+      code: "x",
+      verifier: "v",
+      redirectUri: OWNER_LOOPBACK_REDIRECT_URI,
+      resource: RESOURCE,
+      fetchImpl,
+      nowMs: 0,
+    });
+    expect(readIdTokenClaims(tokens.idToken).email).toBe("dono@example.com");
   });
 });

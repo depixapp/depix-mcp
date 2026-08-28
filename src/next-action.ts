@@ -142,11 +142,13 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
           pt:
             "O cofre de credenciais deste computador não abre — falta a senha que o protege, ou ela mudou. " +
             "Peça ao operador para rodar `npx -y @depixapp/mcp init` num terminal (cria a carteira e define essa " +
-            "senha), ou para conferir a variável DEPIX_WALLET_PASSPHRASE na configuração do servidor, e reiniciar.",
+            "senha), ou para conferir DEPIX_WALLET_PASSPHRASE na configuração do servidor — e DEPIX_AGENT_PASSPHRASE, " +
+            "que tem precedência sobre ela se estiver definida —, e reiniciar.",
           en:
             "The credential vault on this machine will not open — the passphrase that seals it is missing or changed. " +
             "Ask the operator to run `npx -y @depixapp/mcp init` in a terminal (it creates the wallet and sets that " +
-            "passphrase), or to check DEPIX_WALLET_PASSPHRASE in the server config, then restart.",
+            "passphrase), or to check DEPIX_WALLET_PASSPHRASE in the server config — and DEPIX_AGENT_PASSPHRASE, which " +
+            "takes precedence over it when set — then restart.",
         },
       };
 

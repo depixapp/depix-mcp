@@ -10,6 +10,7 @@
 // Never a token, and never the passphrase.
 
 import { PERSONAS, type Persona } from "./account-preference.js";
+import { decidePersona, type PersonaVerdict } from "./credentials.js";
 
 /** What `account status` can see about the stored owner login. */
 export interface OwnerSessionFacts {
@@ -47,8 +48,7 @@ interface Situation {
   hasAgent: boolean;
   owner: OwnerSessionFacts | null;
   preference: Persona | undefined;
-  active: Persona | "none";
-  reason: string;
+  verdict: PersonaVerdict;
 }
 
 async function read(deps: AccountDeps): Promise<Situation> {
@@ -57,33 +57,16 @@ async function read(deps: AccountDeps): Promise<Situation> {
     deps.ownerSession(),
     deps.preference(),
   ]);
-  const hasOwner = owner?.present === true;
-
-  // The same ladder the resolver walks, narrated. Kept here rather than shared
-  // with CredentialResolver on purpose: the resolver holds live tokens this
-  // command must never load, so it reads the same FACTS and reports them.
-  let active: Persona | "none" = "none";
-  let reason = "";
-  if (preference === "owner" && hasOwner) {
-    active = "owner";
-    reason = "you selected it with `account use owner`";
-  } else if (preference === "agent" && hasAgent) {
-    active = "agent";
-    reason = "you selected it with `account use agent`";
-  } else if (hasAgent) {
-    active = "agent";
-    reason =
-      preference === "owner"
-        ? "no owner login is stored, so the `account use owner` selection cannot apply — falling back to the default"
-        : "the default: an agent account registered on this machine wins";
-  } else if (hasOwner) {
-    active = "owner";
-    reason =
-      preference === "agent"
-        ? "no agent account is registered, so the `account use agent` selection cannot apply — falling back to the default"
-        : "it is the only identity configured on this machine";
-  }
-  return { hasAgent, owner, preference, active, reason };
+  // The SAME ladder the resolver authenticates with (credentials.ts). This
+  // command reads facts, never tokens — but the verdict must be identical, or
+  // `account status` and the running server disagree about who is acting.
+  const verdict = decidePersona({
+    envKeyPresent: deps.envKeyPresent,
+    hasAgent,
+    hasOwner: owner?.present === true,
+    ...(preference !== undefined ? { preference } : {}),
+  });
+  return { hasAgent, owner, preference, verdict };
 }
 
 function formatExpiry(expiresAt: number | undefined): string {
@@ -93,7 +76,7 @@ function formatExpiry(expiresAt: number | undefined): string {
 
 function report(deps: AccountDeps, s: Situation): void {
   const lines: string[] = [];
-  if (s.active === "none") {
+  if (s.verdict.active === "none") {
     lines.push("depix-mcp: no credentials on this machine.");
     lines.push("  As yourself:   npx -y @depixapp/mcp login");
     lines.push("  As the agent:  ask the agent to call the register_account tool");
@@ -102,7 +85,7 @@ function report(deps: AccountDeps, s: Situation): void {
     return;
   }
 
-  lines.push(`depix-mcp: active: ${s.active} — ${s.reason}.`);
+  lines.push(`depix-mcp: active: ${s.verdict.active} — ${s.verdict.reason}.`);
   if (deps.envKeyPresent) {
     lines.push(
       "  NOTE: DEPIX_API_KEY is set in this server's environment and OVERRIDES every selection below. Unset it to " +
@@ -114,7 +97,7 @@ function report(deps: AccountDeps, s: Situation): void {
     const who = [s.owner.email, s.owner.provider].filter((v) => typeof v === "string" && v.length > 0).join(" via ");
     lines.push(
       s.owner.locked === true
-        ? "  owner login:   stored, but LOCKED — set DEPIX_WALLET_PASSPHRASE to open it"
+        ? "  owner login:   stored, but LOCKED — set DEPIX_WALLET_PASSPHRASE (or DEPIX_AGENT_PASSPHRASE, which wins) to open it"
         : `  owner login:   ${who || "signed in"}${formatExpiry(s.owner.expiresAt)}`,
     );
   } else {
@@ -153,7 +136,18 @@ export async function runAccountCommand(argv: readonly string[], deps: AccountDe
       return 1;
     }
     await deps.setPreference(persona as Persona);
-    report(deps, { ...situation, preference: persona as Persona, active: persona as Persona, reason: `you selected it with \`account use ${persona}\`` });
+    // Re-decide with the new selection rather than asserting it won: with
+    // DEPIX_API_KEY set it did not, and the readout has to say so.
+    report(deps, {
+      ...situation,
+      preference: persona as Persona,
+      verdict: decidePersona({
+        envKeyPresent: deps.envKeyPresent,
+        hasAgent: situation.hasAgent,
+        hasOwner: situation.owner?.present === true,
+        preference: persona as Persona,
+      }),
+    });
     return 0;
   }
 

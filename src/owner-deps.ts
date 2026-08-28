@@ -16,8 +16,8 @@
 import { resolveWalletDir } from "./unified.js";
 import { resolveAgentDir, resolveAgentPassphrase } from "./agent-deps.js";
 import { clearAccountPreference, readAccountPreference, writeAccountPreference, type Persona } from "./account-preference.js";
-import { ownerSessionExpiredError } from "./errors.js";
-import { discoverAuthServer, refreshOwnerTokens, resolveOwnerClientId, type AuthServerEndpoints } from "./owner-oauth.js";
+import { discoverAuthServer, refreshOwnerTokens, resolveOwnerClientId } from "./owner-oauth.js";
+import { createOwnerRefreshHook } from "./owner-refresh.js";
 import { waitForLoopbackCallback } from "./loopback-listener.js";
 import type { CredentialResolver } from "./credentials.js";
 import type { OwnerLoginDeps, OwnerLogoutDeps } from "./login-flow.js";
@@ -195,43 +195,18 @@ export async function seedOwnerSession(resolver: CredentialResolver): Promise<bo
 }
 
 /**
- * The ApiClient's 401 hook: renew the owner session ONCE, persist the rotation,
- * and hand the fresh token to the resolver. A refused refresh throws the typed
- * `owner_session_expired` so the agent gets the "ask the operator to run login
- * again" step instead of an opaque 401.
+ * The ApiClient's 401 hook, wired to the real store and the real endpoints.
+ * The single-flight gate that keeps two concurrent 401s from spending the same
+ * one-shot refresh token lives in createOwnerRefreshHook.
  */
 export function buildOwnerRefreshHook(resolver: CredentialResolver): () => Promise<boolean> {
-  // Discovery is stable for the life of the process; one round trip, not one
-  // per 401.
-  let endpoints: AuthServerEndpoints | undefined;
   const resourceUrl = resolveOwnerResourceUrl();
-  return async () => {
-    const store = await openStore();
-    let session: OwnerSession | null;
-    try {
-      session = await store.load();
-    } catch {
-      throw ownerSessionExpiredError();
-    }
-    if (session === null || session.refreshToken === undefined) throw ownerSessionExpiredError();
-    try {
-      endpoints ??= await discoverAuthServer({ resourceUrl });
-      const tokens = await refreshOwnerTokens({
-        tokenEndpoint: endpoints.tokenEndpoint,
-        clientId: resolveOwnerClientId(),
-        refreshToken: session.refreshToken,
-        resource: resourceUrl,
-      });
-      await store.save({
-        ...session,
-        accessToken: tokens.accessToken,
-        ...(tokens.refreshToken !== undefined ? { refreshToken: tokens.refreshToken } : {}),
-        expiresAt: tokens.expiresAt,
-      });
-      resolver.setOwnerToken(tokens.accessToken);
-      return true;
-    } catch {
-      throw ownerSessionExpiredError();
-    }
-  };
+  return createOwnerRefreshHook({
+    loadSession: async () => (await openStore()).load(),
+    saveSession: async (session) => (await openStore()).save(session),
+    tokenEndpoint: async () => (await discoverAuthServer({ resourceUrl })).tokenEndpoint,
+    refresh: ({ tokenEndpoint, refreshToken }) =>
+      refreshOwnerTokens({ tokenEndpoint, clientId: resolveOwnerClientId(), refreshToken, resource: resourceUrl }),
+    setToken: (token) => resolver.setOwnerToken(token),
+  });
 }

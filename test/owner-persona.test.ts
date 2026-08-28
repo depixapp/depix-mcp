@@ -249,3 +249,77 @@ describe("owner_session_expired next_action", () => {
     expect(action.relay.en).toContain("@depixapp/mcp");
   });
 });
+
+describe("decidePersona — ONE ladder behind every surface (R3)", () => {
+  // The boot line used to glue persona() to preference() without asking whether
+  // the choice actually decided anything. With DEPIX_API_KEY set AND
+  // `account use owner` selected it printed:
+  //
+  //   acting as the agent account (selected with `account use owner`)
+  //
+  // — wrong on all three counts. `account status` walked its own copy of the
+  // ladder and got it right, which is exactly how the two drifted. One function
+  // now answers for both.
+  const decide = async (facts: Parameters<typeof import("../src/credentials.js").decidePersona>[0]) =>
+    (await import("../src/credentials.js")).decidePersona(facts);
+
+  it("env key + `account use owner`: the env key wins, and the reason says so", async () => {
+    const v = await decide({ envKeyPresent: true, hasAgent: true, hasOwner: true, preference: "owner" });
+    expect(v.active).toBe("agent");
+    expect(v.basis).toBe("env_override");
+    expect(v.reason).toContain("DEPIX_API_KEY");
+    // The lie that shipped: crediting the selection for a decision it lost.
+    expect(v.reason).not.toContain("account use owner");
+  });
+
+  it("`account use owner` with a session: the selection is the reason", async () => {
+    const v = await decide({ envKeyPresent: false, hasAgent: true, hasOwner: true, preference: "owner" });
+    expect(v.active).toBe("owner");
+    expect(v.basis).toBe("selection");
+    expect(v.reason).toContain("account use owner");
+  });
+
+  it("`account use owner` with NO session: the fallback is named as a fallback", async () => {
+    const v = await decide({ envKeyPresent: false, hasAgent: true, hasOwner: false, preference: "owner" });
+    expect(v.active).toBe("agent");
+    expect(v.basis).toBe("selection_unavailable");
+    expect(v.reason).toMatch(/no owner login/i);
+    expect(v.reason).toMatch(/fall/i);
+  });
+
+  it("two identities, no selection: the default order is the reason", async () => {
+    const v = await decide({ envKeyPresent: false, hasAgent: true, hasOwner: true });
+    expect(v.active).toBe("agent");
+    expect(v.basis).toBe("default");
+    expect(v.reason).toMatch(/default/i);
+  });
+
+  it("owner only: the sole identity, said plainly", async () => {
+    const v = await decide({ envKeyPresent: false, hasAgent: false, hasOwner: true });
+    expect(v.active).toBe("owner");
+    expect(v.basis).toBe("default");
+  });
+
+  it("nothing configured resolves to none", async () => {
+    const v = await decide({ envKeyPresent: false, hasAgent: false, hasOwner: false });
+    expect(v.active).toBe("none");
+    expect(v.basis).toBe("none");
+  });
+
+  it("an env key alone is not an override — there is nothing to override", async () => {
+    const v = await decide({ envKeyPresent: true, hasAgent: false, hasOwner: false });
+    expect(v.active).toBe("agent");
+    expect(v.basis).toBe("env");
+  });
+
+  it("the resolver reports the SAME verdict it authenticates with", async () => {
+    const { CredentialResolver } = await import("../src/credentials.js");
+    const r = new CredentialResolver({ envKey: "sk_live_ENV", preference: "owner" });
+    r.setActiveKey("sk_test_AGENT");
+    r.setOwnerToken(OWNER_JWT);
+    // The credential actually sent, and the sentence printed about it, agree.
+    expect(r.resolveCredential()?.token).toBe("sk_live_ENV");
+    expect(r.verdict().active).toBe("agent");
+    expect(r.verdict().basis).toBe("env_override");
+  });
+});

@@ -22,8 +22,10 @@ import { randomBytes as nodeRandomBytes } from "node:crypto";
 /**
  * The loopback port, FIXED. A registered redirect URI is matched byte for byte
  * by the authorization server, so an ephemeral port would need one registration
- * per run. The cost is that a second concurrent `login` fails loudly (see the
- * EADDRINUSE branch in login-flow.ts) instead of silently landing elsewhere.
+ * per run. Moving to a free port is therefore not an option: a second
+ * concurrent `login` MUST fail, and must fail BEFORE the browser opens —
+ * loopback-listener.ts resolves only once the socket is bound, so the
+ * EADDRINUSE surfaces with no window open and no code in flight.
  */
 export const OWNER_LOOPBACK_PORT = 47617;
 export const OWNER_LOOPBACK_PATH = "/callback";
@@ -263,6 +265,46 @@ export interface OwnerTokens {
   refreshToken?: string;
   /** Unix ms after which the access token must be refreshed. */
   expiresAt: number;
+  /** Present when `openid` was granted. DISPLAY ONLY — see readIdTokenClaims. */
+  idToken?: string;
+}
+
+/** The two labels `account status` prints so the operator knows WHICH login. */
+export interface IdTokenClaims {
+  email?: string;
+  provider?: string;
+}
+
+/**
+ * Read the display labels out of an id_token. The signature is NOT verified,
+ * and MUST NOT be: nothing here may steer a decision.
+ *
+ * That is safe for exactly this use. The token arrives over TLS on a direct
+ * connection to the authorization server we discovered, it is stored sealed
+ * next to the access token, and the only thing done with it is printing a name
+ * next to "owner login:" in `account status`. Authorisation is decided by the
+ * ACCESS token, which api.depixapp.com verifies against the AuthKit JWKS on
+ * every request — a forged claim here changes a label, never an identity.
+ */
+export function readIdTokenClaims(idToken: string | undefined): IdTokenClaims {
+  if (typeof idToken !== "string") return {};
+  const payload = idToken.split(".")[1];
+  if (payload === undefined) return {};
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const str = (value: unknown): string | undefined =>
+    typeof value === "string" && value.length > 0 && value.length <= 320 ? value : undefined;
+  return {
+    ...(str(parsed.email) !== undefined ? { email: str(parsed.email) } : {}),
+    // Best effort: AuthKit does not promise a provider claim, so an absent one
+    // is normal and simply leaves the label off.
+    ...(str(parsed.provider) !== undefined ? { provider: str(parsed.provider) } : {}),
+  };
 }
 
 async function postToken(opts: {
@@ -313,10 +355,12 @@ function readTokens(parsed: Record<string, unknown>, nowMs: number, previousRefr
   // Rotation: keep the previous refresh token when the server does not send a
   // new one, or a non-rotating server would log the operator out on first use.
   const refreshToken = typeof parsed.refresh_token === "string" ? parsed.refresh_token : previousRefresh;
+  const idToken = typeof parsed.id_token === "string" ? parsed.id_token : undefined;
   return {
     accessToken,
     ...(refreshToken !== undefined ? { refreshToken } : {}),
     expiresAt: nowMs + expiresIn * 1000,
+    ...(idToken !== undefined ? { idToken } : {}),
   };
 }
 

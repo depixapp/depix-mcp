@@ -186,11 +186,21 @@ async function registerAccount(
     );
   }
 
-  const warning = activation.envOverride
-    ? "A DEPIX_API_KEY environment variable is set and OVERRIDES the key just created — every request keeps using " +
-      "the env key's account, NOT this new account. Unset DEPIX_API_KEY (and restart) to operate the account you " +
-      "just registered."
-    : null;
+  // The key was saved, but "saved" is not "in use". Both things that can shadow
+  // it have to say so here: an env key, and the operator having selected their
+  // own login with `account use owner`. Reporting only the first left the second
+  // silent — the agent would go on believing it was operating the account it
+  // had just created.
+  const warning =
+    activation.source === "env"
+      ? "A DEPIX_API_KEY environment variable is set and OVERRIDES the key just created — every request keeps using " +
+        "the env key's account, NOT this new account. Unset DEPIX_API_KEY (and restart) to operate the account you " +
+        "just registered."
+      : activation.source === "owner"
+        ? "The key was saved but is IDLE: this server is set to act as the operator's own DePix login " +
+          "(`npx -y @depixapp/mcp account use owner`), so requests keep using THEIR account, not this new one. Ask " +
+          "the operator to run `npx -y @depixapp/mcp account use agent` to operate the account you just registered."
+        : null;
 
   // PUBLIC facts only — never the sk_, the webhook secret, or the keypair.
   return {

@@ -1,8 +1,8 @@
 // argv dispatch for the single bin (unified-MCP spec §1.5).
 //
-// ONE bin, `depix-mcp`, with four human subcommands: `init`, `backup`, `login`
-// and `account`. A second bin would break the registry's `packages[]` auto-`npx`
-// assumption (§4), so all of them are reached through argv instead.
+// ONE bin, `depix-mcp`, with five human subcommands: `init`, `backup`, `login`,
+// `logout` and `account`. A second bin would break the registry's `packages[]`
+// auto-`npx` assumption (§4), so all of them are reached through argv instead.
 //
 // WHY THESE ARE COMMANDS AND NOT TOOLS. `init` and `backup` print a 12-word seed,
 // which must never transit model context. `login`, `logout` and `account use`
@@ -59,7 +59,11 @@ USAGE
 
 ENVIRONMENT
   DEPIX_API_KEY             sk_test_… / sk_live_… — the 26 gateway tools
-  DEPIX_WALLET_PASSPHRASE   unlocks the local wallet — the 29 wallet_* tools
+  DEPIX_WALLET_PASSPHRASE   unlocks the local wallet — the 29 wallet_* tools, and
+                            seals the stored API keys and the \`login\` session
+  DEPIX_AGENT_PASSPHRASE    optional; when set it WINS over DEPIX_WALLET_PASSPHRASE
+                            for those stored credentials (the wallet still uses
+                            DEPIX_WALLET_PASSPHRASE)
   DEPIX_WALLET_DIR          wallet directory (default ~/.depix-wallet)
 
 WHICH ACCOUNT ACTS

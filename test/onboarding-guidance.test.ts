@@ -135,3 +135,24 @@ describe("the handshake's missing-credential sentence branches by deployment", (
     expect(text).not.toContain("register_account");
   });
 });
+
+describe("the local missing-key error names every door (R7)", () => {
+  it("mentions register_account, login, DEPIX_API_KEY and the restart caveat", async () => {
+    const { missingApiKeyError } = await import("../src/errors.js");
+    const err = missingApiKeyError(undefined, "local");
+    expect(err.message).toContain("register_account");
+    expect(err.message).toContain("login");
+    expect(err.message).toContain("DEPIX_API_KEY");
+    // The trap: the owner session is seeded at boot, so a `login` run while the
+    // server is up changes nothing until the host restarts it.
+    expect(err.message).toMatch(/restart/i);
+    // next_action stays the one step the AGENT can take by itself.
+    expect(err.data.next_action).toEqual({ kind: "call_tool", tool: "register_account" });
+  });
+
+  it("the hosted error still says none of that — those doors do not exist there", async () => {
+    const { missingApiKeyError } = await import("../src/errors.js");
+    expect(missingApiKeyError(undefined, "hosted").message).not.toContain("register_account");
+    expect(missingApiKeyError(undefined, "hosted").message).not.toContain("@depixapp/mcp login");
+  });
+});

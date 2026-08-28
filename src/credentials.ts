@@ -41,6 +41,94 @@ export interface CredentialResolverOptions {
   preference?: Persona;
 }
 
+/** The facts the persona ladder decides on. No tokens — just what EXISTS. */
+export interface PersonaFacts {
+  envKeyPresent: boolean;
+  hasAgent: boolean;
+  hasOwner: boolean;
+  preference?: Persona;
+}
+
+/** WHY the active identity won — the machine-readable half of the verdict. */
+export type PersonaBasis =
+  | "env"
+  | "env_override"
+  | "selection"
+  | "selection_unavailable"
+  | "default"
+  | "none";
+
+export interface PersonaVerdict {
+  active: Persona | "none";
+  basis: PersonaBasis;
+  /** One sentence, shared verbatim by the boot line and `account status`. */
+  reason: string;
+}
+
+/**
+ * THE ladder. Every surface that names an active identity calls this — the
+ * resolver that picks the credential, the boot line, and `account status`.
+ *
+ * It exists because those surfaces each had their own copy. The boot line's
+ * copy glued "which persona" to "was a preference set" without asking whether
+ * the preference had decided anything, so DEPIX_API_KEY plus `account use
+ * owner` printed "acting as the agent account (selected with `account use
+ * owner`)" — wrong about the winner, wrong about the reason, and contradicting
+ * `account status` on the same machine.
+ */
+export function decidePersona(facts: PersonaFacts): PersonaVerdict {
+  const { envKeyPresent, hasAgent, hasOwner, preference } = facts;
+
+  if (envKeyPresent) {
+    // An env sk_ key is an account-style identity, whoever minted it.
+    const shadowed = hasAgent || hasOwner;
+    return {
+      active: "agent",
+      basis: shadowed ? "env_override" : "env",
+      reason: shadowed
+        ? "DEPIX_API_KEY is set in this server's environment and overrides every other credential here"
+        : "DEPIX_API_KEY is set in this server's environment",
+    };
+  }
+
+  if (preference === "owner" && hasOwner) {
+    return { active: "owner", basis: "selection", reason: "you selected it with `account use owner`" };
+  }
+  if (preference === "agent" && hasAgent) {
+    return { active: "agent", basis: "selection", reason: "you selected it with `account use agent`" };
+  }
+
+  if (hasAgent) {
+    return preference === "owner"
+      ? {
+          active: "agent",
+          basis: "selection_unavailable",
+          reason:
+            "no owner login is stored, so the `account use owner` selection cannot apply — falling back to the default",
+        }
+      : {
+          active: "agent",
+          basis: "default",
+          reason: "the default: an agent account registered on this machine wins",
+        };
+  }
+  if (hasOwner) {
+    return preference === "agent"
+      ? {
+          active: "owner",
+          basis: "selection_unavailable",
+          reason:
+            "no agent account is registered, so the `account use agent` selection cannot apply — falling back to the default",
+        }
+      : {
+          active: "owner",
+          basis: "default",
+          reason: "it is the only identity configured on this machine",
+        };
+  }
+  return { active: "none", basis: "none", reason: "no credentials are configured on this machine" };
+}
+
 export class CredentialResolver {
   private readonly envKey: string | undefined;
   /** Set by register_account after it durably persists the key. */
@@ -93,8 +181,7 @@ export class CredentialResolver {
    * stays VISIBLE: `account status` and the boot line both report it.
    */
   selectionUnavailable(): boolean {
-    if (this.selected === undefined) return false;
-    return this.selected === "owner" ? !this.hasOwnerSession() : !this.hasAgentKey();
+    return this.verdict().basis === "selection_unavailable";
   }
 
   /** The credential to authenticate with, and what kind it is. */
@@ -116,22 +203,27 @@ export class CredentialResolver {
     return this.resolveCredential()?.token;
   }
 
+  /** The shared verdict: who is acting, and why. Never a second ladder. */
+  verdict(): PersonaVerdict {
+    return decidePersona({
+      envKeyPresent: this.envKey !== undefined,
+      hasAgent: this.hasAgentKey(),
+      hasOwner: this.hasOwnerSession(),
+      ...(this.selected !== undefined ? { preference: this.selected } : {}),
+    });
+  }
+
   /** Where the active credential came from (the register_account readout). */
   source(): CredentialSource {
-    const active = this.resolveCredential();
-    if (active === undefined) return "none";
-    if (this.envKey !== undefined) return "env";
-    return active.kind === "oauth" ? "owner" : "store";
+    const { active, basis } = this.verdict();
+    if (active === "none") return "none";
+    if (basis === "env" || basis === "env_override") return "env";
+    return active === "owner" ? "owner" : "store";
   }
 
   /** Which identity the server is acting as right now. */
   persona(): Persona | "none" {
-    const source = this.source();
-    if (source === "none") return "none";
-    if (source === "owner") return "owner";
-    // An env key is an sk_ key of whichever account minted it; from this
-    // process's point of view that is the agent-style identity.
-    return "agent";
+    return this.verdict().active;
   }
 
   /** The env key present (from boot), regardless of what the store holds. */

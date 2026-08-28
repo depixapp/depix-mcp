@@ -57,9 +57,14 @@ export function missingApiKeyError(authMode?: "oauth", deployment?: "hosted" | "
   }
   if (deployment === "local") {
     // Local (npx): the operator can mint a key in-process with register_account.
+    // The other two doors are named too, with the restart caveat that made the
+    // second one look broken — the owner session is read at boot, so a `login`
+    // run while this server is up does nothing until the host restarts it.
     return new ToolError(
       "No DePix App API key is configured. On this local server you can create an account and its key with the " +
-        "register_account tool (it needs the operator's op_ code and a wallet), or set DEPIX_API_KEY and restart. See https://depixapp.com/docs/en/",
+        "register_account tool (it needs the operator's op_ code and a wallet). The operator can instead sign in as " +
+        "themselves with `npx -y @depixapp/mcp login`, or set DEPIX_API_KEY — both take effect only after this " +
+        "server is restarted, because the stored credentials are read at boot. See https://depixapp.com/docs/en/",
       "missing_api_key",
       { data: next() },
     );
