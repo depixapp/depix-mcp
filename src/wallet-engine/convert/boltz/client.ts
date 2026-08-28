@@ -10,6 +10,13 @@
 // `boltz-swaps/config` + `boltz-swaps/presets/mainnet` subpaths instead — the
 // reverse/refund cooperative-signing calls in `boltz-swaps/client` then target
 // mainnet api.boltz.exchange without pulling viem.
+//
+// Off limits without installing peers: the lib's `boltz-swaps/invoice` entry
+// (and `signSubmarineClaim`, which imports it) statically requires bolt11 +
+// bolt12-utils, peerOptional here and not installed — the import itself throws.
+// The engine decodes invoices in lightning.ts and never claims through the lib;
+// a submarine claim that adopted `signSubmarineClaim` would fail only after the
+// L-BTC lockup, so install those peers before ever reaching for it.
 
 import { BoltzApiError } from "../../errors.js";
 import { dynamicMainnetConfig } from "./providers.js";
