@@ -71,6 +71,22 @@ export function missingApiKeyError(authMode?: "oauth", deployment?: "hosted" | "
   );
 }
 
+/**
+ * The operator's `depix-mcp login` session expired and could not be renewed
+ * (the refresh token was revoked, rotated away, or the sign-in server refused
+ * it). Only a human at a terminal can fix it, so this is a human_step — and it
+ * is raised INSTEAD of the bare 401 the API answered, which would have told the
+ * agent nothing about which of the two identities went stale.
+ */
+export function ownerSessionExpiredError(): ToolError {
+  return new ToolError(
+    "The owner's DePix login on this machine expired and could not be renewed. Ask the operator to run " +
+      "`npx -y @depixapp/mcp login` in a terminal to sign in again.",
+    "owner_session_expired",
+    { data: withNextAction({}, "owner_session_expired") },
+  );
+}
+
 // ── Shapes we read from the envelope (all optional / defensively typed) ──
 interface ApiErrorDetails {
   field?: unknown;

@@ -106,6 +106,8 @@ export interface CreateServerOptions {
   apiKey?: ApiKeySource;
   /** "oauth" when the connection authenticated via a WorkOS token (no sk_). */
   authMode?: "oauth";
+  /** Renew an expired OAuth session on a 401 (local `depix-mcp login` only). */
+  onUnauthorized?: () => Promise<boolean>;
   /** Which deployment this is — steers the missing_api_key next_action (§5.1).
    * Default "hosted"; the unified npx bin passes "local". */
   deployment?: "hosted" | "local";
@@ -135,7 +137,13 @@ export interface CreateServerOptions {
 export function createServer(opts: CreateServerOptions): McpServer {
   const client =
     opts.apiClient ??
-    new ApiClient({ apiKey: opts.apiKey, apiBase: opts.apiBase, authMode: opts.authMode, deployment: opts.deployment });
+    new ApiClient({
+      apiKey: opts.apiKey,
+      apiBase: opts.apiBase,
+      authMode: opts.authMode,
+      deployment: opts.deployment,
+      ...(opts.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
+    });
   const version = opts.version ?? resolveServerVersion();
 
   const server = new McpServer(

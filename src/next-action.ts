@@ -130,6 +130,20 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
         },
       };
 
+    // ── the operator's own login (`depix-mcp login`) ──
+    case "owner_session_expired":
+      return {
+        kind: "human_step",
+        relay: {
+          pt:
+            "O login do dono neste computador expirou. Peça ao operador para rodar `npx -y @depixapp/mcp login` " +
+            "num terminal e entrar de novo com Google ou GitHub.",
+          en:
+            "The owner's login on this machine expired. Ask the operator to run `npx -y @depixapp/mcp login` in a " +
+            "terminal and sign in again with Google or GitHub.",
+        },
+      };
+
     // ── operator token (§3.5) ──
     case "invalid_operator_token":
     case "operator_token_required":

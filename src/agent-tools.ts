@@ -44,8 +44,14 @@ export interface AgentLike {
 export interface KeyActivation {
   /** Which key the resolver serves now. */
   activeMode: ActiveKeyMode;
-  /** "env" when DEPIX_API_KEY shadows the store; else "store". */
-  source: "env" | "store";
+  /**
+   * WHICH credential actually authenticates now — "store" (the key just
+   * created), "env" (DEPIX_API_KEY shadows it), or "owner" (the operator
+   * selected their own login with `account use owner`, so the new key is
+   * stored but idle). Reporting "store" for the last case would be a lie the
+   * agent could not detect.
+   */
+  source: "env" | "store" | "owner";
   /** true when a DEPIX_API_KEY env var is overriding the just-registered key. */
   envOverride: boolean;
 }
@@ -335,7 +341,12 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
         merchant_slug: z.string().describe("The store's public URL slug."),
         liquid_address: z.string().describe("The settlement address (the wallet's own), fixed at registration."),
         active_key_mode: z.enum(["test", "live"]).describe("Which key is now active."),
-        active_key_source: z.enum(["env", "store"]).describe("Where the active key comes from: the env var or the encrypted store."),
+        active_key_source: z
+          .enum(["env", "store", "owner"])
+          .describe(
+            "Which credential the server actually authenticates with now: \"store\" = the key just created, \"env\" = " +
+              "DEPIX_API_KEY, \"owner\" = the operator's own login (they selected it with `account use owner`).",
+          ),
         env_override: z.boolean().describe("true when DEPIX_API_KEY shadows the just-created key."),
         test_key_id: z.string().describe("Id of the sandbox key (the secret itself is never returned)."),
         live_starter_key_id: z.string().describe("Id of the live starter key (the secret itself is never returned)."),

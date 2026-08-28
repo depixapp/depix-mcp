@@ -39,8 +39,23 @@ export interface ApiRequest {
   signal?: AbortSignal;
 }
 
-/** A per-request key source: a fixed string, or a resolver read on every call. */
-export type ApiKeySource = string | undefined | (() => string | undefined);
+/** A resolved bearer plus what kind it is — only an OAuth session can refresh. */
+export interface ResolvedCredential {
+  token: string;
+  kind: "api_key" | "oauth";
+}
+
+/**
+ * A per-request key source: a fixed string, or a resolver read on every call.
+ * The resolver may return a bare string (an sk_ key) or a ResolvedCredential,
+ * which is what lets the local server also present the operator's OAuth session.
+ */
+export type ApiKeySource = string | undefined | (() => string | ResolvedCredential | undefined);
+
+function asCredential(value: string | ResolvedCredential | undefined): ResolvedCredential | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "string" ? { token: value, kind: "api_key" } : value;
+}
 
 export interface ApiClientOptions {
   /** Caller's bearer credential, forwarded verbatim: an `sk_` API key, or the
@@ -62,6 +77,15 @@ export interface ApiClientOptions {
    * next_action (§5.1): "local" points at register_account, "hosted" at signup.
    * Default "hosted". */
   deployment?: "hosted" | "local";
+  /**
+   * Renew an expired OAuth session on a 401. Called AT MOST ONCE per request,
+   * and only when the resolved credential is an OAuth session (an sk_ key has
+   * nothing to renew). Returning true means the resolver now holds a fresh
+   * token and the request is worth one more attempt; throwing propagates —
+   * which is how the didactic `owner_session_expired` reaches the agent instead
+   * of a bare 401.
+   */
+  onUnauthorized?: () => Promise<boolean>;
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -95,7 +119,8 @@ function buildQueryString(query: Record<string, QueryValue> | undefined): string
 
 export class ApiClient {
   /** Resolved per request (§3.1): a fixed key is wrapped as a constant thunk. */
-  private readonly resolveKey: () => string | undefined;
+  private readonly resolveKey: () => ResolvedCredential | undefined;
+  private readonly onUnauthorized?: () => Promise<boolean>;
   private readonly authMode?: "oauth";
   private readonly deployment: "hosted" | "local";
   private readonly apiBase: string;
@@ -107,7 +132,8 @@ export class ApiClient {
   constructor(opts: ApiClientOptions) {
     // Bind to a const so the type narrowing survives into the constant thunk.
     const key = opts.apiKey;
-    this.resolveKey = typeof key === "function" ? key : () => key;
+    this.resolveKey = typeof key === "function" ? () => asCredential(key()) : () => asCredential(key);
+    if (opts.onUnauthorized) this.onUnauthorized = opts.onUnauthorized;
     this.apiBase = opts.apiBase;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? defaultSleep;
@@ -136,20 +162,22 @@ export class ApiClient {
   async request<T = unknown>(req: ApiRequest): Promise<ApiResult<T>> {
     // Resolve the key HERE, per request (§3.1): a key written mid-session by
     // register_account is picked up on the very next call, no restart.
-    const apiKey = this.resolveKey();
-    // Credential presence first (clear, actionable error — spec §3.3). An OAuth
-    // session forwards the WorkOS JWT already verified at the HTTP edge (no sk_
-    // prefix) as the bearer; every other mode still requires an sk_ key. The
-    // strict origin allowlist below gates where the header may be sent, for
-    // both token types.
-    if (!apiKey || (this.authMode !== "oauth" && !apiKey.startsWith("sk_"))) {
+    let credential = this.resolveKey();
+    // Credential presence first (clear, actionable error — spec §3.3). A WorkOS
+    // token has no sk_ prefix, and arrives two ways: the HOSTED connection
+    // forwards the JWT it verified at the edge (authMode "oauth"), and the LOCAL
+    // server can present the operator's own login (kind "oauth"). Every other
+    // mode still requires an sk_ key. The strict origin allowlist below gates
+    // where the header may be sent, for all of them.
+    const isOAuth = credential?.kind === "oauth" || this.authMode === "oauth";
+    if (!credential || (!isOAuth && !credential.token.startsWith("sk_"))) {
       throw missingApiKeyError(this.authMode, this.deployment);
     }
     // Origin allowlist BEFORE the Authorization header is ever attached (§3.2).
     const url = this.resolveUrl(req.path, req.query);
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${credential.token}`,
       Accept: "application/json",
     };
     let bodyText: string | undefined;
@@ -166,7 +194,11 @@ export class ApiClient {
     const retrySafe = req.method === "GET" || Boolean(req.idempotencyKey);
 
     let lastError: ToolError | undefined;
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+    // ONE renewal per request, and it buys exactly one extra attempt: an expired
+    // OAuth session must not eat the transient-failure budget, and `refreshed`
+    // is set before the hook is awaited so no 401 can ever loop.
+    let refreshed = false;
+    for (let attempt = 1; attempt <= this.maxAttempts + (refreshed ? 1 : 0); attempt++) {
       let res: Response;
       try {
         res = await this.fetchImpl(url.toString(), {
@@ -215,6 +247,20 @@ export class ApiClient {
 
       if (res.ok) {
         return { data: parsed as T, status: res.status, requestId, replayed };
+      }
+
+      // An expired owner session: renew once and replay. Safe for a POST too —
+      // a 401 means the API rejected the credential and did nothing.
+      if (res.status === 401 && credential.kind === "oauth" && !refreshed && this.onUnauthorized !== undefined) {
+        refreshed = true;
+        if (await this.onUnauthorized()) {
+          const renewed = this.resolveKey();
+          if (renewed !== undefined) {
+            credential = renewed;
+            headers.Authorization = `Bearer ${renewed.token}`;
+            continue;
+          }
+        }
       }
 
       const toolError = mapApiError(res.status, parsed as ApiErrorEnvelope, requestId, this.authMode, this.deployment);

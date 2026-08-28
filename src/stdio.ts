@@ -30,6 +30,15 @@ import { sanitizeOutgoingSchemas } from "./schemaDialect.js";
 import { CredentialResolver } from "./credentials.js";
 import { buildAgentToolDeps, seedResolverFromStore } from "./agent-deps.js";
 import {
+  buildAccountDeps,
+  buildOwnerLoginDeps,
+  buildOwnerLogoutDeps,
+  buildOwnerRefreshHook,
+  seedOwnerSession,
+} from "./owner-deps.js";
+import { runOwnerLogin, runOwnerLogout } from "./login-flow.js";
+import { runAccountCommand } from "./account-command.js";
+import {
   UNIFIED_PACKAGE_NAME,
   UNIFIED_TOOL_COUNT,
   createUnifiedServer,
@@ -62,14 +71,27 @@ async function serve(): Promise<void> {
   // boot so a restarted agent keeps operating the account it created.
   const credentials = new CredentialResolver({ envKey });
   await seedResolverFromStore(credentials);
-  const apiKeyConfigured = Boolean(credentials.resolve()?.startsWith("sk_"));
+  // The operator's own login (`depix-mcp login`) is the second identity this
+  // process can act as. Seeding it here — with the persona they selected — is
+  // what makes a restart keep acting as whoever it was acting as.
+  await seedOwnerSession(credentials);
+  const apiKeyConfigured = credentials.resolveCredential() !== undefined;
   const walletDir = resolveWalletDir();
   const walletConfigured = await isWalletConfigured(walletDir);
 
   if (!apiKeyConfigured) {
     stderr(
-      "depix-mcp: no DEPIX_API_KEY and no stored account. Serving anyway — the tools that call the DePix App API " +
-        "return a missing_api_key error until you set a key or create an account with the register_account tool.\n",
+      "depix-mcp: no DEPIX_API_KEY, no stored account and no owner login. Serving anyway — the tools that call the " +
+        "DePix App API return a missing_api_key error until you set a key, run `npx -y @depixapp/mcp login`, or " +
+        "create an account with the register_account tool.\n",
+    );
+  } else if (credentials.bothPersonasPresent() || credentials.selectionUnavailable()) {
+    // Two identities on one machine: never leave which one is acting implicit.
+    stderr(
+      `depix-mcp: acting as the ${credentials.persona()} account` +
+        (credentials.preference() !== undefined ? ` (selected with \`account use ${credentials.preference()}\`)` : " (default order)") +
+        (credentials.selectionUnavailable() ? " — the selected account has no credential here, so this is a fallback" : "") +
+        ". Run `npx -y @depixapp/mcp account status` for the full picture.\n",
     );
   }
   if (!walletConfigured) {
@@ -101,6 +123,9 @@ async function serve(): Promise<void> {
     // A resolver, not a value: register_account can write a key mid-session and it
     // takes effect on the very next request (§3.1) — no restart.
     apiKey: credentials.asFunction(),
+    // An owner session's access token is short-lived: on a 401 the client renews
+    // it ONCE and replays. An sk_ key never reaches this hook.
+    onUnauthorized: buildOwnerRefreshHook(credentials),
     apiBase,
     maxWaitSeconds: resolveMaxWaitSeconds(),
     version,
@@ -111,7 +136,7 @@ async function serve(): Promise<void> {
       // frozen here would make wallet_status lie for the whole session. They read
       // the RESOLVER so a key created mid-session is reflected too.
       keyMode: () => resolveKeyMode(credentials.resolve()),
-      apiKeyConfigured: () => Boolean(credentials.resolve()?.startsWith("sk_")),
+      apiKeyConfigured: () => credentials.resolveCredential() !== undefined,
       bootResume: () => runtime.bootResume(),
       bootConversions: () => runtime.bootConversions(),
       maxWaitSeconds: resolveWalletMaxWaitSeconds(),
@@ -157,7 +182,29 @@ async function backup(): Promise<void> {
   await runWalletBackup({ packageName: UNIFIED_PACKAGE_NAME });
 }
 
-runCli(process.argv.slice(2), { init, backup, serve, write: stderr, version: resolveServerVersion() })
+/** The operator's own DePix login — an operator act at a terminal, not a tool. */
+function login(opts: { provider?: "google" | "github" }): Promise<number> {
+  return runOwnerLogin(buildOwnerLoginDeps({ write: stderr, ...(opts.provider ? { provider: opts.provider } : {}) }));
+}
+
+function logout(): Promise<number> {
+  return runOwnerLogout(buildOwnerLogoutDeps(stderr));
+}
+
+function account(argv: readonly string[]): Promise<number> {
+  return runAccountCommand(argv, buildAccountDeps(stderr));
+}
+
+runCli(process.argv.slice(2), {
+  init,
+  backup,
+  login,
+  logout,
+  account,
+  serve,
+  write: stderr,
+  version: resolveServerVersion(),
+})
   .then((code) => {
     // serve() resolves only on shutdown, which exits through its own path; every
     // other command is finished here. Code 0 lets the process end naturally.

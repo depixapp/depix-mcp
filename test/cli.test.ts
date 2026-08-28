@@ -18,6 +18,18 @@ function harness(overrides: Partial<CliDeps> = {}) {
     backup: async () => {
       calls.push("backup");
     },
+    login: async (opts) => {
+      calls.push(`login:${opts.provider ?? "ask"}`);
+      return 0;
+    },
+    logout: async () => {
+      calls.push("logout");
+      return 0;
+    },
+    account: async (argv) => {
+      calls.push(`account:${argv.join(" ")}`);
+      return 0;
+    },
     serve: async () => {
       calls.push("serve");
     },
@@ -111,5 +123,60 @@ describe("runCli", () => {
     expect(USAGE).toContain("wallet_not_configured");
     // The invariant that survives every revision: the ceremony is not a tool.
     expect(USAGE).toMatch(/NOT an MCP\s*\n?\s*tool|not an MCP tool/i);
+  });
+
+  it("`login` runs the operator sign-in, not the server", async () => {
+    const { calls, deps } = harness();
+    expect(await runCli(["login"], deps)).toBe(0);
+    expect(calls).toEqual(["login:ask"]);
+  });
+
+  it("`login --provider github` pins the provider", async () => {
+    const { calls, deps } = harness();
+    expect(await runCli(["login", "--provider", "github"], deps)).toBe(0);
+    expect(calls).toEqual(["login:github"]);
+  });
+
+  it("rejects an unknown --provider instead of silently asking in the browser", async () => {
+    const { calls, out, deps } = harness();
+    expect(await runCli(["login", "--provider", "twitter"], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(out.join("")).toContain("--provider");
+  });
+
+  it("rejects a stray option on `login`", async () => {
+    const { calls, deps } = harness();
+    expect(await runCli(["login", "--force"], deps)).toBe(1);
+    expect(calls).toEqual([]);
+  });
+
+  it("`logout` runs the sign-out and refuses stray options", async () => {
+    const { calls, deps } = harness();
+    expect(await runCli(["logout"], deps)).toBe(0);
+    expect(calls).toEqual(["logout"]);
+    const b = harness();
+    expect(await runCli(["logout", "--all"], b.deps)).toBe(1);
+    expect(b.calls).toEqual([]);
+  });
+
+  it("`account` forwards its own argv verbatim", async () => {
+    const { calls, deps } = harness();
+    expect(await runCli(["account", "status"], deps)).toBe(0);
+    expect(await runCli(["account", "use", "owner"], deps)).toBe(0);
+    expect(calls).toEqual(["account:status", "account:use owner"]);
+  });
+
+  it("propagates the exit code of a failed login", async () => {
+    const { deps } = harness({ login: () => Promise.resolve(1) });
+    expect(await runCli(["login"], deps)).toBe(1);
+  });
+
+  it("the usage text explains the precedence and that switching identity is not a tool", () => {
+    expect(USAGE).toContain("account use agent|owner");
+    expect(USAGE).toContain("account status");
+    expect(USAGE).toContain("DEPIX_API_KEY");
+    // The loopback address is the one fact that decides whether login can work.
+    expect(USAGE).toContain("http://127.0.0.1:47617/callback");
+    expect(USAGE).toMatch(/not MCP tools|are not MCP tools/i);
   });
 });

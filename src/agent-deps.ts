@@ -67,9 +67,12 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
       // Activate in-session so the very next gateway request uses the new key —
       // unless an env key is overriding it, in which case env still wins.
       resolver.setActiveKey(AgentCredentialStore.activeKey(readBack));
+      const source = resolver.source();
       return {
         activeMode: prefer,
-        source: resolver.source() === "env" ? "env" : "store",
+        // "none" cannot happen — a key was just activated — but the resolver's
+        // type allows it, and mapping it to "store" is the honest fallback.
+        source: source === "none" ? "store" : source,
         envOverride: resolver.hasEnvOverride(),
       };
     },
