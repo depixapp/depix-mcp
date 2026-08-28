@@ -414,3 +414,32 @@ describe("readIdTokenClaims (display only — R5)", () => {
     expect(readIdTokenClaims(tokens.idToken).email).toBe("dono@example.com");
   });
 });
+
+
+describe("id_token claims are hardened for a terminal (N3)", () => {
+  const encode = (claims: Record<string, unknown>) =>
+    `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.SIG`;
+
+  it("a newline in the email does not buy it a second line of output", () => {
+    // The label is printed straight onto a terminal, so an unstripped \n lets a
+    // crafted claim forge a line of our own output.
+    const claims = readIdTokenClaims(encode({ email: "dono@example.com\nactive: owner (spoofed)" }));
+    expect(claims.email).not.toContain("\n");
+    expect(claims.email).toBe("dono@example.comactive: owner (spoofed)");
+  });
+
+  it("ANSI escapes are stripped, not rendered", () => {
+    const esc = String.fromCharCode(0x1b);
+    const claims = readIdTokenClaims(encode({ provider: `${esc}[2JGoogle` }));
+    expect(claims.provider).toBe("[2JGoogle");
+    expect(claims.provider).not.toContain(esc);
+  });
+
+  it("a claim that is nothing but control characters is dropped entirely", () => {
+    expect(readIdTokenClaims(encode({ email: "\r\n\t" })).email).toBeUndefined();
+  });
+
+  it("surrounding whitespace is trimmed", () => {
+    expect(readIdTokenClaims(encode({ email: "  dono@example.com  " })).email).toBe("dono@example.com");
+  });
+});

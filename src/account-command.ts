@@ -10,7 +10,7 @@
 // Never a token, and never the passphrase.
 
 import { PERSONAS, type Persona } from "./account-preference.js";
-import { decidePersona, type PersonaVerdict } from "./credentials.js";
+import { decidePersona, personaLabel, type PersonaVerdict } from "./credentials.js";
 
 /** What `account status` can see about the stored owner login. */
 export interface OwnerSessionFacts {
@@ -85,7 +85,7 @@ function report(deps: AccountDeps, s: Situation): void {
     return;
   }
 
-  lines.push(`depix-mcp: active: ${s.verdict.active} — ${s.verdict.reason}.`);
+  lines.push(`depix-mcp: active: ${personaLabel(s.verdict)} — ${s.verdict.reason}.`);
   if (deps.envKeyPresent) {
     lines.push(
       "  NOTE: DEPIX_API_KEY is set in this server's environment and OVERRIDES every selection below. Unset it to " +

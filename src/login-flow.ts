@@ -145,6 +145,11 @@ export async function runOwnerLogin(deps: OwnerLoginDeps): Promise<number> {
       path: OWNER_LOOPBACK_PATH,
       timeoutMs: deps.timeoutMs ?? CALLBACK_TIMEOUT_MS,
     });
+    // Nothing awaits `callback` until after the browser is opened, and the
+    // listener can fail (timeout, socket error) inside that window. Mark it
+    // handled now so the failure surfaces at the `await` below instead of as an
+    // unhandled rejection that takes the process down.
+    void listener.callback.catch(() => {});
     const opened = await deps.openBrowser(authorizeUrl);
     deps.write(
       opened

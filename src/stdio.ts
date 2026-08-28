@@ -27,7 +27,7 @@ import { resolveApiBase, resolveMaxWaitSeconds, resolveServerVersion } from "./c
 import { UNIFIED_INIT_COMMAND } from "./instructions.js";
 import { logger, redact } from "./log.js";
 import { sanitizeOutgoingSchemas } from "./schemaDialect.js";
-import { CredentialResolver } from "./credentials.js";
+import { CredentialResolver, personaLabel } from "./credentials.js";
 import { buildAgentToolDeps, seedResolverFromStore } from "./agent-deps.js";
 import {
   buildAccountDeps,
@@ -89,9 +89,9 @@ async function serve(): Promise<void> {
     // More than one credential on this machine: never leave which one is acting
     // implicit. The sentence comes from the SAME ladder that picks the
     // credential, so the boot line cannot contradict `account status`.
-    const { active, reason } = credentials.verdict();
+    const verdict = credentials.verdict();
     stderr(
-      `depix-mcp: acting as the ${active} account — ${reason}. ` +
+      `depix-mcp: acting as ${personaLabel(verdict)} — ${verdict.reason}. ` +
         "Run `npx -y @depixapp/mcp account status` for the full picture.\n",
     );
   }

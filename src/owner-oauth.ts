@@ -297,8 +297,15 @@ export function readIdTokenClaims(idToken: string | undefined): IdTokenClaims {
     return {};
   }
   if (typeof parsed !== "object" || parsed === null) return {};
-  const str = (value: unknown): string | undefined =>
-    typeof value === "string" && value.length > 0 && value.length <= 320 ? value : undefined;
+  // Control characters stripped, not escaped: these strings are printed straight
+  // onto a terminal, where a newline in `email` buys the claim a second line of
+  // its own — and an ANSI escape buys rather more than that.
+  const str = (value: unknown): string | undefined => {
+    if (typeof value !== "string" || value.length === 0 || value.length > 320) return undefined;
+    // eslint-disable-next-line no-control-regex
+    const clean = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+    return clean.length > 0 ? clean : undefined;
+  };
   return {
     ...(str(parsed.email) !== undefined ? { email: str(parsed.email) } : {}),
     // Best effort: AuthKit does not promise a provider claim, so an absent one

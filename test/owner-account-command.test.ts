@@ -189,3 +189,23 @@ describe("the preference file", () => {
     await expect(clearAccountPreference(dir)).resolves.toBeUndefined();
   });
 });
+
+
+describe("account status with only DEPIX_API_KEY (N1)", () => {
+  it("never prints `active: agent` above `agent account: none`", async () => {
+    const h = harness({ envKeyPresent: true });
+    await runAccountCommand(["status"], h.deps);
+    const text = h.text();
+    // The contradiction the label fixes: a real credential, named after an
+    // account this machine has no record of.
+    expect(text).not.toMatch(/active:\s*agent\b/);
+    expect(text).toMatch(/active:\s*the DEPIX_API_KEY account/);
+    expect(text).toContain("agent account: none");
+  });
+
+  it("still says `agent` when a real agent account is what won", async () => {
+    const h = harness({ hasAgentAccount: () => Promise.resolve(true) });
+    await runAccountCommand(["status"], h.deps);
+    expect(h.text()).toMatch(/active:\s*agent\b/);
+  });
+});

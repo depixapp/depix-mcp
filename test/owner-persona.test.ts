@@ -267,7 +267,9 @@ describe("decidePersona — ONE ladder behind every surface (R3)", () => {
     const v = await decide({ envKeyPresent: true, hasAgent: true, hasOwner: true, preference: "owner" });
     expect(v.active).toBe("agent");
     expect(v.basis).toBe("env_override");
-    expect(v.reason).toContain("DEPIX_API_KEY");
+    const { personaLabel } = await import("../src/credentials.js");
+    expect(personaLabel(v)).toContain("DEPIX_API_KEY");
+    expect(v.reason).toMatch(/overrides every other credential/);
     // The lie that shipped: crediting the selection for a decision it lost.
     expect(v.reason).not.toContain("account use owner");
   });
@@ -321,5 +323,93 @@ describe("decidePersona — ONE ladder behind every surface (R3)", () => {
     expect(r.resolveCredential()?.token).toBe("sk_live_ENV");
     expect(r.verdict().active).toBe("agent");
     expect(r.verdict().basis).toBe("env_override");
+  });
+});
+
+describe("the ladder and the credential can never disagree (N4)", () => {
+  // decidePersona NAMES the winner; resolveCredential SENDS its token. If those
+  // two ever diverge the server authenticates as one identity while every
+  // surface reports another — the R3 bug, one layer deeper and invisible.
+  // resolveCredential delegates today; this table is what keeps it delegating.
+  const ENV = "sk_live_ENV";
+  const AGENT = "sk_test_AGENT";
+
+  const combos = [true, false].flatMap((envKeyPresent) =>
+    [true, false].flatMap((hasAgent) =>
+      [true, false].flatMap((hasOwner) =>
+        [undefined, "agent" as const, "owner" as const].map((preference) => ({
+          envKeyPresent,
+          hasAgent,
+          hasOwner,
+          preference,
+        })),
+      ),
+    ),
+  );
+
+  it("covers all 24 combinations of env x agent x owner x selection", () => {
+    expect(combos).toHaveLength(24);
+  });
+
+  it.each(combos)("env=$envKeyPresent agent=$hasAgent owner=$hasOwner pref=$preference", async (c) => {
+    const { CredentialResolver, decidePersona } = await import("../src/credentials.js");
+    const r = new CredentialResolver({
+      ...(c.envKeyPresent ? { envKey: ENV } : {}),
+      ...(c.preference !== undefined ? { preference: c.preference } : {}),
+    });
+    if (c.hasAgent) r.setActiveKey(AGENT);
+    if (c.hasOwner) r.setOwnerToken(OWNER_JWT);
+
+    const verdict = decidePersona({
+      envKeyPresent: c.envKeyPresent,
+      hasAgent: c.hasAgent,
+      hasOwner: c.hasOwner,
+      ...(c.preference !== undefined ? { preference: c.preference } : {}),
+    });
+    const credential = r.resolveCredential();
+
+    // The verdict and the resolver agree on WHETHER anything authenticates…
+    expect(credential === undefined).toBe(verdict.active === "none");
+    if (credential === undefined) return;
+
+    // …and on WHICH identity's token goes on the wire.
+    const expected =
+      verdict.basis === "env" || verdict.basis === "env_override"
+        ? { token: ENV, kind: "api_key" }
+        : verdict.active === "owner"
+          ? { token: OWNER_JWT, kind: "oauth" }
+          : { token: AGENT, kind: "api_key" };
+    expect(credential).toEqual(expected);
+    // source() is the third reader of the same ladder; it must not drift either.
+    expect(r.source()).toBe(
+      verdict.basis === "env" || verdict.basis === "env_override"
+        ? "env"
+        : verdict.active === "owner"
+          ? "owner"
+          : "store",
+    );
+  });
+});
+
+describe("personaLabel (N1)", () => {
+  it("an env key is never printed as the `agent` account it has no record of", async () => {
+    const { decidePersona, personaLabel } = await import("../src/credentials.js");
+    // The contradiction that shipped: "active: agent" over "agent account: none".
+    const v = decidePersona({ envKeyPresent: true, hasAgent: false, hasOwner: false });
+    expect(v.active).toBe("agent");
+    expect(personaLabel(v)).toBe("the DEPIX_API_KEY account");
+  });
+
+  it("an env key shadowing a real agent account is labelled the same way", async () => {
+    const { decidePersona, personaLabel } = await import("../src/credentials.js");
+    expect(personaLabel(decidePersona({ envKeyPresent: true, hasAgent: true, hasOwner: true }))).toBe(
+      "the DEPIX_API_KEY account",
+    );
+  });
+
+  it("the two real personas keep their own names", async () => {
+    const { decidePersona, personaLabel } = await import("../src/credentials.js");
+    expect(personaLabel(decidePersona({ envKeyPresent: false, hasAgent: true, hasOwner: false }))).toBe("agent");
+    expect(personaLabel(decidePersona({ envKeyPresent: false, hasAgent: false, hasOwner: true }))).toBe("owner");
   });
 });

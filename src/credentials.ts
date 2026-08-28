@@ -66,6 +66,24 @@ export interface PersonaVerdict {
 }
 
 /**
+ * How to NAME the active identity to a human.
+ *
+ * Not the same thing as `active`. An env key is agent-SHAPED — it is an sk_ of
+ * whatever account minted it — but calling it "agent" printed a flat
+ * contradiction on a machine that has only DEPIX_API_KEY set:
+ *
+ *   active: agent
+ *   agent account: none
+ *
+ * The credential is real; "agent" was just the wrong word for it. Both surfaces
+ * render through here so neither can reintroduce that.
+ */
+export function personaLabel(verdict: PersonaVerdict): string {
+  if (verdict.basis === "env" || verdict.basis === "env_override") return "the DEPIX_API_KEY account";
+  return verdict.active;
+}
+
+/**
  * THE ladder. Every surface that names an active identity calls this — the
  * resolver that picks the credential, the boot line, and `account status`.
  *
@@ -86,8 +104,8 @@ export function decidePersona(facts: PersonaFacts): PersonaVerdict {
       active: "agent",
       basis: shadowed ? "env_override" : "env",
       reason: shadowed
-        ? "DEPIX_API_KEY is set in this server's environment and overrides every other credential here"
-        : "DEPIX_API_KEY is set in this server's environment",
+        ? "it is set in this server's environment and overrides every other credential here"
+        : "it is set in this server's environment",
     };
   }
 
@@ -184,17 +202,22 @@ export class CredentialResolver {
     return this.verdict().basis === "selection_unavailable";
   }
 
-  /** The credential to authenticate with, and what kind it is. */
+  /**
+   * The credential to authenticate with, and what kind it is.
+   *
+   * This walks NO ladder of its own: it asks decidePersona who won and then
+   * hands over that identity's token. A second copy of the precedence here is
+   * exactly how the boot line drifted from `account status`, and the drift
+   * would be worse at this layer — the server would authenticate as one
+   * identity while every surface reported another.
+   */
   resolveCredential(): ResolvedCredential | undefined {
-    if (this.envKey !== undefined) return { token: this.envKey, kind: "api_key" };
-    if (this.selected === "owner" && this.ownerToken !== undefined) {
-      return { token: this.ownerToken, kind: "oauth" };
+    const { active, basis } = this.verdict();
+    if (basis === "env" || basis === "env_override") {
+      return this.envKey !== undefined ? { token: this.envKey, kind: "api_key" } : undefined;
     }
-    if (this.selected === "agent" && this.activeStoreKey !== undefined) {
-      return { token: this.activeStoreKey, kind: "api_key" };
-    }
-    if (this.activeStoreKey !== undefined) return { token: this.activeStoreKey, kind: "api_key" };
-    if (this.ownerToken !== undefined) return { token: this.ownerToken, kind: "oauth" };
+    if (active === "owner" && this.ownerToken !== undefined) return { token: this.ownerToken, kind: "oauth" };
+    if (active === "agent" && this.activeStoreKey !== undefined) return { token: this.activeStoreKey, kind: "api_key" };
     return undefined;
   }
 

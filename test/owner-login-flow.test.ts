@@ -326,3 +326,30 @@ describe("the session carries WHO signed in (R5)", () => {
     expect(h.out.join("")).toMatch(/signed in\./i);
   });
 });
+
+
+describe("a listener that dies while the browser opens (N2)", () => {
+  it("surfaces at the await, not as an unhandled rejection", async () => {
+    // Nothing awaits `callback` until after openBrowser resolves. A listener
+    // that fails inside that window (timeout, socket error) must still come out
+    // as a clean exit code and a printed reason.
+    let fail: ((err: Error) => void) | undefined;
+    const h = harness({
+      waitForCallback: () =>
+        Promise.resolve({
+          callback: new Promise<never>((_resolve, reject) => {
+            fail = reject;
+          }),
+          close: () => {},
+        }),
+      openBrowser: () => {
+        // Dies BEFORE the flow reaches `await listener.callback`.
+        fail?.(new Error("No sign-in reply arrived within 300s."));
+        return Promise.resolve(true);
+      },
+    });
+    expect(await runOwnerLogin(h.deps)).toBe(1);
+    expect(h.out.join("")).toContain("No sign-in reply arrived");
+    expect(h.saved).toEqual([]);
+  });
+});
