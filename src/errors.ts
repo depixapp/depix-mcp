@@ -98,6 +98,7 @@ interface ApiErrorDetails {
   required_scope?: unknown;
   scope?: unknown;
   window_minutes?: unknown;
+  window_hours?: unknown;
   max_per_window?: unknown;
   limit?: unknown;
   limit_cents?: unknown;
@@ -184,6 +185,7 @@ export function mapApiError(
   const usedCents = asInt(details.used_cents);
   const windowMinutes = asInt(details.window_minutes);
   const maxPerWindow = asInt(details.max_per_window);
+  const windowHours = asInt(details.window_hours);
   // discount_changed only becomes actionable through these two: they are the
   // merchant's CURRENT values, which the caller must re-price from before
   // retrying. Structured numbers, so they pass the anti-injection boundary.
@@ -309,6 +311,12 @@ export function mapApiError(
     case "merchant_rate_limited":
       message = `Rate limited (merchant, 30/min). Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
+    case "operator_register_cap_exceeded":
+      message =
+        maxPerWindow !== undefined && windowHours !== undefined
+          ? `This operator already registered ${maxPerWindow} agent accounts in the last ${windowHours}h. Retry after ${retryAfterPhrase(retryAfter)} — and if the operator did not open those accounts, their op_ code has leaked: tell them to revoke it.`
+          : `This operator hit the agent-registration cap. Retry after ${retryAfterPhrase(retryAfter)} — and if the operator did not open those accounts, their op_ code has leaked: tell them to revoke it.`;
+      break;
     case "platform_shutdown":
       message = `The DePix App platform is temporarily shut down. Retry after ${retryAfterPhrase(retryAfter)}.`;
       break;
@@ -342,6 +350,7 @@ export function mapApiError(
   if (limitCents !== undefined) safeDetails.limit_cents = limitCents;
   if (usedCents !== undefined) safeDetails.used_cents = usedCents;
   if (windowMinutes !== undefined) safeDetails.window_minutes = windowMinutes;
+  if (windowHours !== undefined) safeDetails.window_hours = windowHours;
   if (maxPerWindow !== undefined) safeDetails.max_per_window = maxPerWindow;
   if (discountPct !== undefined) safeDetails.discount_pct = discountPct;
   if (dueCents !== undefined) safeDetails.amount_cents = dueCents;

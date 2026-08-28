@@ -241,6 +241,7 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
     case "payer_velocity_limit":
     case "platform_shutdown":
     case "service_unavailable":
+    case "operator_register_cap_exceeded":
       return { kind: "wait", ...(ctx.retryAfterSeconds !== undefined ? { retry_after_seconds: ctx.retryAfterSeconds } : {}) };
 
     // ── register conflicts (retry with different params) ──

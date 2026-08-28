@@ -35,6 +35,19 @@ describe("mapApiError: actionable messages per code (spec §4.6)", () => {
     expect(e.data.retry_after).toBe(42);
   });
 
+  it("operator_register_cap_exceeded names the cap, the leak risk and the wait", () => {
+    const e = mapApiError(429, errorEnvelope("operator_register_cap_exceeded", {
+      retry_after: 3600,
+      details: { max_per_window: 5, window_hours: 24 },
+    }) as never);
+    expect(e.message).toContain("5 agent accounts in the last 24h");
+    expect(e.message).toContain("revoke");
+    expect(e.message).toContain("3600s");
+    expect(e.data.retry_after).toBe(3600);
+    expect((e.data.next_action as { kind: string; retry_after_seconds?: number }).kind).toBe("wait");
+    expect((e.data.next_action as { kind: string; retry_after_seconds?: number }).retry_after_seconds).toBe(3600);
+  });
+
   it("rate_limited surfaces the scope and retry_after", () => {
     const e = mapApiError(429, errorEnvelope("rate_limited", {
       retry_after: 5,
