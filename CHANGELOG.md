@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.8.3 — the agent's vaults learn the wallet's unlock chain
+
+Field-found on the flagship setup: a machine configured the way `init` v2
+configures it — no passphrase in any host config, the unlock key in the OS
+keychain — could not open the owner session `login` had sealed, nor mint agent
+credentials with `register_account`. The wallet's own vault always knew the
+chain; the agent-side vaults only read the environment. Both symptoms were
+reproduced end-to-end on a real machine and are gone.
+
+- **One unlock chain everywhere.** The owner session and the agent credential
+  vault now resolve their passphrase the way the wallet does: environment
+  (`DEPIX_AGENT_PASSPHRASE`, then `DEPIX_WALLET_PASSPHRASE`) → the OS keychain
+  unlock key `init` stored → the 0600 fallback file. An empty variable no
+  longer counts as an answer. The typed `backup` ceremony is untouched: there,
+  the passphrase you type outranks everything and the keychain is never
+  consulted.
+- **Locked is not missing.** The boot line now says whether the owner session
+  is `active`, `locked`, `none` or `skipped`; `account status` says "stored,
+  but LOCKED" instead of "no credentials"; and a new typed error,
+  `credentials_locked`, tells the agent the truth — this machine HAS
+  credentials it cannot open, so do not register a second account.
+
 ## 2.8.2 — `login` works out of the box
 
 The operator's sign-in got its own OAuth application ("DePix App MCP local":
