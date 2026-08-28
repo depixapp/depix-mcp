@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.8.2 — `login` works out of the box
+
+The operator's sign-in got its own OAuth application ("DePix App MCP local":
+public client, PKCE, loopback redirect), and the client id baked into `login`
+now points at it — the previous default belonged to the server-side
+operator-token flow, a different family the authorization server refuses.
+Verified end-to-end: browser sign-in, sealed session, `account status`
+reporting the owner. No tool changes: 26 gateway / 59 full.
+
 ## 2.8.1 — an expired invoice is refused before any money moves
 
 A term-by-term parity audit against the frontend wallet found two gaps in the
