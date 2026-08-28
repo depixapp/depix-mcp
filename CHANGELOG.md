@@ -84,6 +84,9 @@ agent-local.**
 
 ## 2.6.0 — the local agent onboards itself
 
+*(This version was never published to npm — its changes first shipped inside
+2.7.0.)*
+
 Local agents can now create and run their own account without a key pasted into
 a config, the wallet syncs on the agent's behalf so incoming money is never
 invisible, and every typed error tells the agent what to do next. **Tool count:

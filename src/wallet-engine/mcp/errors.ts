@@ -226,6 +226,15 @@ function cannedApiMessage(
       return `Rate limited. Retry after ${retryAfterPhrase(retryAfter)}.`;
     case "merchant_rate_limited":
       return `Rate limited (merchant, 30/min). Retry after ${retryAfterPhrase(retryAfter)}.`;
+    case "operator_register_cap_exceeded": {
+      const maxPerWindow = asInt(details?.max_per_window);
+      const windowHours = asInt(details?.window_hours);
+      const capPhrase =
+        maxPerWindow !== undefined && windowHours !== undefined
+          ? `This operator already registered ${maxPerWindow} agent accounts in the last ${windowHours}h`
+          : "This operator hit the agent-registration cap";
+      return `${capPhrase}. Retry after ${retryAfterPhrase(retryAfter)} — and if the operator did not open those accounts, their op_ code has leaked: tell them to revoke it.`;
+    }
     case "platform_shutdown":
       return `The DePix platform is temporarily shut down. Retry after ${retryAfterPhrase(retryAfter)}.`;
     case "service_unavailable":
@@ -360,7 +369,7 @@ export function mapToolError(err: unknown): ToolError {
     if (scope) safeDetails.required_scope = scope;
     const field = asFieldName(err.details?.field);
     if (field) safeDetails.field = field;
-    for (const key of ["min_cents", "max_cents", "limit_cents", "used_cents"] as const) {
+    for (const key of ["min_cents", "max_cents", "limit_cents", "used_cents", "max_per_window", "window_hours"] as const) {
       const n = asInt(err.details?.[key]);
       if (n !== undefined) safeDetails[key] = n;
     }

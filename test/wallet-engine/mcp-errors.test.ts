@@ -105,6 +105,26 @@ describe("mapToolError — API errors (anti-injection)", () => {
     expect(mapToolError(new DepixApiError("rate_limited", undefined, { status: 429 })).retryable).toBe(true);
     expect(mapToolError(new DepixApiError("validation_error", undefined, { status: 400 })).retryable).toBe(false);
   });
+
+  it("operator_register_cap_exceeded reaches the AGENT with the leak warning, and never loops", () => {
+    // register_account maps through THIS mapper — the gateway mapper never sees
+    // the code. The copy that matters (a leaked op_ wants revoking) must arrive
+    // here, with the numbers, and with retryable false: the wait can be 24h.
+    const te = mapToolError(
+      new DepixApiError("operator_register_cap_exceeded", "raw upstream text", {
+        status: 429,
+        retryAfter: 3600,
+        details: { max_per_window: 5, window_hours: 24 },
+      }),
+    );
+    expect(te.message).toContain("5 agent accounts in the last 24h");
+    expect(te.message).toContain("revoke");
+    expect(te.retryable).toBe(false);
+    const na = te.data.next_action as { kind: string; retry_after_seconds?: number };
+    expect(na.kind).toBe("wait");
+    expect(na.retry_after_seconds).toBe(3600);
+    expect((te.data.details as Record<string, unknown>).max_per_window).toBe(5);
+  });
 });
 
 describe("mapToolError — SDK-own and unexpected errors", () => {

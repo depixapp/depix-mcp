@@ -257,7 +257,7 @@ drive them with `simulate_checkout_payment`.
 | `set_featured_products` | POST /api/products/featured | `merchant_write` |
 | `list_product_checkouts` | GET /api/products/:id/checkouts | `merchant_read` |
 | `get_account` | GET /api/me | `merchant_read` |
-| `get_onboarding_status` | GET /api/verification (self-heals via POST when every step is done) | any key (scope-less) |
+| `get_onboarding_status` | GET /api/verification + GET /api/me probe (self-heals via POST when every step is done) | `merchant_read` |
 | `update_merchant_profile` | PATCH /api/merchants/me | `merchant_write` |
 | `get_vault_status` | GET /api/vault/status | `wallet_read` (read-only) |
 | `list_webhook_logs` | GET /api/webhook-logs, /api/webhook-logs/:id | `merchant_read` |
