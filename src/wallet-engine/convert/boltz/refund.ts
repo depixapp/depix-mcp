@@ -16,7 +16,7 @@
 
 import { hex } from "@scure/base";
 import { ConversionError } from "../../errors.js";
-import { ensureBoltzConfig } from "./client.js";
+import { BoltzClient, ensureBoltzConfig } from "./client.js";
 import { getProviderById, withProvider, type SwapProvider } from "./providers.js";
 import { ensureBoltzUtxoSecp } from "./secp.js";
 
@@ -386,9 +386,7 @@ async function runRefund<R>(args: {
     //    has expired (the tx's nLockTime is non-final before then).
     let height: number | null = null;
     try {
-      height = deps.getBlockHeight
-        ? await deps.getBlockHeight()
-        : await withProvider(provider, defaultChainHeight);
+      height = deps.getBlockHeight ? await deps.getBlockHeight() : await defaultChainHeight(provider);
     } catch {
       // height unknown
     }
@@ -415,12 +413,17 @@ async function runRefund<R>(args: {
   }
 }
 
-async function defaultChainHeight(): Promise<number | null> {
-  const { getChainHeight } = (await import("boltz-swaps/client")) as unknown as {
-    getChainHeight?: (a: string) => Promise<number | null>;
-  };
-  if (typeof getChainHeight === "function") return getChainHeight("L-BTC");
-  return null;
+/**
+ * Read the L-BTC tip when the caller injects no getBlockHeight. Height is
+ * chain-global, but it is read from the backend that HOLDS this lockup: the
+ * session's selected provider may be the one that is down (frontend parity —
+ * refund.js reads it against the record's own provider.apiUrl).
+ *
+ * Answering null here would be worse than an error: the timeout refund would
+ * never fire and every attempt would come back RefundPendingError forever.
+ */
+async function defaultChainHeight(provider: SwapProvider): Promise<number | null> {
+  return new BoltzClient({ apiBase: provider.apiUrl, wsUrl: provider.wsUrl }).getChainHeight(LBTC);
 }
 
 /** Refund a failed SUBMARINE swap from its persisted boltz-swaps record. */

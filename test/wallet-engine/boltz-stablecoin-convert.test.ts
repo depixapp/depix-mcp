@@ -571,6 +571,45 @@ describe("resume() — a never-locked orphan chain record is DROPPED, not re-err
     expect(summary.stablecoinRefunded).toBe(0);
   });
 
+  it("PARKS a locked record with no refund material — warned once, never re-attempted", async () => {
+    // The refund key is the only key that can sweep the lockup. Without it the
+    // sweep is impossible, so retrying it every resume is pure noise; the record
+    // still stays (it may guard real funds) — frontend parity, swap-ui.js.
+    dataDir = await mkdtemp(join(tmpdir(), "depix-sdk-stable-"));
+    const store = new BoltzSwapStore({ dataDir, passphrase: PASSPHRASE, saltB64: SALT_B64 });
+    await store.put(baseStablecoinRecord({ swapId: ORPHAN_ID, refundPrivateKeyHex: "" }));
+    const refundChain = vi.fn(async (): Promise<RefundResult> => ({ refundTxId: null, cooperative: true }));
+    const warn = vi.fn();
+    const convert = new BoltzConvert(
+      {
+        store,
+        logger: { ...SILENT_LOGGER, warn },
+        lockupLbtc: async () => ({ txid: "x" }),
+        getReceiveAddress: async () => LOCKUP_ADDRESS
+      },
+      {
+        client: fakeClient({ getSwapStatus: async () => ({ status: "swap.expired" }) }),
+        stablecoin: {
+          refundChain: refundChain as unknown as NonNullable<BoltzConvertDeps["stablecoin"]>["refundChain"],
+          // The L-BTC DID land — not a never-locked orphan, so the record is not dropped.
+          getChainSwapTransactions: async () => ({ userLock: { transaction: { id: "lock-tx" } } })
+        }
+      }
+    );
+
+    const first = await convert.resume();
+    expect(refundChain).not.toHaveBeenCalled();
+    expect(first.failed).toBe(0);
+    expect(((await store.get(ORPHAN_ID)) as StoredStablecoinSwap | null)?.state).toBe("unrecoverable");
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    const second = await convert.resume();
+    expect(second.failed).toBe(0);
+    expect(refundChain).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1); // parked records are walked past in silence
+    expect(await store.get(ORPHAN_ID)).not.toBeNull();
+  });
+
   it("KEEPS the record on an AMBIGUOUS never-locked probe (fund-safety fail-safe — never drop a maybe-funded record)", async () => {
     const { convert, store } = await seedOrphan({
       // The probe fails ambiguously (transient) → NOT a definitive "never locked".

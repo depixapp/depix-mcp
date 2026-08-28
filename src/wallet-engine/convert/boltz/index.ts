@@ -47,7 +47,9 @@ export { BoltzClient, BOLTZ_API_BASE, BOLTZ_WS_URL, ensureBoltzConfig } from "./
 export { BoltzApiError, ConversionError } from "../../errors.js";
 export {
   decodeInvoiceAmountSats,
+  decodeInvoiceExpiryMs,
   decodeInvoicePaymentHash,
+  isInvoiceExpired,
   assertLockupNotInflated,
   assertTimeoutInBounds,
   mapSubmarineStatus,

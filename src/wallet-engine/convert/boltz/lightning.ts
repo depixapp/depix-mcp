@@ -157,6 +157,72 @@ const BOLT11_SIGNATURE_WORDS = 104;
 const BOLT11_TIMESTAMP_WORDS = 7;
 const BOLT11_PAYMENT_HASH_TAG = 1;
 const BOLT11_PAYMENT_HASH_WORDS = 52;
+// expiry (tag 6 = `x`): seconds after the invoice timestamp until it expires.
+// BOLT #11 mandates a 3600s default when the field is absent.
+const BOLT11_EXPIRY_TAG = 6;
+const BOLT11_DEFAULT_EXPIRY_SECONDS = 3600;
+
+/**
+ * bech32-decode a BOLT11 invoice's data part, or null when it isn't a Lightning
+ * invoice / can't be decoded. Shared by the tagged-field readers below — none of
+ * them verify the signature (unnecessary for their checks).
+ */
+function decodeBolt11Words(invoice: unknown): number[] | null {
+  if (typeof invoice !== "string") return null;
+  let decoded;
+  try {
+    decoded = bech32.decode(invoice.trim().toLowerCase() as `${string}1${string}`, 2048);
+  } catch {
+    return null;
+  }
+  if (!/^ln(bc|tb|bcrt|tbs|sb)/.test(decoded.prefix)) return null;
+  return [...decoded.words];
+}
+
+/**
+ * Decode the instant a BOLT11 invoice expires (epoch ms): the 35-bit creation
+ * timestamp plus the expiry tagged field (tag 6 = `x`), defaulting to 3600s per
+ * BOLT #11 when the field is absent. Returns null when unparseable.
+ */
+export function decodeInvoiceExpiryMs(invoice: unknown): number | null {
+  const words = decodeBolt11Words(invoice);
+  if (!words) return null;
+  const fieldsEnd = words.length - BOLT11_SIGNATURE_WORDS;
+  if (fieldsEnd < BOLT11_TIMESTAMP_WORDS) return null;
+  // 35-bit big-endian timestamp. 2^35 exceeds the 32-bit bitwise range, so
+  // accumulate with plain arithmetic (exact in float64 far past 2^35).
+  let timestamp = 0;
+  for (let i = 0; i < BOLT11_TIMESTAMP_WORDS; i++) timestamp = timestamp * 32 + words[i]!;
+  let expirySeconds = BOLT11_DEFAULT_EXPIRY_SECONDS;
+  let i = BOLT11_TIMESTAMP_WORDS;
+  while (i + 3 <= fieldsEnd) {
+    const tag = words[i]!;
+    const len = words[i + 1]! * 32 + words[i + 2]!;
+    const start = i + 3;
+    const end = start + len;
+    if (end > fieldsEnd) return null;
+    if (tag === BOLT11_EXPIRY_TAG) {
+      let value = 0;
+      for (let j = start; j < end; j++) value = value * 32 + words[j]!;
+      expirySeconds = value;
+      break;
+    }
+    i = end;
+  }
+  return (timestamp + expirySeconds) * 1000;
+}
+
+/**
+ * Reports whether a BOLT11 invoice is already expired at `nowMs` (default: now).
+ * Fails OPEN (false) when the invoice can't be decoded — this guard exists for
+ * early, actionable feedback; the swap backend's own rejection remains the
+ * authoritative backstop.
+ */
+export function isInvoiceExpired(invoice: unknown, nowMs: number = Date.now()): boolean {
+  const expiryMs = decodeInvoiceExpiryMs(invoice);
+  if (expiryMs === null) return false;
+  return nowMs >= expiryMs;
+}
 
 /**
  * Decode the payment_hash of a BOLT11 invoice (64-char lowercase hex), or null
@@ -167,15 +233,8 @@ const BOLT11_PAYMENT_HASH_WORDS = 52;
  * invoice whose preimage it controls.
  */
 export function decodeInvoicePaymentHash(invoice: unknown): string | null {
-  if (typeof invoice !== "string") return null;
-  let decoded;
-  try {
-    decoded = bech32.decode(invoice.trim().toLowerCase() as `${string}1${string}`, 2048);
-  } catch {
-    return null;
-  }
-  if (!/^ln(bc|tb|bcrt|tbs|sb)/.test(decoded.prefix)) return null;
-  const words = decoded.words;
+  const words = decodeBolt11Words(invoice);
+  if (!words) return null;
   const fieldsEnd = words.length - BOLT11_SIGNATURE_WORDS;
   let i = BOLT11_TIMESTAMP_WORDS;
   while (i + 3 <= fieldsEnd) {

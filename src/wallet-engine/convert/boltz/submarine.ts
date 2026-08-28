@@ -12,7 +12,7 @@
 // allowlist sees the Lightning payee.
 //
 // Guard cadence (frontend order, all fail-closed):
-//   decodeInvoiceAmountSats → createSubmarineSwap → assertLockupNotInflated
+//   isInvoiceExpired → decodeInvoiceAmountSats → createSubmarineSwap → assertLockupNotInflated
 //   (ceil(invoiceSats*1.05)+2000) → assertTimeoutInBounds
 //   (MAX_SUBMARINE_TIMEOUT_BLOCKS) → assertLockupAddressBindsToUser (re-derives
 //   the tree with boltz-core and binds the payment hash of the SUPPLIED invoice).
@@ -24,7 +24,8 @@ import {
   assertLockupNotInflated,
   assertTimeoutInBounds,
   decodeInvoiceAmountSats,
-  decodeInvoicePaymentHash
+  decodeInvoicePaymentHash,
+  isInvoiceExpired
 } from "./lightning.js";
 import { assertLockupAddressBindsToUser } from "./verify-lockup.js";
 
@@ -66,9 +67,10 @@ export interface PrepareSubmarineDeps {
 /**
  * Create a submarine swap for `invoice` and run the full fail-closed guard
  * cadence, returning a verified PreparedSubmarineSwap. Throws ConversionError on
- * any guard violation BEFORE the caller locks any funds. Amount-less invoices are
- * rejected up front (INVOICE_NO_AMOUNT) — Boltz pays the exact invoice value, so
- * there is no amount to lock against.
+ * any guard violation BEFORE the caller locks any funds. Expired invoices
+ * (INVOICE_EXPIRED) and amount-less ones (INVOICE_NO_AMOUNT — Boltz pays the
+ * exact invoice value, so there is no amount to lock against) are rejected up
+ * front, without creating a swap.
  */
 export async function prepareSubmarineSwap(
   params: { invoice: string },
@@ -77,6 +79,17 @@ export async function prepareSubmarineSwap(
   const invoice = params.invoice;
   if (typeof invoice !== "string" || invoice.trim().length === 0) {
     throw new ConversionError("INVOICE_NO_AMOUNT", "A BOLT11 invoice is required");
+  }
+  // Expired trumps every other verdict, and it has to land HERE — before the
+  // create call. The backend will happily create a swap for an unpayable invoice,
+  // and the L-BTC locked into it then only comes back through the refund path:
+  // cooperative if the backend co-signs, otherwise not until timeoutBlockHeight
+  // (~14 days). No grace margin, frontend parity (wallet-ui.js onLightningPreview).
+  if (isInvoiceExpired(invoice)) {
+    throw new ConversionError(
+      "INVOICE_EXPIRED",
+      "This Lightning invoice has already expired — ask the payee for a fresh one."
+    );
   }
   const invoiceSats = decodeInvoiceAmountSats(invoice);
   if (invoiceSats == null) {

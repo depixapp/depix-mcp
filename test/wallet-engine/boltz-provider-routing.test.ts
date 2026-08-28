@@ -43,7 +43,7 @@ import { receiveViaLightning, type ReverseDeps } from "../../src/wallet-engine/c
 import { executeStablecoinRoute } from "../../src/wallet-engine/convert/boltz/stablecoin.js";
 import type { Logger } from "../../src/wallet-engine/logger.js";
 import { BoltzApiError, isDepixSdkError } from "../../src/wallet-engine/errors.js";
-import { TEST_INVOICE, TEST_PAYMENT_HASH } from "./support/boltz.js";
+import { TEST_INVOICE_LIVE, TEST_PAYMENT_HASH } from "./support/boltz.js";
 
 const BOLTZ = SWAP_PROVIDERS[0]!;
 const COINOS = SWAP_PROVIDERS[1]!;
@@ -127,7 +127,7 @@ describe("creation follows the live provider", () => {
     await selectSwapProvider({ fetchImpl: boltzDownProbe });
     const { convert } = makeConvert({ clientFactory: (p) => fakeClient(p) });
 
-    const res = await convert.payLightningInvoice({ invoice: TEST_INVOICE });
+    const res = await convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
 
     expect(clientProviders).toEqual(["coinos"]);
     const stored = (await store.get(res.swapId)) as StoredSubmarineSwap;
@@ -159,7 +159,7 @@ describe("creation follows the live provider", () => {
       }
     );
 
-    await expect(ctxFailing.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toThrow(/network reset/);
+    await expect(ctxFailing.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })).rejects.toThrow(/network reset/);
     const { records } = await store.readAll();
     expect(records).toHaveLength(1);
     expect((records[0] as StoredSubmarineSwap).providerId).toBe("coinos");
@@ -179,7 +179,7 @@ describe("creation follows the live provider", () => {
         })
     });
 
-    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toThrow(/creation is disabled/);
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })).rejects.toThrow(/creation is disabled/);
     // The cached pick was dropped, so the next attempt walks the list again —
     // two probes per walk (Boltz refuses, Coinos answers), twice.
     await selectSwapProvider({ fetchImpl: probe });
@@ -194,7 +194,7 @@ describe("recovery follows the RECORD, never the current selection", () => {
       type: "submarine",
       ...(providerId ? { providerId } : {}),
       swapId: "sub-legacy",
-      invoice: TEST_INVOICE,
+      invoice: TEST_INVOICE_LIVE,
       lockupAddress: LOCKUP_ADDRESS,
       expectedAmountSats: 10_000,
       invoiceSats: 9_900,
@@ -346,7 +346,7 @@ describe("one call walks the list when creation is refused", () => {
         fakeClient(p, p.id === "boltz" ? { createSubmarineSwap: refuses("Boltz") } : {})
     });
 
-    const res = await convert.payLightningInvoice({ invoice: TEST_INVOICE });
+    const res = await convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
 
     expect(clientProviders).toEqual(["boltz", "coinos"]);
     const stored = (await store.get(res.swapId)) as StoredSubmarineSwap;
@@ -366,7 +366,7 @@ describe("one call walks the list when creation is refused", () => {
       }
     );
 
-    await convert.payLightningInvoice({ invoice: TEST_INVOICE });
+    await convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
 
     // lockupLbtc IS the choke point (enforce + recordSpend + sign + broadcast):
     // one call is one enforce and one recorded spend, however many backends the
@@ -395,7 +395,7 @@ describe("one call walks the list when creation is refused", () => {
       }
     );
 
-    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toThrow(/connection reset/);
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })).rejects.toThrow(/connection reset/);
 
     expect(clientProviders).toEqual(["boltz"]); // Coinos was never asked
     expect(lockupLbtc).toHaveBeenCalledTimes(1);
@@ -412,7 +412,7 @@ describe("one call walks the list when creation is refused", () => {
     });
 
     const err = await convert
-      .payLightningInvoice({ invoice: TEST_INVOICE })
+      .payLightningInvoice({ invoice: TEST_INVOICE_LIVE })
       .then(() => null)
       .catch((e: unknown) => e);
 
@@ -441,7 +441,7 @@ describe("one call walks the list when creation is refused", () => {
         if (creates === 1) throw new BoltzApiError("Boltz: swap creation is disabled", { status: 400 });
         return {
           id: "rev-fallback",
-          invoice: TEST_INVOICE,
+          invoice: TEST_INVOICE_LIVE,
           lockupAddress: LOCKUP_ADDRESS,
           onchainAmount: 49_000,
           swapTree: {},
@@ -454,7 +454,7 @@ describe("one call walks the list when creation is refused", () => {
     const res = await convert.receiveLightning({ amountSats: 50_000 });
 
     expect(creates).toBe(2);
-    expect(res.invoice).toBe(TEST_INVOICE);
+    expect(res.invoice).toBe(TEST_INVOICE_LIVE);
     const stored = (await store.get(res.swapId)) as StoredReverseSwap;
     expect(stored.providerId).toBe("coinos");
     convert.dispose();
@@ -479,7 +479,7 @@ describe("one call walks the list when creation is refused", () => {
         })
     });
 
-    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toSatisfy((e: unknown) =>
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })).rejects.toSatisfy((e: unknown) =>
       isDepixSdkError(e, "LOCKUP_INFLATED")
     );
     expect(clientProviders).toEqual(["boltz"]);
@@ -520,7 +520,7 @@ describe("a Lightning flow on the fallback runs CONCURRENTLY with a stablecoin f
         getClaimAddress: async () => LOCKUP_ADDRESS,
         createReverseSwap: async () => ({
           id: "rev-coinos",
-          invoice: TEST_INVOICE,
+          invoice: TEST_INVOICE_LIVE,
           lockupAddress: LOCKUP_ADDRESS,
           onchainAmount: 49_000,
           swapTree: {},

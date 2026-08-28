@@ -23,7 +23,7 @@ import { BoltzSwapStore, type StoredReverseSwap, type StoredSubmarineSwap } from
 import type { QuotesSource } from "../../src/wallet-engine/guardrails/quotes.js";
 import type { GuardrailConfig } from "../../src/wallet-engine/guardrails/guardrails.js";
 import { GuardrailError, isDepixSdkError } from "../../src/wallet-engine/errors.js";
-import { TEST_INVOICE, TEST_PAYMENT_HASH } from "./support/boltz.js";
+import { TEST_INVOICE_LIVE, TEST_PAYMENT_HASH } from "./support/boltz.js";
 import { hex } from "@scure/base";
 
 const PASSPHRASE = "correct-horse-battery-staple";
@@ -101,7 +101,7 @@ describe("payLightningInvoice — guardrail counts the expectedAmount in BRL (§
     const w = await restore({ guardrails: { perTxLimitBrlCents: 1_000 }, boltz: deps }); // R$10 cap
     let caught: unknown;
     try {
-      await w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE });
+      await w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
     } catch (e) {
       caught = e;
     }
@@ -117,7 +117,7 @@ describe("payLightningInvoice — guardrail counts the expectedAmount in BRL (§
     const { deps } = boltzDeps(fakeClient());
     const w = await restore({ boltz: deps }); // default caps: R$100/tx, R$500/day > R$50
     await expect(
-      w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE })
+      w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "INSUFFICIENT_FUNDS"));
     await expect(readFile(join(dataDir, "boltz-swaps.json"), "utf8")).resolves.toContain('"records": []');
   });
@@ -132,7 +132,7 @@ describe("payLightningInvoice — allowlist gates the Lightning payee even when 
     });
     let caught: unknown;
     try {
-      await w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE });
+      await w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
     } catch (e) {
       caught = e;
     }
@@ -150,7 +150,7 @@ describe("payLightningInvoice — allowlist gates the Lightning payee even when 
       boltz: deps
     });
     await expect(
-      w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE })
+      w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "INSUFFICIENT_FUNDS"));
   });
 });
@@ -160,7 +160,7 @@ describe("payLightningInvoice — quotes fail closed (G6)", () => {
     const { deps } = boltzDeps(fakeClient());
     const w = await restore({ quotes: NO_QUOTES, boltz: deps });
     await expect(
-      w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE })
+      w.convert.boltz.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "QUOTES_UNAVAILABLE"));
   });
 });
@@ -195,7 +195,7 @@ describe("payLightningInvoice — refund key survives a broadcast-stage lockup f
       throw broadcastErr;
     });
 
-    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toBe(broadcastErr);
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })).rejects.toBe(broadcastErr);
 
     const rec = (await store.get("sub-1")) as StoredSubmarineSwap | null;
     expect(rec).not.toBeNull();
@@ -213,7 +213,7 @@ describe("payLightningInvoice — refund key survives a broadcast-stage lockup f
       throw preBroadcastErr;
     });
 
-    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toBe(preBroadcastErr);
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE })).rejects.toBe(preBroadcastErr);
     // Nothing was locked → no orphan record for resume to act on.
     expect(await store.get("sub-1")).toBeNull();
   });
@@ -227,12 +227,12 @@ describe("receiveLightning — returns the invoice for the payer (INFLOW, no gua
       getReversePairHash: async () => "rev-pair",
       deriveSecrets: () => ({
         preimage: new Uint8Array(32).fill(9),
-        preimageHash: hex.decode(TEST_PAYMENT_HASH), // matches TEST_INVOICE
+        preimageHash: hex.decode(TEST_PAYMENT_HASH), // matches TEST_INVOICE_LIVE
         claimKeys: { privateKey: new Uint8Array(32).fill(1), publicKey: new Uint8Array(33).fill(2) }
       }),
       reverseCreate: async () => ({
         id: "rev-1",
-        invoice: TEST_INVOICE,
+        invoice: TEST_INVOICE_LIVE,
         lockupAddress: "lq1revlockup",
         onchainAmount: 200_000,
         swapTree: {},
@@ -244,7 +244,7 @@ describe("receiveLightning — returns the invoice for the payer (INFLOW, no gua
     const w = await restore({ boltz: deps });
     const res = await w.convert.boltz.receiveLightning({ amountSats: 250_000 });
     expect(res.swapId).toBe("rev-1");
-    expect(res.invoice).toBe(TEST_INVOICE);
+    expect(res.invoice).toBe(TEST_INVOICE_LIVE);
     expect(res.lockupAddress).toBe("lq1revlockup");
     res.completion.catch(() => {}); // pending forever in this test — don't leak
   });
@@ -265,7 +265,7 @@ describe("close() cancels in-flight Boltz watches (§5.3 resource hygiene)", () 
       }),
       reverseCreate: async () => ({
         id: "rev-1",
-        invoice: TEST_INVOICE,
+        invoice: TEST_INVOICE_LIVE,
         lockupAddress: "lq1revlockup",
         onchainAmount: 200_000,
         swapTree: {},
@@ -309,7 +309,7 @@ describe("resume() — recovers claim/refund from boltz-swaps.json after a crash
     const sub: StoredSubmarineSwap = {
       type: "submarine",
       swapId: "sub-1",
-      invoice: TEST_INVOICE,
+      invoice: TEST_INVOICE_LIVE,
       lockupAddress: LOCKUP_ADDRESS,
       expectedAmountSats: 10_000,
       invoiceSats: 250_000,
@@ -325,7 +325,7 @@ describe("resume() — recovers claim/refund from boltz-swaps.json after a crash
     const rev: StoredReverseSwap = {
       type: "reverse",
       swapId: "rev-1",
-      invoice: TEST_INVOICE,
+      invoice: TEST_INVOICE_LIVE,
       lockupAddress: "lq1revlockup",
       onchainAmount: 200_000,
       swapTree: {},
@@ -356,6 +356,55 @@ describe("resume() — recovers claim/refund from boltz-swaps.json after a crash
     expect(await store.get("rev-1")).not.toBeNull();
   });
 
+  it("PARKS a record with no refund material instead of re-erroring on every resume", async () => {
+    // The refund leaf is the user's key alone: with no refundPrivateKeyHex the
+    // lockup can never be swept by anyone. Retrying that forever only floods the
+    // log. Park it (marked + warned once) and never delete it — a record tied to
+    // possibly-locked funds only goes away on the owner's say-so (frontend
+    // parity: swap-ui.js classifies it "unrecoverable" and stops).
+    dataDir = await mkdtemp(join(tmpdir(), "depix-sdk-boltz-conv-"));
+    const store = new BoltzSwapStore({ dataDir, passphrase: PASSPHRASE, saltB64: SALT_B64 });
+    const warn = vi.fn();
+    const ctx: BoltzWalletContext = {
+      store,
+      logger: { ...SILENT_LOGGER, warn },
+      lockupLbtc: async () => ({ txid: "unused" }),
+      getReceiveAddress: async () => LOCKUP_ADDRESS
+    };
+    // No refundSubmarine injected: the REAL one throws a TypeError on this record.
+    const convert = new BoltzConvert(ctx, {
+      client: fakeClient({ getSwapStatus: async () => ({ status: "swap.expired" }) })
+    });
+    await store.put({
+      type: "submarine",
+      swapId: "sub-nokey",
+      invoice: TEST_INVOICE_LIVE,
+      lockupAddress: LOCKUP_ADDRESS,
+      expectedAmountSats: 10_000,
+      invoiceSats: 250_000,
+      swapTree: { claimLeaf: {}, refundLeaf: {} },
+      claimPublicKey: "03" + "cc".repeat(32),
+      timeoutBlockHeight: 1_000_100,
+      refundPrivateKeyHex: "", // pre-fix record: the refund key was never persisted
+      refundPublicKeyHex: "02" + "bb".repeat(32),
+      state: "locked_up",
+      createdAt: 0
+    } as StoredSubmarineSwap);
+
+    const first = await convert.resume();
+    expect(first.failed).toBe(0);
+    expect(first.submarineRefunded).toBe(0);
+    const parked = (await store.get("sub-nokey")) as StoredSubmarineSwap | null;
+    expect(parked?.state).toBe("unrecoverable");
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // Every later resume walks straight past it: no second attempt, no second warning.
+    const second = await convert.resume();
+    expect(second.failed).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(await store.get("sub-nokey")).not.toBeNull();
+  });
+
   it("discards a tampered record instead of acting on it", async () => {
     const client = fakeClient();
     const w = await restore({ boltz: { client } });
@@ -364,7 +413,7 @@ describe("resume() — recovers claim/refund from boltz-swaps.json after a crash
     await store.put({
       type: "submarine",
       swapId: "sub-x",
-      invoice: TEST_INVOICE,
+      invoice: TEST_INVOICE_LIVE,
       lockupAddress: LOCKUP_ADDRESS,
       expectedAmountSats: 10_000,
       invoiceSats: 250_000,

@@ -232,6 +232,10 @@ export class WithdrawContractError extends DepixSdkError {
  *                           against OUR preimage hash (§5.3 receive).
  *   INVOICE_NO_AMOUNT     — an amount-less / unparseable BOLT11 (no trusted
  *                           ceiling to lock against, §5.3).
+ *   INVOICE_EXPIRED       — the BOLT11 expiry (timestamp + tag 6, 3600s default)
+ *                           has passed, so the swap could never settle and the
+ *                           L-BTC would only come back through the slow refund
+ *                           path. Raised before the swap is created (§5.3).
  *   TIMEOUT_OUT_OF_BOUNDS — the refund timeout height is out of the sane bound
  *                           (MAX_SUBMARINE_TIMEOUT_BLOCKS for LN; MAX_CHAIN_
  *                           TIMEOUT_BLOCKS for the stablecoin chain swap, §5.3).

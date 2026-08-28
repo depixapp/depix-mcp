@@ -13,7 +13,7 @@ import { BoltzConvert, type BoltzWalletContext } from "../../src/wallet-engine/c
 import type { BoltzClient } from "../../src/wallet-engine/convert/boltz/client.js";
 import { BoltzSwapStore } from "../../src/wallet-engine/convert/boltz/store.js";
 import type { Logger } from "../../src/wallet-engine/logger.js";
-import { TEST_INVOICE } from "./support/boltz.js";
+import { TEST_INVOICE_LIVE } from "./support/boltz.js";
 
 const SILENT: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 const SALT_B64 = Buffer.from(new Uint8Array(16).fill(7)).toString("base64");
@@ -68,7 +68,7 @@ describe("payLightningInvoice reuse seam (§5.5)", () => {
   it("forwards the gift-card fee split + BOTH allowlist classes + spend kind to lockupLbtc", async () => {
     const { convert: c, lockupLbtc } = await convertWithSpyLockup();
     const res = await c.payLightningInvoice({
-      invoice: TEST_INVOICE,
+      invoice: TEST_INVOICE_LIVE,
       extraDestinations: [{ kind: "giftcardBeneficiary", beneficiary: EMAIL }],
       feeSplit: { address: LOCKUP_ADDRESS, amountSats: 2500n },
       spendKind: "giftcard"
@@ -94,7 +94,7 @@ describe("payLightningInvoice reuse seam (§5.5)", () => {
 
   it("a plain LN send forwards ONLY the lightning class, no fee split, no custom kind (backward compat)", async () => {
     const { convert: c, lockupLbtc } = await convertWithSpyLockup();
-    const res = await c.payLightningInvoice({ invoice: TEST_INVOICE });
+    const res = await c.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
     res.completion.catch(() => {});
 
     const arg = lockupLbtc.mock.calls[0]![0] as {

@@ -45,7 +45,8 @@ export type SubmarineState =
   | "locked_up" // lockup broadcast — watching for payment
   | "paid" // Boltz claimed the lockup (invoice paid)
   | "refunded" // refunded on-chain
-  | "refund_pending"; // cooperative refund failed, timeout not reached
+  | "refund_pending" // cooperative refund failed, timeout not reached
+  | "unrecoverable"; // no refund key was ever persisted — nobody can sweep the lockup
 
 export interface StoredSubmarineSwap {
   type: "submarine";
@@ -94,7 +95,8 @@ export type StablecoinState =
   | "locked_up" // lockup broadcast — awaiting server lockup / execution
   | "settled" // executed (claim → DEX → bridge delivered)
   | "refunded" // L-BTC lockup swept back
-  | "refund_pending"; // cooperative refund failed, timeout not reached
+  | "refund_pending" // cooperative refund failed, timeout not reached
+  | "unrecoverable"; // no refund key was ever persisted — nobody can sweep the lockup
 
 /**
  * A persisted L-BTC -> stablecoin (chain) swap (spec §5.3, PR5b). Carries the

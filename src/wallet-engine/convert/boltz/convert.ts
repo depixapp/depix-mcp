@@ -193,6 +193,22 @@ export interface ToStablecoinResult {
   completion: Promise<StablecoinOutcome>;
 }
 
+/**
+ * Reports whether a persisted record still carries everything a refund needs to
+ * sweep its lockup: the two keys of the aggregate, the swap tree the refund leaf
+ * lives in, and the id the backend knows it by.
+ */
+function hasRefundMaterial(record: StoredSubmarineSwap | StoredStablecoinSwap): boolean {
+  const backendKey = record.type === "submarine" ? record.claimPublicKey : record.serverPublicKey;
+  return Boolean(
+    record.swapId &&
+      backendKey &&
+      record.swapTree &&
+      record.refundPrivateKeyHex &&
+      record.refundPublicKeyHex
+  );
+}
+
 export interface BoltzResumeSummary {
   submarineResumed: number;
   submarineRefunded: number;
@@ -516,9 +532,13 @@ export class BoltzConvert {
   private async refundOne(
     swapId: string,
     timeoutBlockHeight: number
-  ): Promise<{ refunded: boolean; refundTxId?: string | null }> {
+  ): Promise<{ refunded: boolean; refundTxId?: string | null; parked?: boolean }> {
     const stored = await this.ctx.store.get(swapId).catch(() => null);
     if (!stored || stored.type !== "submarine") return { refunded: false };
+    if (!hasRefundMaterial(stored)) {
+      await this.parkUnrecoverable(swapId);
+      return { refunded: false, parked: true };
+    }
     // The lockup is held by whoever created the swap, and only that backend can
     // co-sign its refund — never the backend this process happens to be on now.
     const provider = getProviderById(stored.providerId);
@@ -791,7 +811,7 @@ export class BoltzConvert {
    */
   private async refundStablecoin(
     record: StoredStablecoinSwap
-  ): Promise<{ refunded: boolean; refundTxId?: string | null; dropped?: boolean }> {
+  ): Promise<{ refunded: boolean; refundTxId?: string | null; dropped?: boolean; parked?: boolean }> {
     // A chain swap that NEVER locked any L-BTC on-chain (created then abandoned,
     // or Boltz-expired before the user funded it) has nothing to sweep — the
     // refund would throw "lockup transaction unavailable" (refund.ts), which
@@ -807,6 +827,10 @@ export class BoltzConvert {
         swapId: record.swapId
       });
       return { refunded: false, dropped: true };
+    }
+    if (!hasRefundMaterial(record)) {
+      await this.parkUnrecoverable(record.swapId);
+      return { refunded: false, parked: true };
     }
 
     const provider = getProviderById(record.providerId);
@@ -935,6 +959,25 @@ export class BoltzConvert {
     return { swapId: record.swapId, invoice, lockupAddress: record.lockupAddress, amountSats: params.amountSats, completion };
   }
 
+  /**
+   * Stop trying to refund a record whose refund key was never persisted. The
+   * refund leaf is the user's key alone, so nobody — not the wallet, not the
+   * backend — can sweep that lockup; re-deriving the same failure on every open
+   * only floods the log. The record is NEVER deleted: it may still stand for
+   * locked funds, and only its owner may decide it is worthless (frontend
+   * parity, swap-ui.js: classified "unrecoverable" with a manual remove).
+   */
+  private async parkUnrecoverable(swapId: string): Promise<void> {
+    await this.ctx.store
+      .patch(swapId, (r) => {
+        (r as StoredSubmarineSwap).state = "unrecoverable";
+      })
+      .catch(() => {});
+    this.logger.warn("boltz swap has no refund key — parked as unrecoverable, not retried again", {
+      swapId
+    });
+  }
+
   // ─── resume (post-crash) ─────────────────────────────────────────────────
 
   /**
@@ -993,6 +1036,7 @@ export class BoltzConvert {
   }
 
   private async resumeSubmarine(record: StoredSubmarineSwap, summary: BoltzResumeSummary): Promise<void> {
+    if (record.state === "unrecoverable") return; // already parked + warned once
     // Reconcile with Boltz to decide claim (paid) vs refund vs still-pending.
     const provider = getProviderById(record.providerId);
     let bucket: ReturnType<typeof mapSubmarineStatus>;
@@ -1016,7 +1060,7 @@ export class BoltzConvert {
     if (bucket === "refund" || record.state === "refund_pending") {
       const r = await this.refundOne(record.swapId, record.timeoutBlockHeight);
       if (r.refunded) summary.submarineRefunded++;
-      else summary.submarineResumed++; // refund_pending — will retry next resume
+      else if (!r.parked) summary.submarineResumed++; // refund_pending — will retry next resume
       return;
     }
     // Still in flight — re-attach the watch (best-effort, background).
@@ -1057,6 +1101,7 @@ export class BoltzConvert {
   }
 
   private async resumeStablecoin(record: StoredStablecoinSwap, summary: BoltzResumeSummary): Promise<void> {
+    if (record.state === "unrecoverable") return; // already parked + warned once
     // Reconcile with Boltz to decide finish (server-locked → execute) vs refund
     // (failed/expired) vs still-pending. A swap we've already decided will refund
     // (outcome:refund) never re-attempts execution — straight to refund.
@@ -1077,7 +1122,7 @@ export class BoltzConvert {
       const r = await this.refundStablecoin(record);
       if (r.dropped) summary.removed++; // never-locked orphan — dropped, not refunded
       else if (r.refunded) summary.stablecoinRefunded++;
-      else summary.stablecoinResumed++; // refund_pending — will retry next resume
+      else if (!r.parked) summary.stablecoinResumed++; // refund_pending — will retry next resume
       return;
     }
     if (bucket === "resume" || record.state === "locked_up") {

@@ -4,12 +4,20 @@ import {
   assertLockupNotInflated,
   assertTimeoutInBounds,
   decodeInvoiceAmountSats,
+  decodeInvoiceExpiryMs,
   decodeInvoicePaymentHash,
+  isInvoiceExpired,
   mapSubmarineStatus,
   MAX_SUBMARINE_TIMEOUT_BLOCKS
 } from "../../src/wallet-engine/convert/boltz/lightning.js";
 import { isDepixSdkError } from "../../src/wallet-engine/errors.js";
-import { TEST_INVOICE, TEST_INVOICE_SATS, TEST_PAYMENT_HASH } from "./support/boltz.js";
+import {
+  syntheticBolt11,
+  TEST_INVOICE,
+  TEST_INVOICE_LIVE,
+  TEST_INVOICE_SATS,
+  TEST_PAYMENT_HASH
+} from "./support/boltz.js";
 
 describe("decodeInvoiceAmountSats", () => {
   it("decodes the amount from a real BOLT11 invoice (2500u = 250_000 sats)", () => {
@@ -43,6 +51,57 @@ describe("decodeInvoicePaymentHash", () => {
   it("returns null for a non-invoice string", () => {
     expect(decodeInvoicePaymentHash("hello")).toBeNull();
     expect(decodeInvoicePaymentHash(null as never)).toBeNull();
+  });
+});
+
+describe("decodeInvoiceExpiryMs", () => {
+  const TS = 1_700_000_000; // 2023-11-14T22:13:20Z
+
+  it("returns timestamp + the explicit expiry tag, in epoch ms", () => {
+    const inv = syntheticBolt11({ timestampSec: TS, expirySeconds: 600 });
+    expect(decodeInvoiceExpiryMs(inv)).toBe((TS + 600) * 1000);
+  });
+
+  it("defaults to 3600s when the expiry tag is absent (BOLT #11)", () => {
+    const inv = syntheticBolt11({ timestampSec: TS, expirySeconds: null });
+    expect(decodeInvoiceExpiryMs(inv)).toBe((TS + 3600) * 1000);
+  });
+
+  it("is case-insensitive (the uppercase QR form)", () => {
+    const inv = syntheticBolt11({ timestampSec: TS, expirySeconds: 600 });
+    expect(decodeInvoiceExpiryMs(inv.toUpperCase())).toBe((TS + 600) * 1000);
+  });
+
+  it("returns null for a non-Lightning bech32 string or garbage", () => {
+    expect(decodeInvoiceExpiryMs(syntheticBolt11({ hrp: "bc", timestampSec: TS }))).toBeNull();
+    expect(decodeInvoiceExpiryMs("notaninvoice")).toBeNull();
+    expect(decodeInvoiceExpiryMs("")).toBeNull();
+    expect(decodeInvoiceExpiryMs(null as never)).toBeNull();
+    expect(decodeInvoiceExpiryMs(12345 as never)).toBeNull();
+  });
+});
+
+describe("isInvoiceExpired", () => {
+  const TS = 1_700_000_000;
+  const INV = syntheticBolt11({ timestampSec: TS, expirySeconds: 600 });
+
+  it("is true past timestamp+expiry, and AT the expiry instant", () => {
+    expect(isInvoiceExpired(INV, (TS + 601) * 1000)).toBe(true);
+    expect(isInvoiceExpired(INV, (TS + 600) * 1000)).toBe(true);
+  });
+
+  it("is false while the invoice is still valid", () => {
+    expect(isInvoiceExpired(INV, (TS + 599) * 1000)).toBe(false);
+  });
+
+  it("defaults `now` to Date.now()", () => {
+    expect(isInvoiceExpired(TEST_INVOICE)).toBe(true); // the 2017 spec invoice
+    expect(isInvoiceExpired(TEST_INVOICE_LIVE)).toBe(false);
+  });
+
+  it("fails OPEN when the invoice cannot be decoded — the server rejection is the backstop", () => {
+    expect(isInvoiceExpired("notaninvoice")).toBe(false);
+    expect(isInvoiceExpired(null as never)).toBe(false);
   });
 });
 

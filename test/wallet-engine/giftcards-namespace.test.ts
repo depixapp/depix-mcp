@@ -20,7 +20,7 @@ import type { GiftcardConfigSource, ResolvedGiftcardConfig } from "../../src/wal
 import type { QuotesSource } from "../../src/wallet-engine/guardrails/quotes.js";
 import type { GuardrailConfig } from "../../src/wallet-engine/guardrails/guardrails.js";
 import { CryptorefillsApiError, ConversionError, GuardrailError, isDepixSdkError } from "../../src/wallet-engine/errors.js";
-import { TEST_INVOICE } from "./support/boltz.js";
+import { TEST_INVOICE_LIVE } from "./support/boltz.js";
 
 const PASSPHRASE = "correct-horse-battery-staple";
 const KNOWN_MNEMONIC =
@@ -96,7 +96,7 @@ function fakeCryptorefills(over: {
   // read path buy() takes against the live API.
   const order = over.order ?? {
     order_id: "ord-1",
-    wallet_address: TEST_INVOICE,
+    wallet_address: TEST_INVOICE_LIVE,
     order_state: "WaitingForPayment",
     payment_state: "WaitingForPayment"
   };
@@ -322,7 +322,7 @@ describe("gift cards — order body + tracking (§5.5)", () => {
     const cr = fakeCryptorefills({
       order: {
         order_id: "gc-real-1",
-        wallet_address: TEST_INVOICE,
+        wallet_address: TEST_INVOICE_LIVE,
         order_state: "WaitingForPayment",
         payment_state: "WaitingForPayment"
       }

@@ -1,11 +1,15 @@
 // Shared Boltz test fixtures (not a *.test.ts — not collected).
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { hex } from "@scure/base";
+import { bech32, hex } from "@scure/base";
 import { ensureBoltzConfig } from "../../../src/wallet-engine/convert/boltz/client.js";
 import { ensureBoltzUtxoSecp } from "../../../src/wallet-engine/convert/boltz/secp.js";
 
 // BOLT11 example invoice (BOLT #11 spec): amount 2500u = 250_000 sats,
 // payment_hash = 0001020304050607080900010203040506070809000102030405060708090102.
+// Its timestamp is the spec's own (2017), so it is EXPIRED — the send path's
+// expiry pre-check refuses it. Flow tests that create a swap use
+// TEST_INVOICE_LIVE; this one stays the fixture for the pure decoders and for
+// the expired-invoice guard itself.
 export const TEST_INVOICE =
   "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxa" +
   "tsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77" +
@@ -13,6 +17,51 @@ export const TEST_INVOICE =
 export const TEST_INVOICE_SATS = 250_000;
 export const TEST_PAYMENT_HASH =
   "0001020304050607080900010203040506070809000102030405060708090102";
+
+/** Encode an integer as big-endian 5-bit bech32 words (fixed word count). */
+function intToWords(n: number, count: number): number[] {
+  const words: number[] = [];
+  for (let i = count - 1; i >= 0; i--) words.push(Math.floor(n / 32 ** i) % 32);
+  return words;
+}
+
+/**
+ * Build a syntactically-valid BOLT11 invoice carrying the given payment hash,
+ * creation timestamp and expiry — with a ZERO signature, which none of the
+ * decoders verify (they only read tagged fields). Port of the frontend's own
+ * test helper (depix-frontend/tests/boltz-lightning.test.js).
+ */
+export function syntheticBolt11(
+  opts: {
+    hrp?: string;
+    paymentHashHex?: string;
+    timestampSec?: number;
+    /** null omits tag 6 entirely (BOLT #11 then means 3600s). */
+    expirySeconds?: number | null;
+  } = {}
+): string {
+  const words: number[] = intToWords(Math.floor(opts.timestampSec ?? 0), 7);
+  words.push(1, 1, 20); // tag 1 (payment_hash), data_length 52 = 1*32 + 20
+  words.push(...bech32.toWords(hex.decode(opts.paymentHashHex ?? TEST_PAYMENT_HASH)));
+  const expiry = opts.expirySeconds === undefined ? null : opts.expirySeconds;
+  if (expiry !== null) {
+    const expiryWords = intToWords(expiry, 4);
+    words.push(6, 0, expiryWords.length); // tag 6 (expiry), data_length
+    words.push(...expiryWords);
+  }
+  words.push(...new Array<number>(104).fill(0)); // signature words (never verified)
+  return bech32.encode(opts.hrp ?? "lnbc2500u", words, 2048);
+}
+
+/**
+ * A currently-valid invoice with the SAME amount and payment hash as
+ * TEST_INVOICE — what a payer would actually hand the wallet. Stamped once per
+ * test module with a 1h window.
+ */
+export const TEST_INVOICE_LIVE = syntheticBolt11({
+  timestampSec: Math.floor(Date.now() / 1000),
+  expirySeconds: 3600
+});
 
 export interface HonestSubmarineLockup {
   lockupAddress: string;

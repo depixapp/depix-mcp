@@ -1,7 +1,7 @@
 // refund (spec §5.3) — the cooperative → timeout(uncooperative) orchestration,
 // with the crypto/broadcast injected (parity with the frontend's own refund
 // tests). Always L-BTC back to the wallet.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   refundLockTime,
   refundSubmarineSwap,
@@ -84,6 +84,58 @@ describe("refundSubmarineSwap — timeout fallback", () => {
       false
     ]);
     expect(broadcast).toHaveBeenCalledWith("L-BTC", "tx-uncoop");
+  });
+});
+
+describe("refundSubmarineSwap — chain height WITHOUT an injected getBlockHeight", () => {
+  // A caller that does not inject getBlockHeight (any direct user of the refund
+  // module — convert.ts happens to inject one) must still reach the trustless
+  // timeout refund. If the fallback can never produce a height, every such
+  // refund answers RefundPendingError forever and the L-BTC stays locked.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function depsWithoutHeight(): RefundDeps {
+    return {
+      getRefundAddress: async () => "lq1refund",
+      getLockupHex: async () => "lockup-hex",
+      refund: (async (a: { cooperative?: boolean }) => {
+        if (a.cooperative) throw new Error("boltz offline");
+        return "tx-uncoop";
+      }) as unknown as RefundDeps["refund"],
+      broadcast: async () => ({ id: "txid-uncoop" })
+    };
+  }
+
+  it("reads the tip from the backend holding the lockup and completes the timeout refund", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ height: 1_000_050 }) // >= timeoutBlockHeight
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await refundSubmarineSwap(RECORD, depsWithoutHeight());
+    expect(res).toEqual({ refundTxId: "txid-uncoop", cooperative: false });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.boltz.exchange/v2/chain/L-BTC/height",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
+  it("still answers RefundPendingError when the tip is genuinely below the timeout", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ height: 999_999 }) // < timeoutBlockHeight
+      }))
+    );
+    await expect(refundSubmarineSwap(RECORD, depsWithoutHeight())).rejects.toSatisfy(
+      (e: unknown) => (e as { refundPending?: boolean }).refundPending === true
+    );
   });
 });
 

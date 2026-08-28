@@ -5,7 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import { prepareSubmarineSwap, type PrepareSubmarineDeps } from "../../src/wallet-engine/convert/boltz/submarine.js";
 import type { CreatedSubmarineSwap } from "../../src/wallet-engine/convert/boltz/client.js";
 import { isDepixSdkError } from "../../src/wallet-engine/errors.js";
-import { TEST_INVOICE, TEST_PAYMENT_HASH } from "./support/boltz.js";
+import {
+  syntheticBolt11,
+  TEST_INVOICE,
+  TEST_INVOICE_LIVE,
+  TEST_PAYMENT_HASH
+} from "./support/boltz.js";
 
 const REFUND = { privHex: "aa".repeat(32), pubHex: "02" + "bb".repeat(32) };
 
@@ -36,7 +41,7 @@ function baseDeps(created: Partial<CreatedSubmarineSwap> = {}): {
 describe("prepareSubmarineSwap — happy path", () => {
   it("runs the cadence and binds verify-lockup to the SUPPLIED invoice's payment hash", async () => {
     const { deps, verify } = baseDeps();
-    const prepared = await prepareSubmarineSwap({ invoice: TEST_INVOICE }, deps);
+    const prepared = await prepareSubmarineSwap({ invoice: TEST_INVOICE_LIVE }, deps);
 
     expect(prepared.swapId).toBe("swap-1");
     expect(prepared.lockupAddress).toBe("lq1lockup-address");
@@ -62,6 +67,47 @@ describe("prepareSubmarineSwap — happy path", () => {
   });
 });
 
+describe("prepareSubmarineSwap — expired invoice (§5.3, frontend parity)", () => {
+  // An expired invoice can NEVER be paid, but the swap is still created and the
+  // wallet still locks real L-BTC into it. Getting that L-BTC back means the
+  // refund path: cosigned if the backend cooperates, otherwise not until
+  // timeoutBlockHeight (~14 days of Liquid blocks). So the refusal has to land
+  // before the create call, not after the lockup.
+  it("refuses an expired invoice with INVOICE_EXPIRED and touches NOTHING", async () => {
+    const { deps, verify } = baseDeps();
+    const pairHashSpy = vi.spyOn(deps, "getSubmarinePairHash");
+    const createSpy = vi.spyOn(deps, "createSubmarineSwap");
+    const keypairSpy = vi.spyOn(deps, "genRefundKeypair" as never);
+
+    await expect(prepareSubmarineSwap({ invoice: TEST_INVOICE }, deps)).rejects.toSatisfy(
+      (e: unknown) => isDepixSdkError(e, "INVOICE_EXPIRED")
+    );
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(pairHashSpy).not.toHaveBeenCalled();
+    expect(keypairSpy).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("accepts an invoice that is still inside its expiry window", async () => {
+    const { deps } = baseDeps();
+    await expect(prepareSubmarineSwap({ invoice: TEST_INVOICE_LIVE }, deps)).resolves.toMatchObject({
+      swapId: "swap-1"
+    });
+  });
+
+  it("refuses an invoice whose expiry lapsed one second ago (no grace margin)", async () => {
+    const justExpired = syntheticBolt11({
+      timestampSec: Math.floor(Date.now() / 1000) - 601,
+      expirySeconds: 600
+    });
+    const { deps } = baseDeps();
+    await expect(prepareSubmarineSwap({ invoice: justExpired }, deps)).rejects.toSatisfy(
+      (e: unknown) => isDepixSdkError(e, "INVOICE_EXPIRED")
+    );
+  });
+});
+
 describe("prepareSubmarineSwap — fail-closed guards (§5.3)", () => {
   it("rejects an amount-less invoice with INVOICE_NO_AMOUNT before creating a swap", async () => {
     const { deps } = baseDeps();
@@ -76,14 +122,14 @@ describe("prepareSubmarineSwap — fail-closed guards (§5.3)", () => {
     // ceiling for 250_000 = ceil(*1.05)+2000 = 264_500; 300_000 is over.
     const { deps } = baseDeps({ expectedAmount: 300_000 });
     await expect(
-      prepareSubmarineSwap({ invoice: TEST_INVOICE }, deps)
+      prepareSubmarineSwap({ invoice: TEST_INVOICE_LIVE }, deps)
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "LOCKUP_INFLATED"));
   });
 
   it("rejects an out-of-bounds refund timeout with TIMEOUT_OUT_OF_BOUNDS", async () => {
     const { deps } = baseDeps({ timeoutBlockHeight: 9_999_999 }); // >> height + max
     await expect(
-      prepareSubmarineSwap({ invoice: TEST_INVOICE }, deps)
+      prepareSubmarineSwap({ invoice: TEST_INVOICE_LIVE }, deps)
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "TIMEOUT_OUT_OF_BOUNDS"));
   });
 
@@ -93,7 +139,7 @@ describe("prepareSubmarineSwap — fail-closed guards (§5.3)", () => {
       throw new (await import("../../src/wallet-engine/errors.js")).ConversionError("LOCKUP_TREE_MISMATCH", "tampered");
     }) as unknown as PrepareSubmarineDeps["verifyLockup"];
     await expect(
-      prepareSubmarineSwap({ invoice: TEST_INVOICE }, deps)
+      prepareSubmarineSwap({ invoice: TEST_INVOICE_LIVE }, deps)
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "LOCKUP_TREE_MISMATCH"));
   });
 
@@ -102,7 +148,7 @@ describe("prepareSubmarineSwap — fail-closed guards (§5.3)", () => {
     deps.createSubmarineSwap = async () =>
       ({ id: "x", address: "", expectedAmount: 0 }) as unknown as CreatedSubmarineSwap;
     await expect(
-      prepareSubmarineSwap({ invoice: TEST_INVOICE }, deps)
+      prepareSubmarineSwap({ invoice: TEST_INVOICE_LIVE }, deps)
     ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "SWAP_VALIDATION_FAILED"));
   });
 });
