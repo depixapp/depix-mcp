@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DepixWallet } from "../../src/wallet-engine/wallet.js";
+import { DepixWallet, type PendingBoltzSwapItem } from "../../src/wallet-engine/wallet.js";
 import { BoltzConvert, type BoltzResumeSummary } from "../../src/wallet-engine/convert/boltz/convert.js";
 import {
   BoltzSwapStore,
@@ -357,6 +357,26 @@ describe("wallet.getPending() unifies the four pending stores", () => {
     expect(flat).not.toContain(STABLECOIN_REFUND_PRIV_HEX);
     expect(flat).not.toContain(STABLECOIN_EVM_PRIV_HEX);
     expect(flat).not.toContain(STABLECOIN_PREIMAGE_HEX);
+  });
+
+  it("does NOT promise recovery for a parked (unrecoverable) boltz record", async () => {
+    // Every other pending item reads as "in flight, wallet.recover() finishes
+    // it". This one never will — resume returns at the top for it — so the view
+    // has to say what it actually needs: a human, not another retry.
+    const wallet = track(
+      await DepixWallet.restore({ dataDir, passphrase: PASSPHRASE, mnemonic: KNOWN_MNEMONIC })
+    );
+    const boltzStore = new BoltzSwapStore({ dataDir, passphrase: PASSPHRASE, saltB64: await saltOf() });
+    await boltzStore.put({ ...storedSubmarine("sub_parked"), state: "unrecoverable" });
+
+    const items = await wallet.getPending();
+    expect(items).toHaveLength(1);
+    const item = items[0] as PendingBoltzSwapItem;
+    expect(item).toMatchObject({ rail: "boltz", id: "sub_parked", state: "unrecoverable" });
+    expect(item.note).toMatch(/refund key/i);
+    expect(item.note).toMatch(/support/i);
+    // No "retry" / "try again" / "wallet.recover()" — the promise this fix removes.
+    expect(item.note).not.toMatch(/retry|try again|wallet\.recover\(\)/i);
   });
 
   it("returns an empty list when nothing is in flight", async () => {

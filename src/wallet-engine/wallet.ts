@@ -479,6 +479,8 @@ export interface PendingWithdrawalItem extends PendingItemBase {
 export interface PendingBoltzSwapItem extends PendingItemBase {
   rail: "boltz";
   swapType: "submarine" | "reverse" | "stablecoin";
+  /** Manual instruction when the swap is parked unrecoverable (no refund key). */
+  note?: string;
 }
 
 export interface PendingPegInItem extends PendingItemBase {
@@ -2382,7 +2384,18 @@ export class DepixWallet {
           id: record.swapId,
           state: record.state,
           createdAt: record.createdAt ?? null,
-          swapType: record.type
+          swapType: record.type,
+          // A parked record is the one pending item recovery will never touch,
+          // so it is also the one that has to say so here: the generic "in
+          // flight, wallet.recover() finishes it" reading would be a promise
+          // nothing keeps.
+          ...(record.state === "unrecoverable"
+            ? {
+                note:
+                  "no refund key was persisted for this swap, so nothing can sweep its lockup and " +
+                  "recovery skips it. The record is kept rather than deleted — take its swap id to support."
+              }
+            : {})
         });
       }
     }

@@ -356,6 +356,45 @@ describe("resume() — recovers claim/refund from boltz-swaps.json after a crash
     expect(await store.get("rev-1")).not.toBeNull();
   });
 
+  it("reports a parked swap as unrecoverable — NOT as a refund the caller should wait for", async () => {
+    // The live watch is the other way a caller learns a swap's fate. Reporting
+    // refund_pending there would tell the agent (via convert()'s nextStep) to
+    // wait for a recovery that resume will never run.
+    dataDir = await mkdtemp(join(tmpdir(), "depix-sdk-boltz-conv-"));
+    const store = new BoltzSwapStore({ dataDir, passphrase: PASSPHRASE, saltB64: SALT_B64 });
+    let onRaw: ((raw: string) => void) | null = null;
+    const client = fakeClient({
+      subscribeSwap: (_id: string, cb: (raw: string) => void) => {
+        onRaw = cb;
+        return () => {};
+      }
+    });
+    const convert = new BoltzConvert(
+      {
+        store,
+        logger: SILENT_LOGGER,
+        lockupLbtc: async () => ({ txid: "lockup-txid" }),
+        getReceiveAddress: async () => LOCKUP_ADDRESS
+      },
+      { client, verifyLockup: vi.fn(async () => {}) }
+    );
+
+    const res = await convert.payLightningInvoice({ invoice: TEST_INVOICE_LIVE });
+    // The key goes missing between the lockup and the refund — the only way a
+    // funded swap reaches the watch with nothing to sign its refund with.
+    await store.patch(res.swapId, (r) => {
+      (r as StoredSubmarineSwap).refundPrivateKeyHex = "";
+    });
+
+    onRaw!("swap.expired");
+    await expect(res.completion).resolves.toMatchObject({
+      swapId: res.swapId,
+      status: "failed",
+      unrecoverable: true
+    });
+    expect(((await store.get(res.swapId)) as StoredSubmarineSwap | null)?.state).toBe("unrecoverable");
+  });
+
   it("PARKS a record with no refund material instead of re-erroring on every resume", async () => {
     // The refund leaf is the user's key alone: with no refundPrivateKeyHex the
     // lockup can never be swept by anyone. Retrying that forever only floods the

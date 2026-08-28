@@ -86,9 +86,14 @@ export async function prepareSubmarineSwap(
   // cooperative if the backend co-signs, otherwise not until timeoutBlockHeight
   // (~14 days). No grace margin, frontend parity (wallet-ui.js onLightningPreview).
   if (isInvoiceExpired(invoice)) {
+    // The clock in the comparison is this machine's. A host running ten minutes
+    // fast refuses a freshly-issued 600s invoice (gift cards mint those), and
+    // from the outside that reads exactly like a stale one — so name the other
+    // hypothesis here, where the caller can act on it.
     throw new ConversionError(
       "INVOICE_EXPIRED",
-      "This Lightning invoice has already expired — ask the payee for a fresh one."
+      "This invoice's expiry has passed — or this machine's clock is ahead; check the system time. " +
+        "Ask the payee for a fresh invoice."
     );
   }
   const invoiceSats = decodeInvoiceAmountSats(invoice);

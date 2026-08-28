@@ -89,6 +89,30 @@ describe("wallet_pending", () => {
     });
   });
 
+  it("carries a parked swap's note through to the agent", async () => {
+    const wallet = new FakeWallet();
+    wallet.pendingItems = [
+      {
+        rail: "boltz",
+        id: "sub_parked",
+        state: "unrecoverable",
+        createdAt: 1_720_000_003_000,
+        swapType: "submarine",
+        note: "no refund key was persisted for this swap — take its swap id to support.",
+      },
+    ];
+    const { client } = await connectWallet({ wallet });
+    const out = sc(await client.callTool({ name: "wallet_pending", arguments: {} }));
+    expect((out.pending as SC[])[0]).toEqual({
+      rail: "boltz",
+      id: "sub_parked",
+      state: "unrecoverable",
+      created_at: 1_720_000_003_000,
+      swap_type: "submarine",
+      note: "no refund key was persisted for this swap — take its swap id to support.",
+    });
+  });
+
   it("returns an empty list when nothing is in flight", async () => {
     const wallet = new FakeWallet();
     wallet.pendingItems = [];

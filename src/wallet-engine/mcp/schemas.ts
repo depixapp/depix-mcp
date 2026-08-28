@@ -958,7 +958,10 @@ export const pendingOutput = {
         note: z
           .string()
           .optional()
-          .describe("plan only: manual instruction when the plan is parked needs_review."),
+          .describe(
+            "Manual instruction for an item recovery will not advance: a plan parked needs_review, " +
+              "or a boltz swap parked unrecoverable (no refund key on record).",
+          ),
       }),
     )
     .describe("Everything currently in flight across the four durable stores, newest data as stored. Empty when nothing is pending."),

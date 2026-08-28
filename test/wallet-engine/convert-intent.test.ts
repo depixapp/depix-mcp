@@ -771,6 +771,23 @@ describe("convertIntent — boltz (completion promises hidden)", () => {
     );
   });
 
+  it("payLightningInvoice does NOT offer recover() for an unrecoverable swap", async () => {
+    // The watch reports this when the record has no refund key: the lockup can
+    // never be swept, so neither "recover() retries it" nor "retry" is true.
+    const boltz = makeFakeBoltz({
+      pay: { completion: Promise.resolve({ swapId: "SUB_1", status: "failed", unrecoverable: true }) }
+    });
+    const { deps } = makeDeps({ getBoltz: () => boltz });
+    const res = await convertIntent(
+      { from: "LBTC", to: "BTC", network: "lightning", amount: 10_000n, invoice: "lnbc1xyz" },
+      deps
+    );
+    expect(res.status).toBe("failed");
+    expect(res.nextStep).toMatch(/refund key/i);
+    expect(res.nextStep).toMatch(/support/i);
+    expect(res.nextStep).not.toMatch(/retry|wallet\.recover\(\)/i);
+  });
+
   it("payLightningInvoice maps failed with the retry nextStep and no receipt", async () => {
     const boltz = makeFakeBoltz({
       pay: { completion: Promise.resolve({ swapId: "SUB_1", status: "failed" }) }

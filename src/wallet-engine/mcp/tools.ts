@@ -696,6 +696,7 @@ function pendingItemToOutput(item: PendingItem) {
       break;
     case "boltz":
       out.swap_type = item.swapType;
+      if (item.note !== undefined) out.note = item.note;
       break;
     case "pegin":
       out.peg_addr = item.pegAddr;

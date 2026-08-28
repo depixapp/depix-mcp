@@ -830,8 +830,10 @@ async function executePayLightning(
     status: outcome.status, // refunded | refund_pending | failed
     txids,
     receivedSats: null,
-    nextStep:
-      outcome.status === "refund_pending"
+    nextStep: outcome.unrecoverable
+      ? "no refund key was persisted for this swap, so nothing can sweep its lockup and recovery skips it — " +
+        "the record stays in wallet.getPending(); take its swap id to support."
+      : outcome.status === "refund_pending"
         ? "the refund timeout has not been reached yet — wallet.recover() retries it; funds are safe."
         : outcome.status === "failed"
           ? "the swap failed before any settlement — check wallet.getPending() and retry."

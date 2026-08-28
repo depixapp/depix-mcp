@@ -153,6 +153,12 @@ export interface SubmarineOutcome {
   swapId: string;
   status: "paid" | "refunded" | "refund_pending" | "failed";
   refundTxId?: string | null;
+  /**
+   * The record carries no refund key, so no sweep of this lockup is possible and
+   * recovery will not attempt one. Set with status "failed" — distinct from a
+   * refund still waiting on its timeout, which resume DOES retry.
+   */
+  unrecoverable?: true;
 }
 
 export interface PayLightningResult {
@@ -504,6 +510,7 @@ export class BoltzConvert {
           void this.refundOne(swapId, timeoutBlockHeight)
             .then((r) => {
               if (r.refunded) finish({ swapId, status: "refunded", refundTxId: r.refundTxId });
+              else if (r.parked) finish({ swapId, status: "failed", unrecoverable: true });
               else finish({ swapId, status: "refund_pending" });
             })
             .catch(() => {
