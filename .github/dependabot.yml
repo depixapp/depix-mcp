@@ -27,6 +27,17 @@ updates:
       dev-dependencies:
         dependency-type: "development"
         update-types: ["minor", "patch"]
+    ignore:
+      # Majors held for deliberate migrations, not weekly PR noise: zod 4
+      # waits on @modelcontextprotocol/sdk peer support (and must stay
+      # single-copy across the gateway/wallet boundary); typescript 7 is
+      # the native-compiler toolchain move. Ignore also suppresses
+      # security-update PRs for the matched majors — the Dependabot alert
+      # still fires and is triaged by hand. Drop the entry when migrating.
+      - dependency-name: "zod"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions pinned in .github/workflows/*.
   - package-ecosystem: "github-actions"
