@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.8.0 — re-reading the 12 words is a ceremony, not a one-liner
+
+`init` puts the seed behind a rite; reading it back had no door at all. The only
+way was a developer one-liner around `exportMnemonic()`, whose output is loose
+text in whatever ran it — a scrolling terminal, a log, a chat transcript. One of
+those leaked a seed into a chat. **Tool count unchanged: 26 gateway / 59 full —
+`backup` is a CLI subcommand, deliberately not a tool.**
+
+- **`npx -y @depixapp/mcp backup`.** Shows an existing wallet's 12 words again
+  under the same guards as `init`: TTY-only (the refusal IS what keeps the words
+  out of a pipe), the abort window before anything is displayed, the ritual's own
+  numbered screen, and an automatic screen + scrollback wipe once the operator
+  confirms they have copied them onto paper.
+- **The passphrase is always typed by a human**, even when the OS keychain holds
+  the unlock key. That auto-unlock exists so the SERVER can boot unattended;
+  dumping the seed is a different act. The typed value outranks
+  `DEPIX_WALLET_PASSPHRASE` and the keychain, so a wallet whose passphrase was
+  forgotten cannot be read off a machine that would otherwise start it alone.
+  Three wrong tries abort with nothing on screen.
+- **The wallet closes before the words appear** — the dataDir lock is released
+  while the operator writes, and a dir already held is explained by pid ("quit
+  the app that has it open"), not by the engine's two-processes advice.
+- No wallet in the dir sends the operator to `init` before asking for anything.
+
 ## 2.7.0 — an agent can turn on the DePix direct rail
 
 A local agent merchant could only be paid by Pix: the DePix direct-rail opt-in

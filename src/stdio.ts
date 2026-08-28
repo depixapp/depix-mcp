@@ -152,7 +152,12 @@ async function init(opts: { restore: boolean }): Promise<void> {
   await runWalletInit({ restore: opts.restore, packageName: UNIFIED_PACKAGE_NAME });
 }
 
-runCli(process.argv.slice(2), { init, serve, write: stderr, version: resolveServerVersion() })
+async function backup(): Promise<void> {
+  const { runWalletBackup } = await import("./wallet-engine/mcp/backup-flow.js");
+  await runWalletBackup({ packageName: UNIFIED_PACKAGE_NAME });
+}
+
+runCli(process.argv.slice(2), { init, backup, serve, write: stderr, version: resolveServerVersion() })
   .then((code) => {
     // serve() resolves only on shutdown, which exits through its own path; every
     // other command is finished here. Code 0 lets the process end naturally.

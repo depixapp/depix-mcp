@@ -403,7 +403,8 @@ function normalize(answer: string): string {
   return answer.trim().toLowerCase();
 }
 
-function resolveDataDir(explicit: string | undefined, env: Record<string, string | undefined>): string {
+/** The dir a ceremony acts on: the explicit option → $DEPIX_WALLET_DIR → ~/.depix-wallet. */
+export function resolveCeremonyDataDir(explicit: string | undefined, env: Record<string, string | undefined>): string {
   return explicit ?? env.DEPIX_WALLET_DIR ?? join(homedir(), ".depix-wallet");
 }
 
@@ -422,7 +423,7 @@ export function detectSharedTerminalMarkers(env: Record<string, string | undefin
  */
 export async function runWalletInit(options: RunWalletInitOptions = {}): Promise<WalletInitResult> {
   const env = options.env ?? process.env;
-  const dataDir = resolveDataDir(options.dataDir, env);
+  const dataDir = resolveCeremonyDataDir(options.dataDir, env);
   const packageName = options.packageName ?? DEFAULT_MCP_PACKAGE;
   const initCommand = packageName === DEFAULT_MCP_PACKAGE ? DEFAULT_WALLET_INIT_COMMAND : `npx -y ${packageName} init`;
   const backend = options.backend ?? defaultInitWalletBackend;
@@ -847,8 +848,13 @@ function unlockNote(unlock: StoreUnlockResult): string {
 /**
  * The abort window before the words appear (spec §1.5 fix #6). TTY-ness proves
  * a terminal, never a PRIVATE one — so say it plainly and make the operator act.
+ * `abortCode` names the refusal for the calling ceremony (`backup` uses its own).
  */
-async function confirmSeedDisplay(io: WalletInitIo, env: Record<string, string | undefined>): Promise<void> {
+export async function confirmSeedDisplay(
+  io: WalletInitIo,
+  env: Record<string, string | undefined>,
+  abortCode = "INIT_ABORTED",
+): Promise<void> {
   const markers = detectSharedTerminalMarkers(env);
   io.write("");
   io.write("=== STOP — READ BEFORE THE NEXT SCREEN ===");
@@ -865,7 +871,7 @@ async function confirmSeedDisplay(io: WalletInitIo, env: Record<string, string |
   const answer = await io.question('Type "continue" to display the 12 words: ');
   if (normalize(answer) !== "continue") {
     throw new WalletError(
-      "INIT_ABORTED",
+      abortCode,
       "Aborted before the seed words were displayed — nothing was shown. Re-run the command in a private terminal.",
     );
   }

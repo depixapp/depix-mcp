@@ -1,18 +1,20 @@
 // argv dispatch for the single bin (unified-MCP spec §1.5).
 //
-// ONE bin, `depix-mcp`, with ONE subcommand: `init`. A second bin would break the
-// registry's `packages[]` auto-`npx` assumption (§4), so the first-run ceremony is
-// reached through argv instead.
+// ONE bin, `depix-mcp`, with two human subcommands: `init` and `backup`. A second
+// bin would break the registry's `packages[]` auto-`npx` assumption (§4), so both
+// ceremonies are reached through argv instead.
 //
 // Everything here is pure and injectable: the bin (src/stdio.ts) supplies the real
-// `serve` / `init` implementations, which is what makes the dispatch testable
-// without ever running the ceremony or opening a transport. This module must NOT
-// import the wallet engine — `init` arrives as a callback, so the engine is
-// loaded only on the path that actually needs it.
+// `serve` / `init` / `backup` implementations, which is what makes the dispatch
+// testable without ever running a ceremony or opening a transport. This module must
+// NOT import the wallet engine — the ceremonies arrive as callbacks, so the engine
+// is loaded only on the paths that actually need it.
 
 export interface CliDeps {
   /** Run the first-run ceremony (TTY-only; the engine refuses otherwise). */
   init(opts: { restore: boolean }): Promise<void>;
+  /** Re-display this wallet's 12 words (TTY-only; the engine refuses otherwise). */
+  backup(): Promise<void>;
   /** Serve the unified MCP over stdio. Resolves only when the server shuts down. */
   serve(): Promise<void>;
   /** Human output. STDOUT is the JSON-RPC channel, so this MUST be stderr. */
@@ -28,6 +30,8 @@ USAGE
   npx -y @depixapp/mcp init         first run: create or restore the local wallet
   npx -y @depixapp/mcp init --restore
                                     import an existing 12-word mnemonic
+  npx -y @depixapp/mcp backup       show this wallet's 12 words again
+                                    (human ceremony at a real terminal)
   npx -y @depixapp/mcp --help       this text
   npx -y @depixapp/mcp --version    print the server version
 
@@ -41,9 +45,11 @@ NOTES
   wallet_not_configured error naming \`init\`; without an API key, the API-backed
   tools return missing_api_key. Neither is a startup failure.
 
-  \`init\` is a HUMAN ceremony at a real terminal — it prints a 12-word seed backup
-  and therefore refuses to run non-interactively. It is deliberately NOT an MCP
-  tool: a mnemonic must never transit model context or conversation logs.
+  \`init\` and \`backup\` are HUMAN ceremonies at a real terminal — they print a
+  12-word seed backup and therefore refuse to run non-interactively. Showing a
+  mnemonic is deliberately NOT an MCP tool: it must never transit model context
+  or conversation logs. \`backup\` asks for your passphrase every time, even on a
+  machine that unlocks the wallet by itself, and wipes the screen afterwards.
 `;
 
 /**
@@ -60,6 +66,18 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
       return 1;
     }
     await deps.init({ restore: rest.includes("--restore") });
+    return 0;
+  }
+
+  // No options at all: `backup` acts on the one wallet in DEPIX_WALLET_DIR, and
+  // guessing at an unrecognized flag (`--restore`, a path) would be guessing at
+  // WHICH wallet's words to print.
+  if (first === "backup") {
+    if (rest.length > 0) {
+      deps.write(`depix-mcp: \`backup\` takes no options: ${rest.join(" ")}\n\n${USAGE}`);
+      return 1;
+    }
+    await deps.backup();
     return 0;
   }
 

@@ -159,6 +159,19 @@ with the passphrase left as a placeholder for you to fill in:
 Clear your terminal scrollback afterwards. Restart your MCP client and ask it to
 run `wallet_status`.
 
+### 2c. Reading the 12 words again
+
+```bash
+npx -y @depixapp/mcp backup          # show this wallet's 12 words again
+```
+
+Same rules as `init`: a real terminal or nothing. It asks for your passphrase
+**every time**, even on a machine that unlocks the wallet by itself — the
+keychain unlock key exists so the server can start, not so anyone at the keyboard
+can read the seed. When you confirm you have copied the words, it wipes the
+screen and the scrollback. Quit your MCP client first: the wallet dir takes an
+exclusive lock, and a running server holds it.
+
 Run the server directly to sanity-check:
 
 ```bash

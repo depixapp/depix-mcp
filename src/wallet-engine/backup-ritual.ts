@@ -38,6 +38,26 @@ function normalizeAnswer(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+/**
+ * Print the seed words, numbered and in order, and return them. The ONE place
+ * that renders a mnemonic for a human: the first-run ritual below and the
+ * `backup` command (mcp/backup-flow.ts) call it, so the operator reads the same
+ * screen whichever door they came through, and a change to the warning copy
+ * cannot reach one door and miss the other.
+ */
+export function displayMnemonic(mnemonic: string, io: Pick<RitualIo, "write">): string[] {
+  const words = mnemonic.trim().split(/\s+/);
+  io.write("");
+  io.write("=== WALLET BACKUP — WRITE THESE 12 WORDS DOWN, IN ORDER ===");
+  io.write("Anyone with these words controls the funds. Store them offline.");
+  io.write("");
+  for (const [idx, word] of words.entries()) {
+    io.write(`  ${idx + 1}. ${word}`);
+  }
+  io.write("");
+  return words;
+}
+
 function pickPositions(total: number, count: number, random: () => number): number[] {
   const available = Array.from({ length: total }, (_, i) => i);
   const picked: number[] = [];
@@ -61,16 +81,7 @@ export async function runBackupRitual(
   const random = options.random ?? Math.random;
   const maxAttempts = options.maxAttempts ?? 3;
   const challengeCount = options.challengeCount ?? 3;
-  const words = mnemonic.trim().split(/\s+/);
-
-  io.write("");
-  io.write("=== WALLET BACKUP — WRITE THESE 12 WORDS DOWN, IN ORDER ===");
-  io.write("Anyone with these words controls the funds. Store them offline.");
-  io.write("");
-  for (const [idx, word] of words.entries()) {
-    io.write(`  ${idx + 1}. ${word}`);
-  }
-  io.write("");
+  const words = displayMnemonic(mnemonic, io);
 
   // The pacing gate: nothing is challenged while the words are still readable.
   // The prompt accepts any input — its only job is to wait for the operator to

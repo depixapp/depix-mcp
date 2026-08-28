@@ -158,11 +158,15 @@ export async function acquireDirLock(dataDir: string): Promise<DirLock> {
       (ownerBootId === null || sameBoot(ownerBootId, bootId()));
 
     if (heldByLiveProcess) {
+      // The pid also travels as a DETAIL: the `backup` ceremony rewrites this
+      // message for a human ("quit the app holding it"), and reading the holder
+      // back out of prose would break the first time the prose changes.
       throw new WalletError(
         "WALLET_DIR_LOCKED",
         `Data dir is locked by another process (pid ${ownerPid}). ` +
           "Two processes must not share a wallet dataDir — use distinct DEPIX_WALLET_DIR " +
-          "values (distinct wallets) or a single shared process."
+          "values (distinct wallets) or a single shared process.",
+        { details: { pid: ownerPid } }
       );
     }
 
