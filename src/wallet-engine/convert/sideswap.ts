@@ -39,9 +39,19 @@ import {
 } from "./sideswap-client.js";
 import { SideSwapError } from "../errors.js";
 
-/** Minimum TTL remaining to attempt an execute — the round-trip must land in time. */
+/**
+ * Minimum TTL remaining to attempt an execute — the round-trip must land in time.
+ * WIDER than the frontend's 2s (swap-ui.js) on purpose: there the human has
+ * already confirmed and only get_quote + taker_sign remain, while here the
+ * guardrail valuation and the PSET inspection run inside the same window.
+ */
 const QUOTE_MIN_REMAINING_MS = 3_000;
-/** Default deadline for a single next() (the frontend arms a 15s quote timeout). */
+/**
+ * Default deadline for a single next(). Engine-only: the browser has no such
+ * deadline (its quote panel simply waits for the next tick), and the frontend's
+ * 15s is RPC_TIMEOUT_MS — one JSON-RPC round-trip, ported as-is in
+ * sideswap-client.ts — not a wait for a quote.
+ */
 const DEFAULT_QUOTE_WAIT_MS = 20_000;
 /** Bounded wait for the market list after connect (frontend parity, 3s). */
 const MARKETS_READY_WAIT_MS = 3_000;
@@ -474,7 +484,12 @@ export interface SideSwapQuote {
   /** `feeAsset` resolved to an asset id; execute() checks whether it is the recv asset. */
   feeAssetId?: string | null;
   ttlMs: number;
-  /** now()+ttlMs at receipt — execute() refuses within QUOTE_MIN_REMAINING_MS of this. */
+  /**
+   * now()+ttlMs at receipt — execute() refuses within QUOTE_MIN_REMAINING_MS of
+   * this. Deliberately the SERVER's own ttl (30s only as a fallback), where the
+   * browser counts a flat 30s down for the human to watch: an agent has no
+   * countdown to read, so the deadline it is held to must be the real one.
+   */
   expiresAt: number;
   /** OUR receive address (pinned at quote() time; the PSET must pay its script). */
   receiveAddress: string;
