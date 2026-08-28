@@ -1,7 +1,7 @@
 // viem-as-a-regular-dependency invariant (G5 — Boltz stablecoin EVM is IN the F3
 // MVP). This INVERTS the pre-PR5b `no-viem` invariant: viem is now a REGULAR
 // dependency, pinned exactly, and installed. What still must hold:
-//   1. viem is a top-level `dependencies` entry pinned EXACTLY at 2.54.1 (no
+//   1. viem is a top-level `dependencies` entry pinned EXACTLY at 2.55.19 (no
 //      caret/tilde; NOT under optionalDependencies/devDependencies — G5/§2.2).
 //   2. viem is actually installed in node_modules + the lockfile tree.
 //   3. The Lightning-send path (client/submarine/reverse/refund) NEVER statically
@@ -21,8 +21,8 @@ describe("viem is a regular, exactly-pinned dependency (G5)", () => {
     devDependencies?: Record<string, string>;
   };
 
-  it("declares viem under dependencies pinned exactly at 2.54.1", () => {
-    expect(pkg.dependencies?.viem).toBe("2.54.1");
+  it("declares viem under dependencies pinned exactly at 2.55.19", () => {
+    expect(pkg.dependencies?.viem).toBe("2.55.19");
   });
 
   it("does NOT declare viem as optional or dev (it is a hard runtime dep now)", () => {
@@ -35,7 +35,7 @@ describe("viem is a regular, exactly-pinned dependency (G5)", () => {
     const lock = JSON.parse(read("package-lock.json")) as {
       packages?: Record<string, { version?: string }>;
     };
-    expect(lock.packages?.["node_modules/viem"]?.version).toBe("2.54.1");
+    expect(lock.packages?.["node_modules/viem"]?.version).toBe("2.55.19");
   });
 });
 
