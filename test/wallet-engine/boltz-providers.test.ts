@@ -4,12 +4,13 @@
 // answers every GET with a healthy-looking pair matrix, so liveness has to come
 // from the creation path and be read from the MESSAGE, not the status code.
 // Nothing here touches the network — every probe fetch is injected.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureBoltzConfig,
   resetBoltzConfigForTests
 } from "../../src/wallet-engine/convert/boltz/client.js";
 import {
+  SELECTION_TTL_MS,
   SWAP_PROVIDERS,
   STABLECOIN_PROVIDER,
   assertStablecoinProviderLive,
@@ -101,6 +102,56 @@ describe("probeProvider — liveness comes from the creation path, read as a mes
   });
 });
 
+// The probe answers "is this backend creating swaps", and it is allowed exactly
+// one way to say yes.
+describe("probeProvider — alive has to be PROVEN, never assumed", () => {
+  it("accepts the amount complaint in the wordings a backend actually returns", async () => {
+    for (const body of [
+      '{"error":"1 is less than minimal of 25000"}',
+      '{"error":"BENEATH_MINIMAL"}',
+      '{"error":"amount is below the minimum"}',
+      '{"error":"invoiceAmount too small"}'
+    ]) {
+      const { fetchImpl } = scriptedProbe({ [BOLTZ.apiUrl]: { status: 400, body } });
+      expect(await probeProvider(BOLTZ, fetchImpl)).toBe(true);
+    }
+  });
+
+  it("calls a 400 nobody has a pattern for DEAD, so the fallback fires", async () => {
+    for (const body of [
+      '{"error":"swaps are paused for maintenence"}',
+      '{"error":"could not create swap"}',
+      '{"error":"unsupported pair"}',
+      "Bad Request",
+      ""
+    ]) {
+      const { fetchImpl } = scriptedProbe({ [BOLTZ.apiUrl]: { status: 400, body } });
+      expect(await probeProvider(BOLTZ, fetchImpl)).toBe(false);
+    }
+  });
+
+  it("a 2xx means the probe CREATED something — alive, and loud about it", async () => {
+    const logger = { warn: vi.fn() };
+    const { fetchImpl } = scriptedProbe({
+      [BOLTZ.apiUrl]: { status: 201, body: '{"id":"probe-created-a-swap"}' }
+    });
+    expect(await probeProvider(BOLTZ, fetchImpl, logger)).toBe(true);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("a rewording of the amount complaint costs availability, never money", async () => {
+    // The failure mode this inversion BUYS: reword "less than minimal" and the
+    // healthy backend reads dead, so the process runs on the fallback. The mode
+    // it SELLS is the one that stranded us — a new refusal read as alive, with
+    // the selection pinned to a backend that creates nothing.
+    const reworded = scriptedProbe({
+      [BOLTZ.apiUrl]: { status: 400, body: '{"error":"requested value under the accepted floor"}' },
+      [COINOS.apiUrl]: ALIVE
+    });
+    expect((await selectSwapProvider({ fetchImpl: reworded.fetchImpl })).id).toBe("coinos");
+  });
+});
+
 describe("selectSwapProvider — ordered walk, cached per process", () => {
   it("keeps Boltz while it is healthy and never probes the fallback", async () => {
     const { fetchImpl, calls } = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE, [COINOS.apiUrl]: ALIVE });
@@ -152,6 +203,85 @@ describe("selectSwapProvider — ordered walk, cached per process", () => {
         SWAP_PROVIDERS.map((p) => ({ id: p.id, name: p.name, contact: p.contact }))
       );
     }
+  });
+});
+
+// Without a TTL the cached pick outlives the outage that caused it: Boltz comes
+// back and a process that fell to the fallback stays there until it restarts.
+describe("selectSwapProvider — the cached pick expires", () => {
+  it("answers from the cache for the whole TTL", async () => {
+    const { fetchImpl, calls } = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE });
+    let t = 1_700_000_000_000;
+    const now = (): number => t;
+    await selectSwapProvider({ fetchImpl, now });
+    t += SELECTION_TTL_MS - 1;
+    await selectSwapProvider({ fetchImpl, now });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("walks the list from the TOP again once the TTL is up", async () => {
+    const { fetchImpl, calls } = scriptedProbe({ [BOLTZ.apiUrl]: DISABLED, [COINOS.apiUrl]: ALIVE });
+    let t = 1_700_000_000_000;
+    const now = (): number => t;
+    expect((await selectSwapProvider({ fetchImpl, now })).id).toBe("coinos");
+    t += SELECTION_TTL_MS;
+    await selectSwapProvider({ fetchImpl, now });
+    // Boltz is asked FIRST on the second walk — the fallback is not a new home.
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BOLTZ.apiUrl}/v2/swap/reverse`,
+      `${COINOS.apiUrl}/v2/swap/reverse`,
+      `${BOLTZ.apiUrl}/v2/swap/reverse`,
+      `${COINOS.apiUrl}/v2/swap/reverse`
+    ]);
+  });
+
+  it("comes back to Boltz when Boltz comes back — no restart", async () => {
+    let t = 1_700_000_000_000;
+    const now = (): number => t;
+    const down = scriptedProbe({ [BOLTZ.apiUrl]: DISABLED, [COINOS.apiUrl]: ALIVE });
+    expect((await selectSwapProvider({ fetchImpl: down.fetchImpl, now })).id).toBe("coinos");
+
+    t += SELECTION_TTL_MS;
+    const revived = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE, [COINOS.apiUrl]: ALIVE });
+    expect((await selectSwapProvider({ fetchImpl: revived.fetchImpl, now })).id).toBe("boltz");
+    expect(getSelectedProvider()?.id).toBe("boltz");
+    expect(revived.calls).toHaveLength(1); // Boltz answered; Coinos was never asked
+  });
+
+  it("a creation failure still drops the pick long before the TTL", async () => {
+    let t = 1_700_000_000_000;
+    const now = (): number => t;
+    const first = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE });
+    await selectSwapProvider({ fetchImpl: first.fetchImpl, now });
+
+    expect(invalidateSelectionOnCreationFailure(new Error("refused"))).toBe(true);
+
+    t += 1; // nowhere near the TTL
+    const second = scriptedProbe({ [BOLTZ.apiUrl]: DISABLED, [COINOS.apiUrl]: ALIVE });
+    expect((await selectSwapProvider({ fetchImpl: second.fetchImpl, now })).id).toBe("coinos");
+  });
+
+  it("a FORCED pin does not expire — the harness stays where it was put", async () => {
+    let t = 1_700_000_000_000;
+    const now = (): number => t;
+    forceSwapProvider("coinos");
+    t += SELECTION_TTL_MS * 10;
+    const { fetchImpl, calls } = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE });
+    expect((await selectSwapProvider({ fetchImpl, now })).id).toBe("coinos");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("the pinned stablecoin route's own liveness answer expires on the same clock", async () => {
+    let t = 1_700_000_000_000;
+    const now = (): number => t;
+    const down = scriptedProbe({ [BOLTZ.apiUrl]: DISABLED });
+    expect(await isStablecoinProviderLive({ fetchImpl: down.fetchImpl, now })).toBe(false);
+    expect(await isStablecoinProviderLive({ fetchImpl: down.fetchImpl, now })).toBe(false);
+    expect(down.calls).toHaveLength(1);
+
+    t += SELECTION_TTL_MS;
+    const revived = scriptedProbe({ [BOLTZ.apiUrl]: ALIVE });
+    expect(await isStablecoinProviderLive({ fetchImpl: revived.fetchImpl, now })).toBe(true);
   });
 });
 

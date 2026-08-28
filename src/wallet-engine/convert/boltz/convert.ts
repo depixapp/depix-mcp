@@ -18,9 +18,11 @@ import { hex } from "@scure/base";
 import { BoltzClient } from "./client.js";
 import { deriveReverseSecrets } from "./keys.js";
 import {
+  allProvidersRefusedError,
   assertStablecoinProviderLive,
   getProviderById,
   invalidateSelectionOnCreationFailure,
+  providersFrom,
   selectSwapProvider,
   STABLECOIN_PROVIDER,
   type SwapProvider
@@ -244,6 +246,45 @@ export class BoltzConvert {
   }
 
   /**
+   * Offer a swap CREATION to the selected backend, then to the rest of the list,
+   * stopping at the first that accepts. Throws the aggregate refusal if none do.
+   *
+   * The retry is safe here and ONLY here: `create` runs before anything is
+   * persisted, funded or signed, so a refused attempt leaves no record, no
+   * lockup and no guardrail spend behind — a second attempt on another backend
+   * cannot double anything. A failure at any later stage (the lockup, the claim)
+   * is final by construction, because this function has already returned. That
+   * is the boundary, and it is a boundary of STAGE, not of wording: a
+   * broadcast-stage error can carry a backend's own phrasing while the L-BTC is
+   * already locked.
+   *
+   * A refusal also drops the cached selection, so the NEXT call re-probes the
+   * list from the top instead of starting at whoever happened to answer here.
+   */
+  private async createOnFirstWillingProvider<T>(
+    what: string,
+    create: (provider: SwapProvider) => Promise<T>
+  ): Promise<{ provider: SwapProvider; created: T }> {
+    const attempts: Array<{ provider: SwapProvider; error: unknown }> = [];
+    for (const provider of providersFrom(await this.lightningProvider())) {
+      try {
+        return { provider, created: await create(provider) };
+      } catch (err) {
+        // Our own fail-closed guards are not a refusal to serve — moving to
+        // another backend would just re-run the same guard against the same
+        // input, so they surface as-is.
+        if (!invalidateSelectionOnCreationFailure(err)) throw err;
+        this.logger.warn("swap provider refused to create the swap — offering it to the next one", {
+          provider: provider.id,
+          error: String((err as Error)?.message ?? err)
+        });
+        attempts.push({ provider, error: err });
+      }
+    }
+    throw allProvidersRefusedError(attempts, what);
+  }
+
+  /**
    * Subscribe to a swap's status through a tracked handle so every in-flight
    * watch can be torn down on dispose(). Without this a reverse/submarine watch
    * keeps its WebSocket + reconnect backoff timer alive after wallet.close()
@@ -322,25 +363,25 @@ export class BoltzConvert {
     /** Rolling-24h accountant label (default "boltz-submarine"). */
     spendKind?: string;
   }): Promise<PayLightningResult> {
-    const provider = await this.lightningProvider();
-    const client = this.clientFor(provider);
-    const prepared = await prepareSubmarineSwap(
-      { invoice: params.invoice },
-      {
-        getSubmarinePairHash: () => client.getSubmarinePairHash(),
-        createSubmarineSwap: (p) => client.createSubmarineSwap(p),
-        getChainHeight: () => client.getChainHeight("L-BTC"),
-        ...(this.deps.genRefundKeypair ? { genRefundKeypair: this.deps.genRefundKeypair } : {}),
-        ...(this.deps.verifyLockup ? { verifyLockup: this.deps.verifyLockup } : {}),
-        ...(this.deps.maxTimeoutBlocks !== undefined ? { maxTimeoutBlocks: this.deps.maxTimeoutBlocks } : {})
+    const { provider, created: prepared } = await this.createOnFirstWillingProvider(
+      "Lightning sends",
+      (p) => {
+        const client = this.clientFor(p);
+        return prepareSubmarineSwap(
+          { invoice: params.invoice },
+          {
+            getSubmarinePairHash: () => client.getSubmarinePairHash(),
+            createSubmarineSwap: (sp) => client.createSubmarineSwap(sp),
+            getChainHeight: () => client.getChainHeight("L-BTC"),
+            ...(this.deps.genRefundKeypair ? { genRefundKeypair: this.deps.genRefundKeypair } : {}),
+            ...(this.deps.verifyLockup ? { verifyLockup: this.deps.verifyLockup } : {}),
+            ...(this.deps.maxTimeoutBlocks !== undefined
+              ? { maxTimeoutBlocks: this.deps.maxTimeoutBlocks }
+              : {})
+          }
+        );
       }
-    ).catch((err: unknown) => {
-      // A creation failure that blames the backend drops the cached selection,
-      // so the next attempt re-probes instead of retrying a dead one for the
-      // life of the process.
-      invalidateSelectionOnCreationFailure(err);
-      throw err;
-    });
+    );
 
     // Persist the (crash-safe) refund material BEFORE anything is funded — a
     // crash after the lockup broadcasts must still be refundable (§5.3).
@@ -816,14 +857,28 @@ export class BoltzConvert {
    * pays. An INFLOW — no guardrail.
    */
   async receiveLightning(params: { amountSats: number }): Promise<ReceiveLightningResult> {
-    const provider = await this.lightningProvider();
+    // A receive that never surfaced an invoice locked nothing and told nobody —
+    // the payer has seen no invoice, so offering it to the next backend costs a
+    // discarded swap id and nothing else. Once the invoice IS out, the call has
+    // returned and the fallback is over: from then on this swap belongs to the
+    // backend whose invoice a payer may already be paying.
+    const { created } = await this.createOnFirstWillingProvider("Lightning receives", (provider) =>
+      this.startReceiveOn(provider, params)
+    );
+    return created;
+  }
+
+  /** Drive a reverse swap on ONE backend, resolving as soon as its invoice exists. */
+  private async startReceiveOn(
+    provider: SwapProvider,
+    params: { amountSats: number }
+  ): Promise<ReceiveLightningResult> {
     const pairHash = this.deps.getReversePairHash
       ? await this.deps.getReversePairHash()
       : (await getReverseLimits(provider)).hash;
 
     let resolveInvoice!: (v: { invoice: string; record: ReverseSwapRecord }) => void;
     let rejectInvoice!: (e: unknown) => void;
-    let invoiceSurfaced = false;
     const invoiceReady = new Promise<{ invoice: string; record: ReverseSwapRecord }>((res, rej) => {
       resolveInvoice = res;
       rejectInvoice = rej;
@@ -854,10 +909,7 @@ export class BoltzConvert {
           });
         }
       },
-      onInvoice: (invoice, record) => {
-        invoiceSurfaced = true;
-        resolveInvoice({ invoice, record });
-      },
+      onInvoice: (invoice, record) => resolveInvoice({ invoice, record }),
       ...(this.deps.reverseClaim ? { claim: this.deps.reverseClaim } : {}),
       ...(this.deps.reverseBroadcast ? { broadcast: this.deps.reverseBroadcast } : {}),
       ...(this.deps.reverseGetLockupTx ? { getLockupTx: this.deps.reverseGetLockupTx } : {}),
@@ -871,12 +923,11 @@ export class BoltzConvert {
         return outcome;
       }
     );
-    completion.catch((err) => {
-      // Only a failure BEFORE the invoice existed can blame swap CREATION; a
-      // later claim error says nothing about whether the backend takes new swaps.
-      if (!invoiceSurfaced) invalidateSelectionOnCreationFailure(err);
-      rejectInvoice(err);
-    });
+    // Only a failure BEFORE the invoice existed can blame swap CREATION, and
+    // only that one reaches the caller: `invoiceReady` is already resolved
+    // otherwise, so a later claim error stays inside `completion` where it
+    // belongs. That is what keeps the fallback above off the post-invoice path.
+    completion.catch((err) => rejectInvoice(err));
     // Don't leak an unhandled rejection when the caller only awaits the invoice.
     completion.catch(() => {});
 

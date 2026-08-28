@@ -42,7 +42,7 @@ import {
 import { receiveViaLightning, type ReverseDeps } from "../../src/wallet-engine/convert/boltz/reverse.js";
 import { executeStablecoinRoute } from "../../src/wallet-engine/convert/boltz/stablecoin.js";
 import type { Logger } from "../../src/wallet-engine/logger.js";
-import { isDepixSdkError } from "../../src/wallet-engine/errors.js";
+import { BoltzApiError, isDepixSdkError } from "../../src/wallet-engine/errors.js";
 import { TEST_INVOICE, TEST_PAYMENT_HASH } from "./support/boltz.js";
 
 const BOLTZ = SWAP_PROVIDERS[0]!;
@@ -301,7 +301,7 @@ describe("recovery follows the RECORD, never the current selection", () => {
 });
 
 describe("the stablecoin route stays on Boltz and refuses when Boltz is off", () => {
-  it("throws SWAP_PROVIDER_UNAVAILABLE before creating anything", async () => {
+  it("throws SWAP_PROVIDER_UNAVAILABLE before creating anything, and asks nobody else", async () => {
     await selectSwapProvider({ fetchImpl: boltzDownProbe }); // process is on Coinos
     expect(await isStablecoinProviderLive({ fetchImpl: boltzDownProbe })).toBe(false);
     const createRoute = vi.fn();
@@ -310,15 +310,179 @@ describe("the stablecoin route stays on Boltz and refuses when Boltz is off", ()
       stablecoin: { prepare: { createRoute: createRoute as never } }
     });
 
-    await expect(
-      convert.toStablecoin({
+    const err = await convert
+      .toStablecoin({
         asset: "USDT",
         networkId: "arbitrum",
         amountSats: 10_000,
         claimAddress: "0x1111111111111111111111111111111111111111"
       })
-    ).rejects.toSatisfy((e: unknown) => isDepixSdkError(e, "SWAP_PROVIDER_UNAVAILABLE"));
+      .then(() => null)
+      .catch((e: unknown) => e);
+
+    expect(isDepixSdkError(err, "SWAP_PROVIDER_UNAVAILABLE")).toBe(true);
+    // Named as the PINNED provider's outage, not "no provider is answering" —
+    // the fallback list is not an option on this rail, and the message says so.
+    expect((err as { details?: Record<string, unknown> }).details).toMatchObject({ provider: "boltz" });
     expect(createRoute).not.toHaveBeenCalled();
+    // Not one backend was contacted — no fallback attempt of any kind.
+    expect(clientProviders).toEqual([]);
+    convert.dispose();
+  });
+});
+
+// A refused CREATION used to end the call: the fallback only helped whoever
+// retried. It now happens in place — but ONLY while nothing is locked.
+describe("one call walks the list when creation is refused", () => {
+  /** A backend refusing to create: not one of OUR typed guards, so it blames the backend. */
+  const refuses = (name: string) => async (): Promise<never> => {
+    throw new BoltzApiError(`${name}: swap creation is disabled`, { status: 400 });
+  };
+
+  it("completes the Lightning SEND on Coinos after Boltz refuses, in the SAME call", async () => {
+    forceSwapProvider("boltz");
+    const { convert } = makeConvert({
+      clientFactory: (p) =>
+        fakeClient(p, p.id === "boltz" ? { createSubmarineSwap: refuses("Boltz") } : {})
+    });
+
+    const res = await convert.payLightningInvoice({ invoice: TEST_INVOICE });
+
+    expect(clientProviders).toEqual(["boltz", "coinos"]);
+    const stored = (await store.get(res.swapId)) as StoredSubmarineSwap;
+    expect(stored.providerId).toBe("coinos");
+    expect(stored.state).toBe("locked_up");
+    convert.dispose();
+  });
+
+  it("charges the guardrail once — the refusal lands before anything is signed", async () => {
+    forceSwapProvider("boltz");
+    const lockupLbtc = vi.fn(async () => ({ txid: "lockup_txid" }));
+    const convert = new BoltzConvert(
+      { store, logger: SILENT_LOGGER, lockupLbtc, getReceiveAddress: async () => LOCKUP_ADDRESS },
+      {
+        clientFactory: (p) => fakeClient(p, p.id === "boltz" ? { createSubmarineSwap: refuses("Boltz") } : {}),
+        verifyLockup: vi.fn(async () => {}) as unknown as BoltzConvertDeps["verifyLockup"]
+      }
+    );
+
+    await convert.payLightningInvoice({ invoice: TEST_INVOICE });
+
+    // lockupLbtc IS the choke point (enforce + recordSpend + sign + broadcast):
+    // one call is one enforce and one recorded spend, however many backends the
+    // creation walked.
+    expect(lockupLbtc).toHaveBeenCalledTimes(1);
+    const { records } = await store.readAll();
+    expect(records).toHaveLength(1); // the refused attempt persisted nothing
+    convert.dispose();
+  });
+
+  it("NEVER retries once the lockup step is reached — a post-lock failure is final", async () => {
+    forceSwapProvider("boltz");
+    // A broadcast-stage failure with no `nothingLocked` proof: the L-BTC may be
+    // locked to Boltz's address right now. Its wording would read as a backend
+    // refusal, which is exactly why the retry is gated on the STAGE and not on
+    // the classification — creating a second swap here would fund nothing and
+    // strand the first.
+    const lockupLbtc = vi.fn(async () => {
+      throw new Error("swap creation is disabled — connection reset after the node accepted the tx");
+    });
+    const convert = new BoltzConvert(
+      { store, logger: SILENT_LOGGER, lockupLbtc, getReceiveAddress: async () => LOCKUP_ADDRESS },
+      {
+        clientFactory: (p) => fakeClient(p),
+        verifyLockup: vi.fn(async () => {}) as unknown as BoltzConvertDeps["verifyLockup"]
+      }
+    );
+
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toThrow(/connection reset/);
+
+    expect(clientProviders).toEqual(["boltz"]); // Coinos was never asked
+    expect(lockupLbtc).toHaveBeenCalledTimes(1);
+    const { records } = await store.readAll();
+    expect(records).toHaveLength(1);
+    expect((records[0] as StoredSubmarineSwap).providerId).toBe("boltz");
+    convert.dispose();
+  });
+
+  it("errors naming BOTH backends when every one of them refuses", async () => {
+    forceSwapProvider("boltz");
+    const { convert } = makeConvert({
+      clientFactory: (p) => fakeClient(p, { createSubmarineSwap: refuses(p.name) })
+    });
+
+    const err = await convert
+      .payLightningInvoice({ invoice: TEST_INVOICE })
+      .then(() => null)
+      .catch((e: unknown) => e);
+
+    expect(isDepixSdkError(err, "SWAP_PROVIDER_UNAVAILABLE")).toBe(true);
+    const message = (err as Error).message;
+    for (const provider of SWAP_PROVIDERS) expect(message).toContain(provider.name);
+    expect((err as { details?: { retryable?: boolean } }).details?.retryable).toBe(true);
+    const { records } = await store.readAll();
+    expect(records).toEqual([]); // nothing was persisted for a swap that never existed
+    convert.dispose();
+  });
+
+  it("falls back on a RECEIVE too, and the record names who actually created it", async () => {
+    forceSwapProvider("boltz");
+    let creates = 0;
+    const { convert } = makeConvert({
+      clientFactory: (p) => fakeClient(p),
+      getReversePairHash: async () => "reverse-pair-hash",
+      deriveSecrets: () => ({
+        preimage: new Uint8Array(32).fill(1),
+        preimageHash: Uint8Array.from(Buffer.from(TEST_PAYMENT_HASH, "hex")),
+        claimKeys: { privateKey: new Uint8Array(32).fill(3), publicKey: new Uint8Array(33).fill(4) }
+      }),
+      reverseCreate: async () => {
+        creates++;
+        if (creates === 1) throw new BoltzApiError("Boltz: swap creation is disabled", { status: 400 });
+        return {
+          id: "rev-fallback",
+          invoice: TEST_INVOICE,
+          lockupAddress: LOCKUP_ADDRESS,
+          onchainAmount: 49_000,
+          swapTree: {},
+          refundPublicKey: "03" + "cc".repeat(32),
+          timeoutBlockHeight: 1_000_100
+        };
+      }
+    });
+
+    const res = await convert.receiveLightning({ amountSats: 50_000 });
+
+    expect(creates).toBe(2);
+    expect(res.invoice).toBe(TEST_INVOICE);
+    const stored = (await store.get(res.swapId)) as StoredReverseSwap;
+    expect(stored.providerId).toBe("coinos");
+    convert.dispose();
+  });
+
+  it("does NOT walk the list for a failure that is OURS", async () => {
+    forceSwapProvider("boltz");
+    const { convert } = makeConvert({
+      clientFactory: (p) =>
+        fakeClient(p, {
+          // A lockup Boltz quoted above the invoice + margin is our own
+          // fail-closed guard firing, not the backend refusing work.
+          createSubmarineSwap: async () => ({
+            id: "sub-1",
+            address: LOCKUP_ADDRESS,
+            expectedAmount: 10_000_000,
+            swapTree: { claimLeaf: {}, refundLeaf: {} },
+            claimPublicKey: "03" + "cc".repeat(32),
+            blindingKey: "dd".repeat(32),
+            timeoutBlockHeight: 1_000_100
+          })
+        })
+    });
+
+    await expect(convert.payLightningInvoice({ invoice: TEST_INVOICE })).rejects.toSatisfy((e: unknown) =>
+      isDepixSdkError(e, "LOCKUP_INFLATED")
+    );
+    expect(clientProviders).toEqual(["boltz"]);
     convert.dispose();
   });
 });
@@ -489,6 +653,8 @@ describe("a Lightning flow on the fallback runs CONCURRENTLY with a stablecoin f
         await step("lightning", 0);
         await step("lightning", 6);
         await step("lightning", 12);
+        // Refused, in the eyes of the fallback — so the receive is offered to
+        // the next backend, which is the second half of the expectation below.
         throw new Error("stop here — the invoice binding is not what this test is about");
       },
       stablecoin: {
@@ -516,7 +682,18 @@ describe("a Lightning flow on the fallback runs CONCURRENTLY with a stablecoin f
       })
     ]);
 
-    expect(seen.lightning).toEqual([COINOS.apiUrl, COINOS.apiUrl, COINOS.apiUrl]);
+    // Every step of the FIRST attempt reads Coinos and every step of the retry
+    // reads Boltz — the fallback attempt enters its own async context rather
+    // than inheriting the one that just failed. Meanwhile the stablecoin flow,
+    // interleaved with both, never sees anything but Boltz.
+    expect(seen.lightning).toEqual([
+      COINOS.apiUrl,
+      COINOS.apiUrl,
+      COINOS.apiUrl,
+      BOLTZ.apiUrl,
+      BOLTZ.apiUrl,
+      BOLTZ.apiUrl
+    ]);
     expect(seen.stablecoin).toEqual([BOLTZ.apiUrl, BOLTZ.apiUrl, BOLTZ.apiUrl]);
     convert.dispose();
   });
