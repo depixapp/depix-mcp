@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.8.1 — an expired invoice is refused before any money moves
+
+A term-by-term parity audit against the frontend wallet found two gaps in the
+Lightning path, both of the kind that parks funds in the slow refund lane
+rather than losing them. Closed, plus one honesty fix. **Tool count unchanged:
+26 gateway / 59 full.**
+
+- **An expired BOLT11 invoice is refused before anything is created, funded or
+  signed.** The engine would prepare and fund a lockup for an invoice that
+  could never be paid; recovery was the refund path — up to ~14 days if the
+  provider does not cooperate. The frontend's pre-check (expiry tag, 3600s
+  default) is now ported term-by-term and runs first. The refusal names the
+  other suspect: a machine clock running ahead reads a fresh invoice as
+  expired, so the message says to check the system time.
+- **The trustless timeout refund can actually fire.** The fallback chain-height
+  probe looked for an export that does not exist and returned null forever,
+  which made a non-cooperative refund permanently "pending" for any caller
+  that did not inject its own height reader. It now reads the height from the
+  backend that holds the swap.
+- **A record with no refund material is parked, not retried forever.** It is
+  reported as unrecoverable with honest guidance (nothing can sweep that
+  lockup — take the swap id to support) instead of a "retry helps" promise,
+  and it stays visible in `wallet_pending`.
+
 ## 2.8.0 — sign in as yourself, and re-read the 12 words as a ceremony
 
 Two doors this release, both for the human at the keyboard. The operator can now
