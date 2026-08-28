@@ -85,6 +85,15 @@ describe("P3 — the 1% tolerance is floored so small swaps keep a usable band",
     expect(() => assertSwapPsetPaysAndBalances(recvNet(785n), expect_)).not.toThrow();
   });
 
+  it("replays the field case that motivated the floor: quote 6073, server pays 5981 (smoke S2.4)", () => {
+    // frontend wallet.js 83abe42 — 1% of 6073 truncates to 60, which rejects the
+    // 92-sat divergence a real server produced; the 100-sat floor accepts it.
+    const expect_ = { ...base, recvAmountSats: 6073n };
+    expect(() => assertSwapPsetPaysAndBalances(recvNet(5981n), expect_)).not.toThrow();
+    // One sat past the floored band is still refused.
+    expect(() => assertSwapPsetPaysAndBalances(recvNet(5972n), expect_)).toThrow();
+  });
+
   it("large swap: the floor is inert — a >1% divergence is still rejected", () => {
     const expect_ = { ...base, recvAmountSats: 1_000_000n };
     expect(() => assertSwapPsetPaysAndBalances(recvNet(985_000n), expect_)).toThrow(); // 1.5% low

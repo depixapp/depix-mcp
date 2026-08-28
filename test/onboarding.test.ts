@@ -67,6 +67,11 @@ describe("get_onboarding_status (§4.3)", () => {
     // wallet is step-zero, whatsapp before deposit, merchant last.
     expect(ids).toEqual(["wallet", "whatsapp", "deposit", "convert_lbtc", "withdraw", "merchant"]);
     expect(out.next_step).toBe("wallet");
+    // Step-zero must narrate without claiming knowledge the MCP does not have
+    // (smoke S4.17): the wallet lives client-side, so its state is "unknown",
+    // never "pending" or "done".
+    const wallet = out.steps.find((s) => s.id === "wallet")!;
+    expect(wallet.state).toBe("unknown");
     // Copy is bilingual and hardcoded in the MCP.
     const deposit = out.steps.find((s) => s.id === "deposit")!;
     expect(deposit.title.pt.length).toBeGreaterThan(0);
