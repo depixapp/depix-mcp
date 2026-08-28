@@ -335,7 +335,7 @@ async function postToken(opts: {
   } catch {
     throw new OwnerLoginError(`${opts.failureMessage} The sign-in server could not be reached.`, opts.failureCode);
   }
-  let parsed: Record<string, unknown> = {};
+  let parsed: Record<string, unknown>;
   try {
     parsed = (await res.json()) as Record<string, unknown>;
   } catch {

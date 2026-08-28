@@ -947,7 +947,7 @@ async function offerHostRegistration(
   effects: HostRegisterEffects,
 ): Promise<{ registered: HostTarget[]; block: string }> {
   const block = renderWalletMcpConfigBlock({ packageName: spec.packageName, serverKey: spec.serverKey, env: spec.env });
-  let hosts: HostTarget[] = [];
+  let hosts: HostTarget[];
   try {
     hosts = detectHosts(detectDeps);
   } catch {

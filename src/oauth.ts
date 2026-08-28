@@ -175,7 +175,7 @@ export async function verifyWorkosAccessToken(
     throw new OAuthTokenError("selected JWKS key is not an RS256 RSA key");
   }
 
-  let signatureOk = false;
+  let signatureOk: boolean;
   try {
     const pub = createPublicKey({ key: jwk, format: "jwk" });
     signatureOk = cryptoVerify(
