@@ -137,8 +137,11 @@ npx -y @depixapp/mcp init --restore  # import an existing 12-word mnemonic
 ```
 
 It asks for (or generates) a passphrase — never echoed — walks you through the
-backup ritual, and finishes by printing the exact `mcpServers` block to paste,
-with the passphrase left as a placeholder for you to fill in:
+backup ritual, asks for your spending limits, and then wires the AI hosts it
+finds on the machine (Claude Code, Claude Desktop, Cursor) to this wallet by
+itself. The unlock key goes into the OS keychain, so the passphrase is never
+written into a host config. For a host it does not detect it prints the block to
+paste instead — and that block carries no secret:
 
 ```json
 {
@@ -147,9 +150,9 @@ with the passphrase left as a placeholder for you to fill in:
       "command": "npx",
       "args": ["-y", "@depixapp/mcp"],
       "env": {
-        "DEPIX_API_KEY": "sk_test_YOUR_KEY",
-        "DEPIX_WALLET_PASSPHRASE": "<the passphrase you typed>",
-        "DEPIX_WALLET_DIR": "/Users/you/.depix-wallet"
+        "DEPIX_WALLET_DIR": "/Users/you/.depix-wallet",
+        "DEPIX_GUARDRAIL_PER_TX_BRL_CENTS": "10000",
+        "DEPIX_GUARDRAIL_DAILY_BRL_CENTS": "50000"
       }
     }
   }
@@ -183,6 +186,75 @@ DEPIX_API_KEY=sk_test_YOUR_KEY npx -y @depixapp/mcp
 > fine. Exposed over HTTP, anyone who reaches the port can drain the wallet — bind
 > to localhost and add your own bearer/mTLS + network isolation, or don't.
 
+## CLI subcommands
+
+One bin, `depix-mcp`, with five subcommands — all of them acts for the human at
+the keyboard. `npx -y @depixapp/mcp --help` prints the same list.
+
+**None of the five is an MCP tool, and that is deliberate.** Two of them (`init`,
+`backup`) display a 12-word seed, which must never transit model context or a
+conversation log. The other three choose *which account* the server acts as: as
+tools, an agent that read a poisoned web page could promote itself from its own
+sandbox account to yours.
+
+| Command | What it does | When you run it | The safety property |
+|---|---|---|---|
+| `init` | Creates the local wallet (`--restore` imports an existing 12-word mnemonic) and wires your AI host to it | Once, before any `wallet_*` tool can work | Refuses unless stdin **and** stdout are a real terminal; the passphrase is never echoed and never written into a host config |
+| `backup` | Shows this wallet's 12 words again | When you need to copy the seed onto paper again | A real terminal or nothing; your passphrase is typed **every time**, even on a machine that unlocks the wallet by itself; the screen is wiped afterwards |
+| `login` | Signs you in to your own DePix account in the browser (Google or GitHub) and seals the session on this machine | When you want the server to act as **you**, not as an account the agent registered for itself | The browser does the sign-in and the reply lands on this same computer; no token is ever printed, logged, or put in an error message |
+| `logout` | Removes that login from this machine | When you are done with it, or on a machine you no longer control | Undoes `login` completely — including an `account use owner` selection that would now point at nothing |
+| `account status` / `account use agent\|owner` | Prints which account the server acts as and why / picks one | Whenever you are unsure who is spending, and after `login` on a machine that already has an agent account | Reading and choosing happen at your terminal, so no agent can switch identity; `status` names the winner instead of leaving it implicit |
+
+### Signing in as yourself — `login` / `logout`
+
+```bash
+npx -y @depixapp/mcp login                    # choose Google or GitHub in the browser
+npx -y @depixapp/mcp login --provider github  # skip the chooser
+npx -y @depixapp/mcp logout
+```
+
+`login` opens your browser on the DePix App sign-in and waits for the answer at
+`http://127.0.0.1:47617/callback` — **this** computer, never a remote one. The
+listener binds before the browser opens, so a second `login` running at the same
+time fails right there instead of sending your sign-in to whatever else holds
+that port. What comes back is exchanged for a session and sealed on disk with
+your wallet passphrase; the terminal prints who you signed in as, never the
+credential. On a headless or remote box there is no browser to open — use
+`DEPIX_API_KEY` there, or let the agent register its own account.
+
+> On **2.8.0** and **2.8.1**, `login` needs `DEPIX_WORKOS_CLIENT_ID` set to the
+> DePix App sign-in application — the id baked into those two versions points at
+> an older client. From **2.8.2** the right one ships baked in and the command
+> needs no configuration.
+
+If an agent account is already registered on this machine, logging in changes
+**nothing** by default: the agent's account still wins, and `login` says so
+loudly. `account use owner` is what switches. `logout` removes the stored
+session and, when you had selected `owner`, drops that selection too — it would
+otherwise point at a login that no longer exists.
+
+### Which account acts — `account status` / `account use`
+
+Two identities can live on one machine: the account the agent registered for
+itself (`register_account`) and your own login. Exactly one of them
+authenticates each call, and the order is fixed:
+
+```
+DEPIX_API_KEY  >  an explicit `account use`  >  the agent's own account  >  your login
+```
+
+```bash
+npx -y @depixapp/mcp account status       # who is acting, and why
+npx -y @depixapp/mcp account use owner    # act as your own DePix login
+npx -y @depixapp/mcp account use agent    # act as the account the agent registered here
+```
+
+> **`DEPIX_API_KEY` in the server's environment beats everything below it.** With
+> that variable set, `account use` decides nothing — `account status` prints that
+> warning in place. Unset it (and restart the server) to let your selection win.
+
+`account status` prints labels only — a provider, an email, an expiry — never a
+token and never your passphrase.
 
 ## Quickstart 3 — Sandbox testing (the full loop)
 
@@ -317,7 +389,8 @@ Local (`npx`) level only — the wallet half:
 
 | Env | Meaning | Default |
 |---|---|---|
-| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet. **Required for the 29 `wallet_*` tools**; without it they return `wallet_not_configured` | — |
+| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet. **Required for the 29 `wallet_*` tools**; without it they return `wallet_not_configured`. It also seals the stored API keys and the `login` session | — |
+| `DEPIX_AGENT_PASSPHRASE` | Optional. When set it seals and opens those stored credentials instead of `DEPIX_WALLET_PASSPHRASE`; the wallet itself keeps using `DEPIX_WALLET_PASSPHRASE` | — |
 | `DEPIX_WALLET_DIR` | Where the encrypted wallet lives | `~/.depix-wallet` |
 | `DEPIX_GUARDRAIL_*` | Per-transaction / rolling-24h BRL caps and allowlist. Immutable at runtime: set here + restart | R$100/tx, R$500/day |
 | `DEPIX_MCP_MAX_WAIT_SECONDS` | Ceiling for the wallet wait tools | `900` |
