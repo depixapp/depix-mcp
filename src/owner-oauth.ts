@@ -20,10 +20,9 @@ import { createHash } from "node:crypto";
 import { randomBytes as nodeRandomBytes } from "node:crypto";
 
 /**
- * The loopback port, FIXED. A registered redirect URI is matched byte for byte
- * by the authorization server, so an ephemeral port would need one registration
- * per run. Moving to a free port is therefore not an option: a second
- * concurrent `login` MUST fail, and must fail BEFORE the browser opens —
+ * The loopback port, FIXED — a deliberate choice, not an AS constraint (WorkOS
+ * follows RFC 8252 §7.3 and accepts any port on a loopback redirect). Fixing it
+ * makes a second concurrent `login` fail, and fail BEFORE the browser opens —
  * loopback-listener.ts resolves only once the socket is bound, so the
  * EADDRINUSE surfaces with no window open and no code in flight.
  */
@@ -32,13 +31,15 @@ export const OWNER_LOOPBACK_PATH = "/callback";
 export const OWNER_LOOPBACK_REDIRECT_URI = `http://127.0.0.1:${OWNER_LOOPBACK_PORT}${OWNER_LOOPBACK_PATH}`;
 
 /**
- * The DePix App OAuth client id. PUBLIC by construction — it travels in the
- * query string of every authorize URL, and the same value is served, unredacted,
- * by the public `GET https://api.depixapp.com/api/agents/oauth/start` redirect.
- * Baked so `login` needs no configuration; `DEPIX_WORKOS_CLIENT_ID` overrides it
- * for a staging environment.
+ * The DePix App OAuth client id for the operator's own sign-in. PUBLIC by
+ * construction — it travels in the query string of every authorize URL. This is
+ * the dedicated "DePix App MCP local" public OAuth application (PKCE, no
+ * secret, loopback redirect); the operator-token flow at
+ * `GET https://api.depixapp.com/api/agents/oauth/start` uses a different,
+ * server-side client. Baked so `login` needs no configuration;
+ * `DEPIX_WORKOS_CLIENT_ID` overrides it for a staging environment.
  */
-export const DEFAULT_OWNER_CLIENT_ID = "client_01KXP3B9H642VQWJAGXX192YX6";
+export const DEFAULT_OWNER_CLIENT_ID = "client_01M148HDF82C0WBV7BDDYN3J7E";
 
 /** `offline_access` is what makes a refresh token exist at all. */
 export const OWNER_SCOPE = "openid profile email offline_access";
