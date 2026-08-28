@@ -130,6 +130,26 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
         },
       };
 
+    // ── the local credential vault (§3.1) ──
+    // A model that hits this has NO way to guess the cause from the code alone:
+    // the vault is sealed with DEPIX_WALLET_PASSPHRASE (or DEPIX_AGENT_PASSPHRASE),
+    // which `init` is what sets. Name the passphrase, not just the command.
+    case "agent_key_unreadable":
+    case "agent_store_corrupted":
+      return {
+        kind: "human_step",
+        relay: {
+          pt:
+            "O cofre de credenciais deste computador não abre — falta a senha que o protege, ou ela mudou. " +
+            "Peça ao operador para rodar `npx -y @depixapp/mcp init` num terminal (cria a carteira e define essa " +
+            "senha), ou para conferir a variável DEPIX_WALLET_PASSPHRASE na configuração do servidor, e reiniciar.",
+          en:
+            "The credential vault on this machine will not open — the passphrase that seals it is missing or changed. " +
+            "Ask the operator to run `npx -y @depixapp/mcp init` in a terminal (it creates the wallet and sets that " +
+            "passphrase), or to check DEPIX_WALLET_PASSPHRASE in the server config, then restart.",
+        },
+      };
+
     // ── the operator's own login (`depix-mcp login`) ──
     case "owner_session_expired":
       return {

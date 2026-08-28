@@ -1,4 +1,4 @@
-// The 3 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
+// The 4 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
 // client. The load-bearing proofs (smoke S3.1–S3.5):
 //   - register_account returns PUBLIC facts only — NO sk_, keypair or webhook
 //     secret ever reaches the transcript;

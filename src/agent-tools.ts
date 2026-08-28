@@ -1,5 +1,5 @@
-// The three AGENT-LOCAL tools (§3.1/§3.2/§3.3): register_account, agent_status,
-// verify_domain. Thin wrappers over DepixAgent (which already exists) — no new
+// The four AGENT-LOCAL tools (§3.1/§3.2/§3.3): register_account, agent_status,
+// verify_domain, configure_depix_rail. Thin wrappers over DepixAgent (which already exists) — no new
 // protocol. They live in their OWN module, NOT src/server.ts, because §3.6's
 // tool-count classifier counts every registerTool in server.ts as a gateway tool,
 // and these are neither hosted nor gateway (D4: the hosted catalog NEVER offers a
@@ -13,7 +13,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { ToolError, mapToolError, walletNotConfiguredError } from "./wallet-engine/mcp/errors.js";
-import { withNextAction } from "./next-action.js";
+import { OPERATOR_START_URL, withNextAction } from "./next-action.js";
+import { UNIFIED_INIT_COMMAND } from "./instructions.js";
 import type {
   AgentStatus,
   DepixRailDisabledResult,
@@ -308,9 +309,15 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
     {
       title: "Register a DePix account",
       description:
-        "Create a DePix agent account and its API keys IN THIS PROCESS, on the operator's machine. Needs the " +
-        "operator's op_ code (ask the human for it) and an initialized wallet (the payout address is the wallet's " +
-        "own). The account's keys are saved ENCRYPTED on this machine and used immediately — no restart, nothing " +
+        "Create a DePix agent account and its API keys IN THIS PROCESS, on the operator's machine. " +
+        "THREE THINGS ARE NEEDED FIRST — check them before calling, and relay whichever is missing to the human: " +
+        "(1) a wallet on this machine — the operator runs `" +
+        UNIFIED_INIT_COMMAND +
+        "` in a terminal, which also sets the passphrase that seals the account's keys; " +
+        `(2) the operator's op_ code — send them ${OPERATOR_START_URL}, they sign in with Google or GitHub and read the ` +
+        "code back to you (it reappears on every sign-in), or they set DEPIX_OPERATOR_TOKEN in the host config; " +
+        "(3) their notification email, for `operator_email`. " +
+        "The account's keys are saved ENCRYPTED on this machine and used immediately — no restart, nothing " +
         "pasted into a config. The response carries only PUBLIC facts (username, store slug, limits, key IDs): the " +
         "secret keys are NEVER shown here. Activates the sandbox (sk_test_) key by default. If DEPIX_API_KEY is set " +
         "in the environment, it OVERRIDES the new key and the response says so.",
@@ -321,8 +328,11 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
           .min(1)
           .optional()
           .describe(
-            "The op_ operator code the human gets at https://api.depixapp.com/api/agents/oauth/start. " +
-              "Optional when DEPIX_OPERATOR_TOKEN is set in the host config (init's \"connect now\" writes it there).",
+            "The op_ authorization code from the human operator. They get it by signing in at " +
+              `${OPERATOR_START_URL} (Google/GitHub; the code re-appears on every sign-in). ` +
+              "Relay that link to your operator and ask them to paste the code here — do not send them to the " +
+              "dashboard or to API settings, it is not there. Optional when DEPIX_OPERATOR_TOKEN is set in the host " +
+              "config (init's \"connect now\" writes it there).",
           ),
         operator_email: z.string().min(1).describe("Operator notification email (never becomes the account login)."),
         username: z.string().min(1).optional().describe("Optional username (defaults server-side to agent_<pubkey-prefix>)."),
@@ -377,7 +387,9 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       description:
         "Read the agent account's onboarding progress: whether it is active/suspended, how many personal deposits " +
         "have settled, whether it has graduated to live keys (and what is still blocking), and its keys (id/prefix/" +
-        "scopes/revoked — never the secret). Read-only; narrates what the server reports, never recomputes the rule.",
+        "scopes/revoked — never the secret). Read-only; narrates what the server reports, never recomputes the rule. " +
+        "Requires an account already registered here — if there is none, call `register_account` first. Whatever " +
+        "`graduation_blocked_on` names is a HUMAN step: relay it to the operator rather than retrying.",
       inputSchema: {},
       outputSchema: {
         account_status: z.enum(["active", "suspended"]),
@@ -407,9 +419,10 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       title: "Verify a domain (agent)",
       description:
         "Prove control of a domain via a DNS TXT challenge, in two phases. Phase 1 (omit confirm): returns the TXT " +
-        "record NAME and VALUE to create — relay it to the human to add at their DNS provider. Phase 2 (confirm: " +
-        "true, after propagation): the server resolves the record and, on a match, records the domain as verified. " +
-        "A verified domain lifts domain_required on the merchant scopes.",
+        "record NAME and VALUE to create — relay it to the human to add at their DNS provider (only they can: it is " +
+        "their DNS panel, and propagation takes minutes). Phase 2 (confirm: true, after propagation): the server " +
+        "resolves the record and, on a match, records the domain as verified. A verified domain lifts " +
+        "domain_required on the merchant scopes.",
       inputSchema: {
         domain: z.string().min(1).describe("The domain to verify (e.g. acme.com)."),
         confirm: z
@@ -439,8 +452,9 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       description:
         "Let this merchant be paid in DePix sent DIRECTLY on Liquid, not only by Pix. Enabling derives a dedicated " +
         "receiving address from THIS wallet and registers it with the backend so incoming DePix is credited; " +
-        "disabling turns it off. Needs an initialized wallet (to derive the address) and a registered agent account " +
-        "(the call is signed). You pass only `enabled` (and, optionally, a `derivation_index` to re-derive a specific " +
+        "disabling turns it off. Needs an initialized wallet (to derive the address — the operator runs `" +
+        UNIFIED_INIT_COMMAND +
+        "`) and a registered agent account (the call is signed — call `register_account` first). You pass only `enabled` (and, optionally, a `derivation_index` to re-derive a specific " +
         "address) — the tool derives the address and its private viewing key itself and sends them in-process. The " +
         "response carries only PUBLIC facts (the address, the rail state): the viewing key is NEVER shown here.",
       inputSchema: {

@@ -393,7 +393,9 @@ export function createServer(opts: CreateServerOptions): McpServer {
         "WhatsApp, deposit+convert+withdraw to verify, create the store), each with a plain PT+EN title and " +
         "instruction to relay to the human, an absolute app deep link, and the current numbers. Composes the " +
         "verification progress with a store probe, and — when every step is complete — triggers verification itself " +
-        "so the account never sits 'all green but not verified'. Read-first; the only write is that self-heal trigger.",
+        "so the account never sits 'all green but not verified'. Read-first; the only write is that self-heal trigger. " +
+        "Every incomplete step is a HUMAN step: relay its instruction and deep link to the operator and wait — no tool " +
+        "here can complete one for them.",
       inputSchema: s.getOnboardingStatusInput,
       outputSchema: s.getOnboardingStatusOutput,
       annotations: write,

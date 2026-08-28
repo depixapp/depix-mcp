@@ -72,6 +72,33 @@ export const CHARGES_SENTENCE =
   "recurring), use `create_checkout` instead. `list_products` omits charges unless you pass kind=\"charge\" (or kind=\"all\").";
 
 /**
+ * What to DO about a missing credential, per deployment.
+ *
+ * The single sentence this replaced ("ask the user to reconnect with their key
+ * configured") was wrong on both sides by the time it shipped: a hosted OAuth
+ * caller has no `sk_` to reconfigure, and the local deployment can mint its own
+ * key in-process. errors.ts branches correctly at runtime — this is the same
+ * branch, moved to the handshake, so a model that has only read the instructions
+ * still sends the human somewhere real.
+ */
+function credentialSentence(deployment: "hosted" | "unified"): string {
+  return deployment === "hosted"
+    ? "Tools cannot set the key. On a `missing_api_key` error, follow the error's `next_action`: an OAuth (web connector) " +
+        "session must be reconnected — there is no key to paste — while a header-authenticated connection needs the user " +
+        "to reconnect with their `sk_` key."
+    : "Tools cannot set the key, but on this LOCAL server the agent can obtain one itself: on a `missing_api_key` error, " +
+        "call `register_account` (it needs the operator's op_ code from https://api.depixapp.com/api/agents/oauth/start " +
+        "and a wallet from `" +
+        UNIFIED_INIT_COMMAND +
+        "`). Alternatively the operator signs in as themselves with `" +
+        UNIFIED_RUN_COMMAND +
+        " login`, or sets DEPIX_API_KEY. When both an agent account and an owner login exist, the agent's account acts by " +
+        "default; the operator chooses with `" +
+        UNIFIED_RUN_COMMAND +
+        " account use agent|owner`.";
+}
+
+/**
  * The gateway sentences both deployments share. `HOSTED_ONLY_CUSTODY_SENTENCE` is
  * NOT among them — a caller adds it explicitly, and only the hosted one does.
  */
@@ -80,7 +107,7 @@ export function gatewaySentences(deployment: "hosted" | "unified"): string[] {
     catalogSentence(deployment),
     CHARGES_SENTENCE,
     "Authentication is a DePix App API key (sk_test_… for sandbox, sk_live_… for production), configured on the connection itself: over HTTP it is the `Authorization: Bearer sk_…` header; in local stdio mode it is the DEPIX_API_KEY environment variable.",
-    "Tools cannot set the key — if a tool reports a missing key, ask the user to reconnect with their key configured.",
+    credentialSentence(deployment),
     "Always test with an sk_test_ key first. `get_account` is the recommended connection test.",
   ];
 }
