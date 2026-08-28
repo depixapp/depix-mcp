@@ -389,8 +389,8 @@ Local (`npx`) level only — the wallet half:
 
 | Env | Meaning | Default |
 |---|---|---|
-| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet. **Required for the 29 `wallet_*` tools**; without it they return `wallet_not_configured`. It also seals the stored API keys and the `login` session | — |
-| `DEPIX_AGENT_PASSPHRASE` | Optional. When set it seals and opens those stored credentials instead of `DEPIX_WALLET_PASSPHRASE`; the wallet itself keeps using `DEPIX_WALLET_PASSPHRASE` | — |
+| `DEPIX_WALLET_PASSPHRASE` | Unlocks the encrypted local wallet, and seals the stored API keys and the `login` session. Optional: `init` puts the same passphrase in the OS keychain (or a `0600` file), and everything reads it there when this is unset | — |
+| `DEPIX_AGENT_PASSPHRASE` | Optional. When set it seals and opens the stored API keys and the `login` session instead of `DEPIX_WALLET_PASSPHRASE`; the wallet itself keeps using `DEPIX_WALLET_PASSPHRASE` | — |
 | `DEPIX_WALLET_DIR` | Where the encrypted wallet lives | `~/.depix-wallet` |
 | `DEPIX_GUARDRAIL_*` | Per-transaction / rolling-24h BRL caps and allowlist. Immutable at runtime: set here + restart | R$100/tx, R$500/day |
 | `DEPIX_MCP_MAX_WAIT_SECONDS` | Ceiling for the wallet wait tools | `900` |

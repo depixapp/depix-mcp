@@ -70,16 +70,31 @@ async function serve(): Promise<void> {
   // key register_account wrote to the encrypted store. Seed it from the store at
   // boot so a restarted agent keeps operating the account it created.
   const credentials = new CredentialResolver({ envKey });
-  await seedResolverFromStore(credentials);
+  const agentVault = await seedResolverFromStore(credentials);
   // The operator's own login (`depix-mcp login`) is the second identity this
   // process can act as. Seeding it here — with the persona they selected — is
   // what makes a restart keep acting as whoever it was acting as.
-  await seedOwnerSession(credentials);
+  const ownerVault = await seedOwnerSession(credentials);
+  // A vault that EXISTS and would not open is not an absent credential. Carried
+  // to the ApiClient so the tools' error names the lock instead of sending the
+  // agent to register an account this machine already has.
+  const lockedCredentials = {
+    ...(ownerVault === "locked" ? { ownerSession: true } : {}),
+    ...(agentVault === "locked" ? { agentCredentials: true } : {}),
+  };
+  const anythingLocked = Object.keys(lockedCredentials).length > 0;
   const apiKeyConfigured = credentials.resolveCredential() !== undefined;
   const walletDir = resolveWalletDir();
   const walletConfigured = await isWalletConfigured(walletDir);
 
-  if (!apiKeyConfigured) {
+  if (!apiKeyConfigured && anythingLocked) {
+    stderr(
+      "depix-mcp: this machine HAS a stored DePix credential, but this server could not unlock it — the passphrase " +
+        "is not in DEPIX_AGENT_PASSPHRASE or DEPIX_WALLET_PASSPHRASE, and no unlock key for this wallet was found in " +
+        "the OS keychain (`npx -y @depixapp/mcp init` is what puts it there). Serving anyway, with the API-backed " +
+        "tools erroring. Run `npx -y @depixapp/mcp account status` to see which credential is stuck.\n",
+    );
+  } else if (!apiKeyConfigured) {
     stderr(
       "depix-mcp: no DEPIX_API_KEY, no stored account and no owner login. Serving anyway — the tools that call the " +
         "DePix App API return a missing_api_key error until you set a key, run `npx -y @depixapp/mcp login`, or " +
@@ -127,6 +142,7 @@ async function serve(): Promise<void> {
     // An owner session's access token is short-lived: on a 401 the client renews
     // it ONCE and replays. An sk_ key never reaches this hook.
     onUnauthorized: buildOwnerRefreshHook(credentials),
+    lockedCredentials,
     apiBase,
     maxWaitSeconds: resolveMaxWaitSeconds(),
     version,
@@ -168,6 +184,11 @@ async function serve(): Promise<void> {
     tools: UNIFIED_TOOL_COUNT,
     api_key: apiKeyConfigured,
     wallet: walletConfigured,
+    // "locked" vs "none": a support log has to separate "the operator never
+    // logged in" from "the login is right here and this server could not open
+    // it", which `api_key: false` alone reports as the same thing.
+    owner_session: ownerVault,
+    agent_credentials: agentVault,
   });
 }
 

@@ -131,24 +131,29 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
       };
 
     // ── the local credential vault (§3.1) ──
-    // A model that hits this has NO way to guess the cause from the code alone:
-    // the vault is sealed with DEPIX_WALLET_PASSPHRASE (or DEPIX_AGENT_PASSPHRASE),
-    // which `init` is what sets. Name the passphrase, not just the command.
+    // A model that hits these has NO way to guess the cause from the code alone:
+    // the vault opens with DEPIX_WALLET_PASSPHRASE, DEPIX_AGENT_PASSPHRASE, or
+    // the keychain unlock key `init` stores. Name the doors, not just a command.
+    // `credentials_locked` is the same situation seen from the gateway side, so
+    // it shares this relay rather than getting a second copy that could drift.
     case "agent_key_unreadable":
     case "agent_store_corrupted":
+    case "credentials_locked":
       return {
         kind: "human_step",
         relay: {
           pt:
             "O cofre de credenciais deste computador não abre — falta a senha que o protege, ou ela mudou. " +
-            "Peça ao operador para rodar `npx -y @depixapp/mcp init` num terminal (cria a carteira e define essa " +
-            "senha), ou para conferir DEPIX_WALLET_PASSPHRASE na configuração do servidor — e DEPIX_AGENT_PASSPHRASE, " +
-            "que tem precedência sobre ela se estiver definida —, e reiniciar.",
+            "Peça ao operador para rodar `npx -y @depixapp/mcp init` num terminal (cria a carteira e guarda essa " +
+            "senha no chaveiro do sistema), ou para conferir DEPIX_WALLET_PASSPHRASE na configuração do servidor — e " +
+            "DEPIX_AGENT_PASSPHRASE, que tem precedência sobre ela se estiver definida —, e reiniciar. " +
+            "Não crie outra conta: a que existe aqui continua sendo a certa.",
           en:
             "The credential vault on this machine will not open — the passphrase that seals it is missing or changed. " +
-            "Ask the operator to run `npx -y @depixapp/mcp init` in a terminal (it creates the wallet and sets that " +
-            "passphrase), or to check DEPIX_WALLET_PASSPHRASE in the server config — and DEPIX_AGENT_PASSPHRASE, which " +
-            "takes precedence over it when set — then restart.",
+            "Ask the operator to run `npx -y @depixapp/mcp init` in a terminal (it creates the wallet and keeps that " +
+            "passphrase in the system keychain), or to check DEPIX_WALLET_PASSPHRASE in the server config — and " +
+            "DEPIX_AGENT_PASSPHRASE, which takes precedence over it when set — then restart. " +
+            "Do not open a second account: the one already here is still the right one.",
         },
       };
 

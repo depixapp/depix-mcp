@@ -14,7 +14,14 @@
 //     all — `account status` has to work on a locked machine.
 
 import { resolveWalletDir } from "./unified.js";
-import { resolveAgentDir, resolveAgentPassphrase } from "./agent-deps.js";
+import {
+  agentCredentialsExist,
+  readAgentCredentials,
+  resolveAgentDir,
+  resolveAgentPassphrase,
+  type AgentVaultOptions,
+  type VaultState,
+} from "./agent-deps.js";
 import { clearAccountPreference, readAccountPreference, writeAccountPreference, type Persona } from "./account-preference.js";
 import { discoverAuthServer, refreshOwnerTokens, resolveOwnerClientId } from "./owner-oauth.js";
 import { createOwnerRefreshHook } from "./owner-refresh.js";
@@ -38,13 +45,14 @@ class OwnerSessionLockedError extends Error {
   readonly code = "owner_session_locked";
 }
 
-async function openStore(): Promise<{ save: (s: OwnerSession) => Promise<void>; load: () => Promise<OwnerSession | null>; clear: () => Promise<boolean> }> {
-  const passphrase = resolveAgentPassphrase();
-  const dataDir = resolveAgentDir();
+async function openStore(vault: AgentVaultOptions = {}): Promise<{ save: (s: OwnerSession) => Promise<void>; load: () => Promise<OwnerSession | null>; clear: () => Promise<boolean> }> {
+  const passphrase = await resolveAgentPassphrase(vault);
+  const dataDir = resolveAgentDir(vault.env);
   const { OwnerSessionStore } = await import("./wallet-engine/agent/owner-session-store.js");
   if (passphrase === undefined) {
-    // No passphrase ⇒ nothing can be sealed or opened. `clear` still works: it
-    // only unlinks, which is what `logout` needs on a locked machine.
+    // The whole chain came up empty ⇒ nothing can be sealed or opened. `clear`
+    // still works: it only unlinks, which is what `logout` needs on a locked
+    // machine.
     return {
       save: () => Promise.reject(new OwnerSessionLockedError("No passphrase to seal the owner session.")),
       load: () => Promise.reject(new OwnerSessionLockedError("No passphrase to open the owner session.")),
@@ -55,20 +63,9 @@ async function openStore(): Promise<{ save: (s: OwnerSession) => Promise<void>; 
   return { save: (s) => store.save(s), load: () => store.load(), clear: () => store.clear() };
 }
 
-async function ownerSessionExists(): Promise<boolean> {
+async function ownerSessionExists(env?: NodeJS.ProcessEnv): Promise<boolean> {
   const { OwnerSessionStore } = await import("./wallet-engine/agent/owner-session-store.js");
-  return OwnerSessionStore.exists(resolveAgentDir());
-}
-
-async function agentAccountExists(): Promise<boolean> {
-  const { stat } = await import("node:fs/promises");
-  const { join } = await import("node:path");
-  const { AGENT_CREDENTIALS_FILE } = await import("./wallet-engine/agent/credential-store.js");
-  try {
-    return (await stat(join(resolveAgentDir(), AGENT_CREDENTIALS_FILE))).isFile();
-  } catch {
-    return false;
-  }
+  return OwnerSessionStore.exists(resolveAgentDir(env));
 }
 
 /**
@@ -108,7 +105,7 @@ async function openBrowser(url: string): Promise<boolean> {
   });
 }
 
-const preferenceDir = () => resolveWalletDir();
+const preferenceDir = (env?: NodeJS.ProcessEnv) => resolveWalletDir(env);
 
 export interface BuildOwnerLoginDepsOptions {
   write(text: string): void;
@@ -125,7 +122,7 @@ export function buildOwnerLoginDeps(opts: BuildOwnerLoginDepsOptions): OwnerLogi
       const store = await openStore();
       await store.save(session);
     },
-    hasAgentAccount: agentAccountExists,
+    hasAgentAccount: agentCredentialsExist,
     preference: () => readAccountPreference(preferenceDir()),
     clientId: resolveOwnerClientId(),
     resourceUrl: resolveOwnerResourceUrl(),
@@ -140,19 +137,20 @@ export function buildOwnerLogoutDeps(write: (text: string) => void): OwnerLogout
     clearSession: async () => (await openStore()).clear(),
     preference: () => readAccountPreference(preferenceDir()),
     clearPreference: () => clearAccountPreference(preferenceDir()),
-    hasAgentAccount: agentAccountExists,
+    hasAgentAccount: agentCredentialsExist,
   };
 }
 
-export function buildAccountDeps(write: (text: string) => void): AccountDeps {
+export function buildAccountDeps(write: (text: string) => void, vault: AgentVaultOptions = {}): AccountDeps {
   return {
     write,
-    envKeyPresent: Boolean(process.env.DEPIX_API_KEY),
-    hasAgentAccount: agentAccountExists,
+    envKeyPresent: Boolean((vault.env ?? process.env).DEPIX_API_KEY),
+    hasAgentAccount: () => agentCredentialsExist(vault.env),
+    agentAccountLocked: async () => (await readAgentCredentials(vault)).state === "locked",
     ownerSession: async (): Promise<OwnerSessionFacts | null> => {
-      if (!(await ownerSessionExists())) return null;
+      if (!(await ownerSessionExists(vault.env))) return null;
       try {
-        const session = await (await openStore()).load();
+        const session = await (await openStore(vault)).load();
         if (session === null) return null;
         return {
           present: true,
@@ -161,16 +159,16 @@ export function buildAccountDeps(write: (text: string) => void): AccountDeps {
           expiresAt: session.expiresAt,
         };
       } catch {
-        // The file is there but will not open (no passphrase, wrong one, or a
-        // corrupt blob). That is a REPORTABLE state, not an absent session:
-        // saying "no owner login" would send the operator to re-run `login`
-        // when the actual fix is the passphrase.
+        // The file is there but will not open (nothing in the whole unlock
+        // chain, the wrong passphrase, or a corrupt blob). That is a REPORTABLE
+        // state, not an absent session: saying "no owner login" would send the
+        // operator to re-run `login` when the actual fix is the passphrase.
         return { present: true, locked: true };
       }
     },
-    preference: () => readAccountPreference(preferenceDir()),
-    setPreference: (persona: Persona) => writeAccountPreference(preferenceDir(), persona),
-    clearPreference: () => clearAccountPreference(preferenceDir()),
+    preference: () => readAccountPreference(preferenceDir(vault.env)),
+    setPreference: (persona: Persona) => writeAccountPreference(preferenceDir(vault.env), persona),
+    clearPreference: () => clearAccountPreference(preferenceDir(vault.env)),
   };
 }
 
@@ -179,18 +177,24 @@ export function buildAccountDeps(write: (text: string) => void): AccountDeps {
 /**
  * Seed the resolver with the owner's session (and the persona they selected) at
  * boot, so a restarted server keeps acting as whoever it was acting as.
- * Best-effort: no session, no passphrase, or a decrypt failure just leaves the
- * owner half empty and the agent/env credential decides on its own.
+ *
+ * Reports WHICH of the three states this machine is in — see readAgentCredentials
+ * for why a boolean cannot carry that.
  */
-export async function seedOwnerSession(resolver: CredentialResolver): Promise<boolean> {
-  resolver.setPreference(await readAccountPreference(preferenceDir()));
+export async function seedOwnerSession(
+  resolver: CredentialResolver,
+  vault: AgentVaultOptions = {},
+): Promise<VaultState> {
+  resolver.setPreference(await readAccountPreference(preferenceDir(vault.env)));
+  if (!(await ownerSessionExists(vault.env))) return "none";
   try {
-    const session = await (await openStore()).load();
-    if (session === null) return false;
+    const session = await (await openStore(vault)).load();
+    // Raced away between the stat and the read.
+    if (session === null) return "none";
     resolver.setOwnerToken(session.accessToken);
-    return true;
+    return "active";
   } catch {
-    return false;
+    return "locked";
   }
 }
 

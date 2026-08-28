@@ -11,6 +11,7 @@ import {
   mapApiError,
   missingApiKeyError,
   type ApiErrorEnvelope,
+  type LockedVaults,
 } from "./errors.js";
 import { logger } from "./log.js";
 
@@ -78,6 +79,12 @@ export interface ApiClientOptions {
    * Default "hosted". */
   deployment?: "hosted" | "local";
   /**
+   * Local vaults the boot found sealed shut. Read only when NO credential
+   * resolves: it turns "no key is configured" into the truth, which is that one
+   * is configured and could not be opened.
+   */
+  lockedCredentials?: LockedVaults;
+  /**
    * Renew an expired OAuth session on a 401. Called AT MOST ONCE per request,
    * and only when the resolved credential is an OAuth session (an sk_ key has
    * nothing to renew). Returning true means the resolver now holds a fresh
@@ -123,6 +130,7 @@ export class ApiClient {
   private readonly onUnauthorized?: () => Promise<boolean>;
   private readonly authMode?: "oauth";
   private readonly deployment: "hosted" | "local";
+  private readonly lockedCredentials: LockedVaults;
   private readonly apiBase: string;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -141,6 +149,7 @@ export class ApiClient {
     this.maxRetrySleepMs = opts.maxRetrySleepMs ?? 10_000;
     this.authMode = opts.authMode;
     this.deployment = opts.deployment ?? "hosted";
+    this.lockedCredentials = opts.lockedCredentials ?? {};
   }
 
   /** Build + validate the target URL against the strict origin allowlist. */
@@ -171,7 +180,7 @@ export class ApiClient {
     // where the header may be sent, for all of them.
     const isOAuth = credential?.kind === "oauth" || this.authMode === "oauth";
     if (!credential || (!isOAuth && !credential.token.startsWith("sk_"))) {
-      throw missingApiKeyError(this.authMode, this.deployment);
+      throw missingApiKeyError(this.authMode, this.deployment, this.lockedCredentials);
     }
     // Origin allowlist BEFORE the Authorization header is ever attached (§3.2).
     const url = this.resolveUrl(req.path, req.query);

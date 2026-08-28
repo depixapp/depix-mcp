@@ -257,8 +257,9 @@ function explain(err: unknown): string {
   }
   if (errno === "owner_session_locked" || errno === "WEAK_PASSPHRASE") {
     return (
-      "depix-mcp: signed in, but the session could not be saved — this machine has no wallet to seal it with. " +
-      `Run \`${UNIFIED_INIT_COMMAND}\` first (it creates the wallet and its passphrase), then run \`login\` again.\n`
+      "depix-mcp: signed in, but the session could not be saved — this machine has no usable passphrase to seal it " +
+      "with: none in DEPIX_AGENT_PASSPHRASE or DEPIX_WALLET_PASSPHRASE, and no unlock key in the OS keychain. " +
+      `Run \`${UNIFIED_INIT_COMMAND}\` first (it creates the wallet and stores that key), then run \`login\` again.\n`
     );
   }
   const message = err instanceof Error ? err.message : String(err);

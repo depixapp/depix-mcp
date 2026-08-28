@@ -15,7 +15,7 @@ import { decidePersona, personaLabel, type PersonaVerdict } from "./credentials.
 /** What `account status` can see about the stored owner login. */
 export interface OwnerSessionFacts {
   present: boolean;
-  /** True when the file is there but no passphrase is configured to open it. */
+  /** True when the file is there but the unlock chain cannot open it. */
   locked?: boolean;
   provider?: string;
   email?: string;
@@ -23,11 +23,22 @@ export interface OwnerSessionFacts {
   expiresAt?: number;
 }
 
+/**
+ * The one sentence both locked vaults print. It names every door the passphrase
+ * can come through — including the keychain, which is where `init` puts it and
+ * which a host config (by design) never carries.
+ */
+const LOCKED_REMEDY =
+  "re-run `npx -y @depixapp/mcp init` to restore this machine's unlock key, or set DEPIX_WALLET_PASSPHRASE " +
+  "(or DEPIX_AGENT_PASSPHRASE, which wins) in the server config";
+
 export interface AccountDeps {
   write(text: string): void;
   /** DEPIX_API_KEY is set in this process's environment. */
   envKeyPresent: boolean;
   hasAgentAccount(): Promise<boolean>;
+  /** The sk_ vault is on disk but will not open. Absent ⇒ never reported locked. */
+  agentAccountLocked?(): Promise<boolean>;
   ownerSession(): Promise<OwnerSessionFacts | null>;
   preference(): Promise<Persona | undefined>;
   setPreference(persona: Persona): Promise<void>;
@@ -46,14 +57,16 @@ PRECEDENCE
 
 interface Situation {
   hasAgent: boolean;
+  agentLocked: boolean;
   owner: OwnerSessionFacts | null;
   preference: Persona | undefined;
   verdict: PersonaVerdict;
 }
 
 async function read(deps: AccountDeps): Promise<Situation> {
-  const [hasAgent, owner, preference] = await Promise.all([
+  const [hasAgent, agentLocked, owner, preference] = await Promise.all([
     deps.hasAgentAccount(),
+    deps.agentAccountLocked?.() ?? Promise.resolve(false),
     deps.ownerSession(),
     deps.preference(),
   ]);
@@ -66,7 +79,7 @@ async function read(deps: AccountDeps): Promise<Situation> {
     hasOwner: owner?.present === true,
     ...(preference !== undefined ? { preference } : {}),
   });
-  return { hasAgent, owner, preference, verdict };
+  return { hasAgent, agentLocked, owner, preference, verdict };
 }
 
 function formatExpiry(expiresAt: number | undefined): string {
@@ -92,12 +105,20 @@ function report(deps: AccountDeps, s: Situation): void {
         "let `account use` decide.",
     );
   }
-  lines.push(`  agent account: ${s.hasAgent ? "registered on this machine" : "none"}`);
+  lines.push(
+    `  agent account: ${
+      s.hasAgent
+        ? s.agentLocked
+          ? `registered here, but LOCKED — its API keys will not open. To use it, ${LOCKED_REMEDY}`
+          : "registered on this machine"
+        : "none"
+    }`,
+  );
   if (s.owner?.present) {
     const who = [s.owner.email, s.owner.provider].filter((v) => typeof v === "string" && v.length > 0).join(" via ");
     lines.push(
       s.owner.locked === true
-        ? "  owner login:   stored, but LOCKED — set DEPIX_WALLET_PASSPHRASE (or DEPIX_AGENT_PASSPHRASE, which wins) to open it"
+        ? `  owner login:   stored, but LOCKED — this server cannot open it. To use it, ${LOCKED_REMEDY}`
         : `  owner login:   ${who || "signed in"}${formatExpiry(s.owner.expiresAt)}`,
     );
   } else {

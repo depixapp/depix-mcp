@@ -41,10 +41,56 @@ export class ToolError extends Error {
   }
 }
 
+/**
+ * Local credentials that EXIST on this machine but that the server could not
+ * unlock at boot. It is deliberately not folded into "nothing configured": the
+ * two have opposite remedies, and answering this one with that one sends the
+ * agent to register a SECOND account for a machine that already has one.
+ */
+export interface LockedVaults {
+  /** `depix-mcp login` sealed a session here and it did not open. */
+  ownerSession?: boolean;
+  /** `register_account` sealed sk_ keys here and they did not open. */
+  agentCredentials?: boolean;
+}
+
+/**
+ * Names WHICH credential is stuck, in the vocabulary `account status` prints —
+ * an operator reading both must not have to work out that they are the same
+ * two things.
+ */
+function lockedSubject(locked: LockedVaults): string | undefined {
+  if (locked.ownerSession && locked.agentCredentials) {
+    return "the owner login AND this agent's own API keys are";
+  }
+  if (locked.ownerSession) return "the owner login (`npx -y @depixapp/mcp login`) is";
+  if (locked.agentCredentials) return "this agent's own API keys are";
+  return undefined;
+}
+
 /** Clear error when the caller provided no usable API key (spec §3.3). */
-export function missingApiKeyError(authMode?: "oauth", deployment?: "hosted" | "local"): ToolError {
+export function missingApiKeyError(
+  authMode?: "oauth",
+  deployment?: "hosted" | "local",
+  locked: LockedVaults = {},
+): ToolError {
   const next = (data: Record<string, unknown> = {}) =>
     withNextAction(data, "missing_api_key", { authMode, deployment });
+  const subject = lockedSubject(locked);
+  if (subject !== undefined) {
+    // There IS a credential here. Telling the caller to configure one would send
+    // it to mint a duplicate account (and register_account would fail on the very
+    // same lock), so the error names the lock and the door that opens it.
+    return new ToolError(
+      `This machine HAS a DePix credential — ${subject} stored here — but this server could not unlock it: the ` +
+        "passphrase that seals it is not in DEPIX_AGENT_PASSPHRASE or DEPIX_WALLET_PASSPHRASE, and no unlock key for " +
+        "this wallet was found in the machine's keychain (which is where `npx -y @depixapp/mcp init` puts it). Ask the " +
+        "operator to restore it and restart this server — do not register a second account. Run " +
+        "`npx -y @depixapp/mcp account status` for the full picture.",
+      "credentials_locked",
+      { data: withNextAction({}, "credentials_locked", { authMode, deployment }) },
+    );
+  }
   if (authMode === "oauth") {
     // Defensive: an OAuth session normally forwards its verified WorkOS JWT as
     // the bearer, so this only fires if that token went missing after the edge

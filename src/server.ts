@@ -9,7 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ApiClient, type ApiKeySource } from "./apiClient.js";
 import { SERVER_NAME, SERVER_TITLE, resolveServerVersion } from "./config.js";
-import { ToolError } from "./errors.js";
+import { ToolError, type LockedVaults } from "./errors.js";
 import { hostedInstructions } from "./instructions.js";
 import { logger } from "./log.js";
 import * as s from "./schemas.js";
@@ -111,6 +111,8 @@ export interface CreateServerOptions {
   /** Which deployment this is — steers the missing_api_key next_action (§5.1).
    * Default "hosted"; the unified npx bin passes "local". */
   deployment?: "hosted" | "local";
+  /** Local vaults the boot found sealed shut — see ApiClientOptions. */
+  lockedCredentials?: LockedVaults;
   apiBase: string;
   maxWaitSeconds: number;
   version?: string;
@@ -142,6 +144,7 @@ export function createServer(opts: CreateServerOptions): McpServer {
       apiBase: opts.apiBase,
       authMode: opts.authMode,
       deployment: opts.deployment,
+      ...(opts.lockedCredentials ? { lockedCredentials: opts.lockedCredentials } : {}),
       ...(opts.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
     });
   const version = opts.version ?? resolveServerVersion();
