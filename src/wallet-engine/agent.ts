@@ -100,9 +100,10 @@ export interface RegisterResult {
     defaultCallbackUrl?: string | null;
   };
   keys: { test: IssuedKey; liveStarter: StarterKey };
-  /** Server-provided onboarding info (informational). */
+  /** How the account graduates, verbatim from the server. */
   graduation?: Record<string, unknown>;
-  limits?: Record<string, unknown>;
+  /** The ceilings and delays the server paces this account by. */
+  pacing?: Record<string, unknown>;
 }
 
 // Wire shapes (snake_case) — only what we read.
@@ -128,7 +129,7 @@ interface RegisterWire {
     };
   };
   graduation?: Record<string, unknown>;
-  limits?: Record<string, unknown>;
+  pacing?: Record<string, unknown>;
 }
 
 // ─── status / key I/O ────────────────────────────────────────────────────
@@ -371,7 +372,7 @@ export class DepixAgent {
         },
       },
       graduation: wire.graduation,
-      limits: wire.limits,
+      pacing: wire.pacing,
     };
 
     this.meta = { ...this.meta, username: result.agent.username, merchantId: result.merchant.id, apiBase: this.client.apiBase };

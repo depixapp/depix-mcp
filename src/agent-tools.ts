@@ -6,7 +6,7 @@
 // registration tool). This module is mounted only from unified.ts (the local bin).
 //
 // SECRETS NEVER LEAVE: register_account persists the minted sk_ keys ENCRYPTED
-// (AgentCredentialStore) and returns only PUBLIC facts (username, slug, limits,
+// (AgentCredentialStore) and returns only PUBLIC facts (username, slug, pacing,
 // key IDs) — never the sk_ itself, never the webhook secret, never the keypair.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -122,6 +122,37 @@ function primitivesOnly(value: unknown): Record<string, unknown> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+const PACING_NUMBER_FIELDS = [
+  "first_deposit_max_cents",
+  "unverified_per_tx_max_cents",
+  "inter_deposit_delay_hours",
+  "verified_per_tx_deposit_max_cents",
+  "verified_per_tx_withdraw_max_cents",
+] as const;
+const PAYER_VELOCITY_FIELDS = ["max_per_window", "window_minutes"] as const;
+
+function numberFields(value: unknown, fields: readonly string[]): Record<string, number> {
+  const src = (value ?? {}) as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  for (const f of fields) if (Number.isFinite(src[f])) out[f] = src[f] as number;
+  return out;
+}
+
+/**
+ * The pacing block, kept to the shape declared below — `primitivesOnly` would
+ * drop `payer_velocity` for being an object, and that pair is the only place the
+ * payer rule is published. Ill-typed or unknown fields are dropped rather than
+ * failed on: this response is returned once, after the account already exists,
+ * so refusing it over a server-side field change would strand a live account.
+ */
+function pacingOnly(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const out: Record<string, unknown> = numberFields(value, PACING_NUMBER_FIELDS);
+  const velocity = numberFields((value as Record<string, unknown>).payer_velocity, PAYER_VELOCITY_FIELDS);
+  if (Object.keys(velocity).length > 0) out.payer_velocity = velocity;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 // ── handlers ──
 
 async function registerAccount(
@@ -216,7 +247,7 @@ async function registerAccount(
     test_key_id: result.keys.test.id,
     live_starter_key_id: result.keys.liveStarter.id,
     graduation: primitivesOnly(result.graduation) ?? null,
-    limits: primitivesOnly(result.limits) ?? null,
+    pacing: pacingOnly(result.pacing) ?? null,
     warning,
   };
 }
@@ -327,8 +358,8 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
         "code back to you (it reappears on every sign-in), or they set DEPIX_OPERATOR_TOKEN in the host config; " +
         "(3) their notification email, for `operator_email`. " +
         "The account's keys are saved ENCRYPTED on this machine and used immediately — no restart, nothing " +
-        "pasted into a config. The response carries only PUBLIC facts (username, store slug, limits, key IDs): the " +
-        "secret keys are NEVER shown here. Activates the sandbox (sk_test_) key by default. If DEPIX_API_KEY is set " +
+        "pasted into a config. The response carries only PUBLIC facts (username, store slug, pacing caps, key IDs): " +
+        "the secret keys are NEVER shown here. Activates the sandbox (sk_test_) key by default. If DEPIX_API_KEY is set " +
         "in the environment, it OVERRIDES the new key and the response says so.",
       inputSchema: {
         name: z.string().min(2).max(100).describe("Human-readable name for the account/store (2–100 chars)."),
@@ -370,7 +401,31 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
         test_key_id: z.string().describe("Id of the sandbox key (the secret itself is never returned)."),
         live_starter_key_id: z.string().describe("Id of the live starter key (the secret itself is never returned)."),
         graduation: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).nullable(),
-        limits: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).nullable(),
+        pacing: z
+          .object({
+            first_deposit_max_cents: z.number().optional(),
+            unverified_per_tx_max_cents: z.number().optional(),
+            inter_deposit_delay_hours: z
+              .number()
+              .optional()
+              .describe(
+                "A minimum, not a schedule: a deposit above the per-transaction ceiling takes the account's trust-level " +
+                  "hold instead, which is far longer. Read `vault_window_hours` (get_vault_status) for the live number " +
+                  "before promising anyone a release time.",
+              ),
+            payer_velocity: z
+              .object({ max_per_window: z.number().optional(), window_minutes: z.number().optional() })
+              .optional()
+              .describe("How often one payer may pay this account: max_per_window payments per window_minutes."),
+            verified_per_tx_deposit_max_cents: z.number().optional(),
+            verified_per_tx_withdraw_max_cents: z.number().optional(),
+          })
+          .nullable()
+          .describe(
+            "The ceilings and delays this account is paced by, as the server reports them — the unverified ones " +
+              "apply now, the verified ones after it verifies. Every field is optional: read what is there, and do " +
+              "not assume a missing one is unlimited.",
+          ),
         warning: z.string().nullable().describe("A loud note when the env key overrides the new one, else null."),
       },
       annotations: write,

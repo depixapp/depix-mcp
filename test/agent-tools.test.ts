@@ -21,7 +21,14 @@ const REGISTER_RESULT: RegisterResult = {
     liveStarter: { id: "key_live_1", key: "sk_live_SECRETVALUE", scopes: "wallet_read", starter: true },
   },
   graduation: { requires: "domain_proof", verify_domain_endpoint: "POST /api/agents/verify-domain", allowed_tlds_endpoint: "GET /api/agents/domain-tlds" },
-  limits: { per_tx_cents: 10000, daily_cents: 50000 },
+  pacing: {
+    first_deposit_max_cents: 10000,
+    unverified_per_tx_max_cents: 10000,
+    inter_deposit_delay_hours: 24,
+    payer_velocity: { max_per_window: 2, window_minutes: 30 },
+    verified_per_tx_deposit_max_cents: 600000,
+    verified_per_tx_withdraw_max_cents: 600000,
+  },
 };
 
 class FakeAgent implements AgentLike {
@@ -120,6 +127,27 @@ describe("register_account (§3.1)", () => {
     expect(out.test_key_id).toBe("key_test_1");
     expect(out.active_key_mode).toBe("test");
     expect(out.warning).toBeNull();
+  });
+
+  it("surfaces the server's pacing block, nested payer_velocity included", async () => {
+    const client = await connect(baseDeps());
+    const result = await client.callTool({
+      name: "register_account",
+      arguments: { name: "Acme", operator_token: "op_xyz", operator_email: "op@acme.com" },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = structured(result);
+    // payer_velocity is the only nested value here, and the one an agent has no
+    // other way to learn (see pacingOnly).
+    expect(out.pacing).toEqual({
+      first_deposit_max_cents: 10000,
+      unverified_per_tx_max_cents: 10000,
+      inter_deposit_delay_hours: 24,
+      payer_velocity: { max_per_window: 2, window_minutes: 30 },
+      verified_per_tx_deposit_max_cents: 600000,
+      verified_per_tx_withdraw_max_cents: 600000,
+    });
+    expect(out).not.toHaveProperty("limits");
   });
 
   it("R6: an owner login selected on this machine leaves the new key IDLE, and says so", async () => {

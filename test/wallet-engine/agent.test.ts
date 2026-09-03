@@ -52,7 +52,14 @@ const REGISTER_RESPONSE = {
       },
     },
     graduation: { requires: "domain_proof", verify_domain_endpoint: "POST /api/agents/verify-domain", allowed_tlds_endpoint: "GET /api/agents/domain-tlds" },
-    limits: { first_deposit_max_cents: 10000 },
+    pacing: {
+      first_deposit_max_cents: 10000,
+      unverified_per_tx_max_cents: 10000,
+      inter_deposit_delay_hours: 24,
+      payer_velocity: { max_per_window: 2, window_minutes: 30 },
+      verified_per_tx_deposit_max_cents: 600000,
+      verified_per_tx_withdraw_max_cents: 600000,
+    },
   },
 };
 
@@ -115,6 +122,9 @@ describe("DepixAgent.register", () => {
     expect(res.merchant.webhookSecret).toBe("whsec_abc");
     expect(res.keys.test.key).toBe("sk_test_xyz");
     expect(res.keys.liveStarter).toMatchObject({ key: "sk_live_starter", perTxLimitCents: 5000, starter: true });
+    // The server names this block `pacing` and has no `limits` key at all.
+    expect(res.pacing).toMatchObject({ first_deposit_max_cents: 10000, payer_velocity: { max_per_window: 2 } });
+    expect(res).not.toHaveProperty("limits");
 
     // Meta persisted → a fresh open() knows the username.
     const reopened = await DepixAgent.open({ dataDir, passphrase: PASSPHRASE, fetch: mockFetch([]).fetch });
