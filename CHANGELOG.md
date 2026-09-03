@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.8.6 — the wallet reads its credential on every call
+
+Two follow-ups from the 2.8.4/2.8.5 reviews, both in the engine.
+
+- **The credential is resolved per request, not captured at open.** The
+  engine's API client accepts a function and reads it on every call, so a key
+  that appears or changes mid-session — `register_account`, `activate_key` — is
+  in force on the very next request. The unified server no longer closes and
+  reopens the wallet when the credential changes, which also retires the
+  window in which a call already holding the old instance failed with
+  `WALLET_CLOSED`. A call made while there is no key still fails with the same
+  `API_KEY_REQUIRED`, before any network I/O. A function source takes no
+  `$DEPIX_API_KEY` fallback: off the origin allowlist, no key reaches the host —
+  stored or from the environment.
+- **A pending withdrawal remembers the exact key that created it.** Alongside
+  the key mode, a "requested" record now carries a fingerprint of the key
+  (first 16 hex of its SHA-256, sealed inside the record); resume replays it
+  only under that same key — two live accounts are no longer telling the same
+  story. Records from 2.8.5 fall back to the mode check; older ones resume as
+  before. One identity per operation: the key that is stamped on the record and
+  passes the gate is the key the request — and every retry of it — goes out
+  under, whatever the resolver answers meanwhile — and a wait
+  (`wallet_wait_deposit`/`wallet_wait_withdrawal`) polls under the identity it
+  began with.
+- Crash-resume runs at the single open. A boot with no key (or under another
+  key) leaves "requested" withdrawals held, not lost: `wallet_recover` re-drives
+  them, as does the next boot under their own key.
+
 ## 2.8.5 — the agent can go live by itself
 
 An agent that registered its own account was stuck on the sandbox key: the

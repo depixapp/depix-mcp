@@ -4,6 +4,7 @@
 // gives one read-only view over the four durable stores. This suite covers the
 // WIRING — the per-rail refund/claim logic is proven by its own suites
 // (boltz-refund/boltz-convert/pending/sideswap-peg/sideshift-*).
+import { keyFingerprint } from "../../src/wallet-engine/api/client.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -389,7 +390,7 @@ describe("wallet.getPending() unifies the four pending stores", () => {
 
 // ─── key-mode gate on resume: a sandbox exercise never becomes a live payout ──
 
-describe("resumePendingWithdrawals() only replays a requested record under the key mode that created it", () => {
+describe("resumePendingWithdrawals() only replays a requested record under the key that created it", () => {
   function recordingFetch(): { fetchImpl: FetchLike; calls: string[] } {
     const calls: string[] = [];
     const fetchImpl: FetchLike = async (url) => {
@@ -404,13 +405,14 @@ describe("resumePendingWithdrawals() only replays a requested record under the k
     return { fetchImpl, calls };
   }
 
-  async function seeded(keyMode: "test" | "live" | undefined): Promise<string> {
+  async function seeded(keyMode: "test" | "live" | undefined, keyFp?: string): Promise<string> {
     const salt = await seedWalletFile();
     const withdrawals = new PendingWithdrawals({ dataDir, passphrase: PASSPHRASE, saltB64: salt });
     await withdrawals.putRequested({
       idempotencyKey: "idem-mode",
       request: { pixKey: "k", taxNumber: "t", depositAmountInCents: 500 },
-      ...(keyMode !== undefined ? { keyMode } : {})
+      ...(keyMode !== undefined ? { keyMode } : {}),
+      ...(keyFp !== undefined ? { keyFingerprint: keyFp } : {})
     });
     return salt;
   }
@@ -452,6 +454,100 @@ describe("resumePendingWithdrawals() only replays a requested record under the k
     );
     await wallet.resumePendingWithdrawals();
     expect(calls.some((u) => u.includes("/withdraw"))).toBe(true);
+  });
+
+  it("same MODE, different KEY: a record created under another live account is held — no POST", async () => {
+    await seeded("live", keyFingerprint("sk_live_ACCOUNT_A"));
+    const { fetchImpl, calls } = recordingFetch();
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: "sk_live_ACCOUNT_B",
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    const summary = await wallet.resumePendingWithdrawals();
+    expect(summary).toEqual({ resumed: 0, rebroadcast: 0, reposted: 0, discarded: 0, failed: 1 });
+    expect(calls.filter((u) => u.includes("/withdraw"))).toEqual([]);
+  });
+
+  it("the key that passed the gate is the key on the wire — even if the resolver flips mid-retry", async () => {
+    await seeded("test", keyFingerprint("sk_test_A"));
+    let current: string | undefined = "sk_test_A";
+    const auths: string[] = [];
+    let withdrawCalls = 0;
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (String(url).includes("/withdraw")) {
+        withdrawCalls += 1;
+        auths.push(init.headers["Authorization"] ?? "");
+        if (withdrawCalls === 1) {
+          current = "sk_live_B"; // activate_key lands during the first attempt
+          return new Response(JSON.stringify({ error: "flaky" }), { status: 503, headers: { "content-type": "application/json" } });
+        }
+      }
+      return new Response(JSON.stringify({ error: "not today" }), { status: 400, headers: { "content-type": "application/json" } });
+    };
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: () => current,
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    await wallet.resumePendingWithdrawals();
+    expect(auths).toEqual(["Bearer sk_test_A", "Bearer sk_test_A"]);
+  });
+
+  it("the exact key that created the record replays it", async () => {
+    await seeded("live", keyFingerprint("sk_live_ACCOUNT_A"));
+    const { fetchImpl, calls } = recordingFetch();
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: "sk_live_ACCOUNT_A",
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    await wallet.resumePendingWithdrawals();
+    expect(calls.some((u) => u.includes("/withdraw"))).toBe(true);
+  });
+
+  it("a new withdrawal is stamped with the mode AND the fingerprint of the key that made it", async () => {
+    const salt = await seedWalletFile();
+    const store = new PendingWithdrawals({ dataDir, passphrase: PASSPHRASE, saltB64: salt });
+    // The record is written BEFORE the POST (the crash-safety invariant) and a
+    // permanent 4xx removes it right after — so it is read from INSIDE the POST.
+    let seenDuringPost: Awaited<ReturnType<typeof store.readAll>>["records"] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      if (String(url).includes("/withdraw")) seenDuringPost = (await store.readAll()).records;
+      return new Response(JSON.stringify({ error: "not today" }), { status: 400, headers: { "content-type": "application/json" } });
+    };
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: "sk_live_STAMP",
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    await wallet
+      .withdraw({ pixKey: "k", recipientTaxNumber: "12345678909", amountCents: 500, mode: "send" })
+      .catch(() => undefined);
+    const stamped = seenDuringPost.find((r) => r.state === "requested");
+    expect(stamped).toBeDefined();
+    expect(stamped?.keyMode).toBe("live");
+    expect(stamped?.keyFingerprint).toBe(keyFingerprint("sk_live_STAMP"));
   });
 
   it("a legacy record with no key mode resumes as before", async () => {

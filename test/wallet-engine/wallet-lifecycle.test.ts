@@ -183,8 +183,8 @@ describe("open() (spec §2.4)", () => {
     });
     track(wallet);
     await wallet.close();
-    // The unified server closes an instance under a caller to reopen it with a
-    // new credential: the caller must be told to retry, not to re-init.
+    // An instance closed under a caller (shutdown, explicit close()): the caller
+    // must be told to retry on the current instance, not to re-init.
     await expect(wallet.getBalances()).rejects.toSatisfy(
       (err: unknown) =>
         isDepixSdkError(err, "WALLET_CLOSED") &&

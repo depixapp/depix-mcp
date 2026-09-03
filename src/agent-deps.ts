@@ -178,8 +178,8 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
       if (!readBack || readBack.active !== mode) {
         throw new Error("The active-key pointer did not survive a write+read verification.");
       }
-      // In-session: the resolver serves the new key on the very next request,
-      // and the wallet runtime reopens the wallet with it (a credential change).
+      // In-session: the resolver serves the new key on the very next request —
+      // the wallet reads it per request too, so it is in force on its next call.
       resolver.setActiveKey(AgentCredentialStore.activeKey(readBack));
       const source = resolver.source();
       return {

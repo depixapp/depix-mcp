@@ -236,4 +236,15 @@ describe("PendingWithdrawals store — the key mode travels with a requested rec
     expect((await store.get("idem-test"))?.keyMode).toBe("test");
     expect(await store.get("idem-legacy")).not.toHaveProperty("keyMode");
   });
+
+  it("round-trips the key fingerprint next to the mode", async () => {
+    const store = new PendingWithdrawals({ dataDir, passphrase: PASSPHRASE, saltB64: SALT_B64 });
+    await store.putRequested({
+      idempotencyKey: "idem-fp",
+      request: { pixKey: "k", taxNumber: "t", depositAmountInCents: 500 },
+      keyMode: "live",
+      keyFingerprint: "0123456789abcdef"
+    });
+    expect(await store.get("idem-fp")).toMatchObject({ keyMode: "live", keyFingerprint: "0123456789abcdef" });
+  });
 });

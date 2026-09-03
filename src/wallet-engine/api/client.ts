@@ -20,7 +20,9 @@
 //     (5s), max 3. Every other 4xx is surfaced, never retried.
 
 import { randomUUID } from "node:crypto";
-import { DepixApiError, type DepixApiErrorDetails } from "../errors.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
+import { DepixApiError, WalletError, type DepixApiErrorDetails } from "../errors.js";
 import { defaultLogger, registerSecret, type Logger } from "../logger.js";
 import { defaultSleep, Throttle, type SleepFn } from "./throttle.js";
 
@@ -163,9 +165,18 @@ export type FetchLike = (
   init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }
 ) => Promise<FetchResponseLike>;
 
+/** A credential that may change over the client's lifetime — read on EVERY request. */
+export type ApiKeySource = string | (() => string | undefined);
+
 export interface ApiClientOptions {
-  /** sk_live_… / sk_test_… — required for any API call. */
-  apiKey: string;
+  /**
+   * sk_live_… / sk_test_… — required for any API call. A function is resolved
+   * per request, so a key that appears or changes mid-session (an agent
+   * registering its account, `activate_key`) takes effect on the next call
+   * with no re-open; a call made while it returns undefined fails with
+   * API_KEY_REQUIRED before any network I/O.
+   */
+  apiKey: ApiKeySource;
   /** Default: $DEPIX_API_BASE ?? https://api.depixapp.com. */
   apiBase?: string;
   /** Advanced/testing: inject the fetch implementation. */
@@ -182,14 +193,36 @@ export interface ApiClientOptions {
 interface RequestSpec {
   method: "GET" | "POST" | "PATCH";
   path: string;
-  bucket: string;
+  /** Throttle bucket prefix; the pinned key completes it (one budget per endpoint × key). */
+  scope: string;
   throttle: Throttle;
   body?: unknown;
   idempotencyKey?: string;
+  /** A key the caller already committed to (stamped on a record, passed a gate) — used verbatim. */
+  key?: string;
+}
+
+/** The first 16 hex of SHA-256(key): identifies a key at rest without storing it. */
+export function keyFingerprint(key: string): string {
+  return bytesToHex(sha256(utf8ToBytes(key))).slice(0, 16);
+}
+
+/** Key mode derived from the prefix alone — no network. */
+export function keyModeOf(key: string): "live" | "test" {
+  return key.startsWith("sk_live_") ? "live" : "test";
+}
+
+/** The one error every keyless API path raises — same text from the client and the wallet. */
+export function apiKeyRequiredError(): WalletError {
+  return new WalletError(
+    "API_KEY_REQUIRED",
+    "Set apiKey (or $DEPIX_API_KEY) on open()/create() to use deposit(), withdraw() and the waiters."
+  );
 }
 
 export class DepixApiClient {
-  private readonly apiKey: string;
+  private readonly resolveKey: () => string | undefined;
+  private readonly registeredSecrets = new Set<string>();
   readonly apiBase: string;
   private readonly fetchImpl: FetchLike;
   private readonly logger: Logger;
@@ -200,13 +233,20 @@ export class DepixApiClient {
   private readonly merchantUpdateThrottle: Throttle;
 
   constructor(options: ApiClientOptions) {
-    if (typeof options.apiKey !== "string" || options.apiKey.length === 0) {
-      throw new TypeError("DepixApiClient requires an apiKey (sk_live_/sk_test_).");
+    if (typeof options.apiKey === "function") {
+      this.resolveKey = options.apiKey;
+    } else {
+      if (typeof options.apiKey !== "string" || options.apiKey.length === 0) {
+        throw new TypeError("DepixApiClient requires an apiKey (sk_live_/sk_test_).");
+      }
+      const fixed = options.apiKey;
+      this.resolveKey = () => fixed;
     }
-    this.apiKey = options.apiKey;
-    // The key already lives in memory for the session; registering it makes the
-    // logger scrub it from any line (defense-in-depth, never a license to log).
-    registerSecret(this.apiKey);
+    // Registering a key makes the logger scrub it from any line (defense-in-depth,
+    // never a license to log). Done on first sight of each value, since a
+    // function source can hand over a new key mid-session.
+    const initial = this.resolveKey();
+    if (initial !== undefined) this.scrub(initial);
     this.apiBase = normalizeBase(options.apiBase ?? process.env.DEPIX_API_BASE ?? DEFAULT_API_BASE);
     this.fetchImpl = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.logger = options.logger ?? defaultLogger;
@@ -222,9 +262,48 @@ export class DepixApiClient {
     });
   }
 
+  private scrub(key: string): void {
+    if (this.registeredSecrets.has(key)) return;
+    this.registeredSecrets.add(key);
+    registerSecret(key);
+  }
+
+  /** The key in force right now, scrubbed from logs; undefined when there is none. */
+  private currentKey(): string | undefined {
+    const key = this.resolveKey();
+    if (key !== undefined && key.length > 0) {
+      this.scrub(key);
+      return key;
+    }
+    return undefined;
+  }
+
+  /** Whether a call made now would carry a credential. */
+  hasCredential(): boolean {
+    return this.currentKey() !== undefined;
+  }
+
+  /** Fingerprint of the key in force (see keyFingerprint); undefined when there is none. */
+  get keyFingerprint(): string | undefined {
+    const key = this.currentKey();
+    return key === undefined ? undefined : keyFingerprint(key);
+  }
+
+  /**
+   * The key in force right now, for a caller that must commit to ONE identity
+   * across a whole operation (stamp a record, pass a gate, then send under
+   * that same key) — pass it back as `key` on the call. Throws API_KEY_REQUIRED.
+   */
+  credential(): string {
+    const key = this.currentKey();
+    if (key === undefined) throw apiKeyRequiredError();
+    return key;
+  }
+
   /** Key mode derived LOCALLY from the prefix — zero /api/me call (§6.2). */
   get keyMode(): "live" | "test" {
-    return this.apiKey.startsWith("sk_live_") ? "live" : "test";
+    const key = this.currentKey();
+    return key === undefined ? "test" : keyModeOf(key);
   }
 
   get isSandbox(): boolean {
@@ -240,15 +319,16 @@ export class DepixApiClient {
 
   async createDeposit(
     body: DepositRequestBody,
-    opts: { idempotencyKey?: string } = {}
+    opts: { idempotencyKey?: string; key?: string } = {}
   ): Promise<DepositWireResponse> {
     const { data } = await this.request<{ response: DepositWireResponse }>({
       method: "POST",
       path: "/api/deposit",
-      bucket: `deposit:${this.apiKey}`,
+      scope: "deposit",
       throttle: this.createThrottle,
       body,
-      idempotencyKey: opts.idempotencyKey ?? DepixApiClient.newIdempotencyKey()
+      idempotencyKey: opts.idempotencyKey ?? DepixApiClient.newIdempotencyKey(),
+      ...(opts.key !== undefined ? { key: opts.key } : {})
     });
     if (!data?.response?.id) {
       throw new DepixApiError("upstream_error", "Malformed deposit response (missing response.id)", {
@@ -260,15 +340,16 @@ export class DepixApiClient {
 
   async createWithdraw(
     body: WithdrawRequestBody,
-    opts: { idempotencyKey?: string } = {}
+    opts: { idempotencyKey?: string; key?: string } = {}
   ): Promise<WithdrawWireResponse> {
     const { data } = await this.request<{ response: WithdrawWireResponse }>({
       method: "POST",
       path: "/api/withdraw",
-      bucket: `withdraw:${this.apiKey}`,
+      scope: "withdraw",
       throttle: this.createThrottle,
       body,
-      idempotencyKey: opts.idempotencyKey ?? DepixApiClient.newIdempotencyKey()
+      idempotencyKey: opts.idempotencyKey ?? DepixApiClient.newIdempotencyKey(),
+      ...(opts.key !== undefined ? { key: opts.key } : {})
     });
     if (!data?.response?.withdrawalId) {
       throw new DepixApiError(
@@ -282,22 +363,24 @@ export class DepixApiClient {
 
   // ─── status reads ────────────────────────────────────────────────────────
 
-  async getDeposit(id: string): Promise<StatusReadResponse> {
+  async getDeposit(id: string, opts: { key?: string } = {}): Promise<StatusReadResponse> {
     const { data } = await this.request<StatusReadResponse>({
       method: "GET",
       path: `/api/deposits/${encodeURIComponent(id)}`,
-      bucket: `deposit-status:${this.apiKey}`,
-      throttle: this.readThrottle
+      scope: "deposit-status",
+      throttle: this.readThrottle,
+      ...(opts.key !== undefined ? { key: opts.key } : {})
     });
     return data;
   }
 
-  async getWithdrawal(id: string): Promise<StatusReadResponse> {
+  async getWithdrawal(id: string, opts: { key?: string } = {}): Promise<StatusReadResponse> {
     const { data } = await this.request<StatusReadResponse>({
       method: "GET",
       path: `/api/withdrawals/${encodeURIComponent(id)}`,
-      bucket: `withdraw-status:${this.apiKey}`,
-      throttle: this.readThrottle
+      scope: "withdraw-status",
+      throttle: this.readThrottle,
+      ...(opts.key !== undefined ? { key: opts.key } : {})
     });
     return data;
   }
@@ -312,7 +395,7 @@ export class DepixApiClient {
     const { data } = await this.request<MeWireResponse>({
       method: "GET",
       path: "/api/me",
-      bucket: `me:${this.apiKey}`,
+      scope: "me",
       throttle: this.readThrottle
     });
     return data;
@@ -348,7 +431,7 @@ export class DepixApiClient {
     const { data } = await this.request<MerchantUpdateWireResponse>({
       method: "PATCH",
       path: "/api/merchants/me",
-      bucket: `merchant-update:${this.apiKey}`,
+      scope: "merchant-update",
       throttle: this.merchantUpdateThrottle,
       body
     });
@@ -362,12 +445,21 @@ export class DepixApiClient {
     let rateLimitedAttempts = 0;
     let inFlightAttempts = 0;
 
+    // ONE identity per logical operation: resolved here, before the first
+    // attempt, and pinned across throttle waits and retries. A key that changes
+    // mid-flight (activate_key, register_account) applies to the NEXT operation
+    // — never to a retry of this one, which may carry an Idempotency-Key that a
+    // record or a gate already committed to under this key.
+    const key = spec.key ?? this.currentKey();
+    if (key === undefined) throw apiKeyRequiredError();
+    const bucket = `${spec.scope}:${key}`;
+
     for (;;) {
       // Pace (and space retries) through the per-(endpoint, key) budget.
-      await spec.throttle.acquire(spec.bucket);
+      await spec.throttle.acquire(bucket);
 
       const headers: Record<string, string> = {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${key}`,
         Accept: "application/json"
       };
       if (spec.body !== undefined) headers["Content-Type"] = "application/json";

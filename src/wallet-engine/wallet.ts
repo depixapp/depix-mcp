@@ -35,6 +35,10 @@ import {
 } from "./engine/lwk.js";
 import {
   DepixApiClient,
+  apiKeyRequiredError,
+  keyFingerprint,
+  keyModeOf,
+  type ApiKeySource,
   type FetchLike,
   type StatusReadResponse,
   type WithdrawRequestBody,
@@ -185,7 +189,7 @@ export interface OpenOptions {
    */
   quotes?: QuotesSource;
   /** Default: $DEPIX_API_KEY (sk_test_/sk_live_) — required for deposit/withdraw/waitFor. */
-  apiKey?: string;
+  apiKey?: ApiKeySource;
   /** Default: $DEPIX_API_BASE ?? https://api.depixapp.com. */
   apiBase?: string;
   /** Advanced/testing: inject the fetch implementation of the API client. */
@@ -474,7 +478,7 @@ export interface PendingWithdrawalItem extends PendingItemBase {
   rail: "withdrawal";
   withdrawalId: string | null;
   txid: string | null;
-  /** The key mode that created it; a "requested" record is only resumed under that same mode. */
+  /** The key mode that created it. A "requested" record is resumed only under the key that created it (its fingerprint; the mode alone for older records). */
   keyMode?: "live" | "test" | null;
 }
 
@@ -571,7 +575,11 @@ async function resolveUnlockPassphrase(
   return readUnlockKey(dataDir, unlockDeps);
 }
 
-function resolveApiKey(explicit?: string): string | undefined {
+function resolveApiKey(explicit?: ApiKeySource): ApiKeySource | undefined {
+  // A function source is authoritative: whoever passes one already decided the
+  // whole precedence (the unified server's ladder puts the env key first), so
+  // falling back to $DEPIX_API_KEY behind its back would defeat its decision.
+  if (typeof explicit === "function") return explicit;
   return explicit ?? process.env.DEPIX_API_KEY;
 }
 
@@ -701,7 +709,7 @@ interface WalletParts {
   guardrailConfig: ResolvedGuardrailConfig;
   /** Injected quotes source, or undefined for the default QuotesClient (§4.4). */
   quotes?: QuotesSource;
-  apiKey?: string;
+  apiKey?: ApiKeySource;
   apiBase?: string;
   apiFetch?: FetchLike;
   /** SideSwap client/signer/clock injection for wallet.convert.* (§5). */
@@ -745,9 +753,9 @@ export class DepixWallet {
   readonly merchant: MerchantNamespace;
   private readonly logger: Logger;
   private readonly passphrase: string | undefined;
-  // Pix flows (PR2) — null when no apiKey / no seed. deposit/withdraw/waitFor
-  // surface a clear error rather than a confusing crash when they are missing.
-  private readonly api: DepixApiClient | null;
+  // Pix flows (PR2). Always present: the credential is read per request, and a
+  // keyless call fails with API_KEY_REQUIRED before any network I/O.
+  private readonly api: DepixApiClient;
   private readonly pending: PendingWithdrawals | null;
   // Boltz conversion holder (§2.3, §5.3). null on a view-only/wiped wallet (no
   // seed to sign the L-BTC lockup / no key to authenticate the swap store). The
@@ -834,16 +842,15 @@ export class DepixWallet {
       ...(parts.sync?.coldStartTimeoutMs !== undefined ? { coldStartTimeoutMs: parts.sync.coldStartTimeoutMs } : {}),
       logger: this.logger
     });
-    // API client — only when an apiKey is configured. Its base defaults to the
-    // canonical host inside the client.
-    this.api = parts.apiKey
-      ? new DepixApiClient({
-          apiKey: parts.apiKey,
-          apiBase: parts.apiBase,
-          fetch: parts.apiFetch,
-          logger: this.logger
-        })
-      : null;
+    // API client — always present; the credential is read on every request, so
+    // a key configured later (an agent registering its account, `activate_key`)
+    // is used on the very next call. Its base defaults to the canonical host.
+    this.api = new DepixApiClient({
+      apiKey: parts.apiKey ?? (() => undefined),
+      apiBase: parts.apiBase,
+      fetch: parts.apiFetch,
+      logger: this.logger
+    });
     // Pending-withdrawals store — needs the seed-store key material (passphrase
     // + wallet salt). A view-only/wiped wallet cannot withdraw, so it has none.
     this.pending =
@@ -2116,10 +2123,13 @@ export class DepixWallet {
     const idempotencyKey = DepixApiClient.newIdempotencyKey();
     // Persist BEFORE the POST so a crash mid-request resumes with the SAME
     // Idempotency-Key (§3.2.9). Nothing is signed yet — no double-pay window.
-    await pending.putRequested({ idempotencyKey, request, keyMode: api.keyMode });
+    // ONE key for the whole operation: the one stamped on the record is the one
+    // the request goes out under, whatever the resolver answers meanwhile.
+    const key = api.credential();
+    await pending.putRequested({ idempotencyKey, request, keyMode: keyModeOf(key), keyFingerprint: keyFingerprint(key) });
     let wire;
     try {
-      wire = await api.createWithdraw(request, { idempotencyKey });
+      wire = await api.createWithdraw(request, { idempotencyKey, key });
     } catch (err) {
       // Only a DEFINITIVE rejection (4xx other than 409) means the server did
       // NOT create the withdrawal — drop the still-unsigned record. A TRANSIENT
@@ -2198,24 +2208,34 @@ export class DepixWallet {
           await this.pending.remove(record.idempotencyKey).catch(() => {});
         } else {
           // "requested": re-POST same key (authenticated replay) + re-validate.
-          if (!this.api) {
+          if (!this.api.hasCredential()) {
             summary.failed++;
             continue;
           }
-          if (record.keyMode !== undefined && record.keyMode !== this.api.keyMode) {
-            // A sandbox exercise must never be replayed as a live payout (nor a
-            // live request under the sandbox key). The record stays: it resumes
-            // once the key it was created under is active again.
+          // Only the key that created the request may replay it: a sandbox
+          // exercise must never become a live payout, and a request opened
+          // under one account must not be re-booked under another. Records
+          // from before the fingerprint existed fall back to the key mode. The
+          // key that passes the gate is pinned onto the request itself.
+          const key = this.api.credential();
+          const activeMode = keyModeOf(key);
+          const otherKey =
+            record.keyFingerprint !== undefined
+              ? record.keyFingerprint !== keyFingerprint(key)
+              : record.keyMode !== undefined && record.keyMode !== activeMode;
+          if (otherKey) {
+            // The record stays: it resumes once its own key is active again.
             summary.failed++;
-            this.logger.warn("pending withdrawal belongs to another key mode — not resumed", {
+            this.logger.warn("pending withdrawal belongs to another key — not resumed", {
               idempotencyKey: record.idempotencyKey,
-              recordKeyMode: record.keyMode,
-              activeKeyMode: this.api.keyMode
+              recordKeyMode: record.keyMode ?? null,
+              activeKeyMode: activeMode
             });
             continue;
           }
           const wire = await this.api.createWithdraw(record.request, {
-            idempotencyKey: record.idempotencyKey
+            idempotencyKey: record.idempotencyKey,
+            key
           });
           await this.processWithdrawResponse(wire, record.idempotencyKey);
           summary.reposted++;
@@ -2513,7 +2533,7 @@ export class DepixWallet {
       dataDir: redactHomePath(this.dataDir),
       backupConfirmed: this.isBackupConfirmed(),
       hasSeed: Boolean(this.file.encryptedSeed),
-      apiKeyConfigured: this.api !== null,
+      apiKeyConfigured: this.api.hasCredential(),
       sync: {
         lastScanAt: meta.lastScanAt ?? null,
         lastSuccessAt: meta.lastSuccessAt ?? null,
@@ -2728,12 +2748,7 @@ export class DepixWallet {
   }
 
   private requireApi(): DepixApiClient {
-    if (!this.api) {
-      throw new WalletError(
-        "API_KEY_REQUIRED",
-        "Set apiKey (or $DEPIX_API_KEY) on open()/create() to use deposit(), withdraw() and the waiters."
-      );
-    }
+    if (!this.api.hasCredential()) throw apiKeyRequiredError();
     return this.api;
   }
 
@@ -2915,12 +2930,11 @@ export class DepixWallet {
   private assertOpen(): void {
     if (!this.lock) {
       // Its own code, not WALLET_NOT_FOUND: the wallet exists on disk — this
-      // instance was closed under a caller (the unified server reopens the
-      // wallet when its credential changes), and the same call succeeds on the
-      // reopened one. Marked retryable so a host retries instead of re-init.
+      // instance was closed under a caller (shutdown, or an explicit close()).
+      // Retryable so a host retries on a fresh instance instead of re-init.
       throw new WalletError(
         "WALLET_CLOSED",
-        "This wallet instance is closed (the server reopened the wallet with a new credential) — retry the call.",
+        "This wallet instance is closed — retry the call on the current instance.",
         { details: { retryable: true } }
       );
     }

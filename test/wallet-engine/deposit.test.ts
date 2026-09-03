@@ -99,6 +99,23 @@ describe("deposit() flow", () => {
     expect(res.id).toBe("sandbox_3uw_abcd");
   });
 
+  it("a function credential: keyless at first, then the SAME instance deposits once a key is in force", async () => {
+    const { fetch, calls } = mockFetch([okDeposit("dep_late")]);
+    let current: string | undefined = undefined;
+    wallet = await DepixWallet.restore({ dataDir, passphrase: PASSPHRASE, mnemonic: KNOWN_MNEMONIC, apiKey: () => current, fetch });
+    await expect(wallet.deposit({ amountCents: 1000, payerTaxNumber: "12345678909" })).rejects.toSatisfy((err: unknown) =>
+      isDepixSdkError(err, "API_KEY_REQUIRED")
+    );
+    expect(calls).toHaveLength(0);
+    expect((await wallet.diagnostics()).apiKeyConfigured).toBe(false);
+
+    current = "sk_live_late"; // register_account / activate_key just happened
+    const res = await wallet.deposit({ amountCents: 1000, payerTaxNumber: "12345678909" });
+    expect(res.id).toBe("dep_late");
+    expect(calls[0]!.headers["Authorization"]).toBe("Bearer sk_live_late");
+    expect((await wallet.diagnostics()).apiKeyConfigured).toBe(true);
+  });
+
   it("requires an apiKey — API_KEY_REQUIRED without one", async () => {
     wallet = await DepixWallet.restore({ dataDir, passphrase: PASSPHRASE, mnemonic: KNOWN_MNEMONIC });
     await expect(wallet.deposit({ amountCents: 1000, payerTaxNumber: "1" })).rejects.toSatisfy((err: unknown) =>

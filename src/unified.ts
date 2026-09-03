@@ -178,9 +178,8 @@ export interface OpenedWallet extends McpWalletFacade {
 export interface WalletRuntime {
   /** The engine's `getWallet` resolver: null when no wallet exists on this machine. */
   getWallet(): Promise<McpWalletFacade | null>;
-  /** Crash-resume summary of the LATEST open — a credential-change reopen runs resume again and replaces it. */
+  /** Crash-resume summary captured at the (single) open. */
   bootResume(): ResumeSummary;
-  /** Same lifetime as bootResume: the latest open's summary, not the first. */
   bootConversions(): ConversionResumeSummary;
   /** Close an opened wallet (releases the dataDir lock). No-op when never opened. */
   close(): Promise<void>;
@@ -208,12 +207,11 @@ export interface WalletEngineModule {
 
 /**
  * The credential the WALLET may authenticate with, out of what the resolver
- * chose: an API key, never an owner login's OAuth access token. The engine
- * binds its API client to the string it is opened with, and an access token
- * is short-lived — the renewal lives in the gateway client's 401 hook, which
- * the wallet's client has no path to. Handing the wallet an expiring token
- * would trade a clear API_KEY_REQUIRED for an opaque 401 minutes later, so
- * under the owner persona the wallet stays keyless and its own error speaks.
+ * chose: an API key, never an owner login's OAuth access token. An access
+ * token is short-lived and its renewal lives in the gateway client's 401 hook,
+ * which the wallet's client has no path to; handing the wallet an expiring
+ * token would trade a clear API_KEY_REQUIRED for an opaque 401 minutes later,
+ * so under the owner persona the wallet stays keyless and its own error speaks.
  */
 export function walletApiKey(credential: ResolvedCredential | undefined): string | undefined {
   return credential?.kind === "api_key" ? credential.token : undefined;
@@ -229,12 +227,12 @@ export function walletApiKey(credential: ResolvedCredential | undefined): string
  * withdraw() while every gateway tool worked, because only the gateway half
  * consulted the resolver.
  *
- * The STORED credential travels only to an allowlisted origin: the engine's
- * client has no gate of its own, and the gateway promises a misconfigured
- * DEPIX_API_BASE can never receive a key (config.ts). Off the allowlist this
- * passes no key — a DEPIX_API_KEY in the environment still reaches the engine
- * through its own fallback, as it always did; closing that belongs in the
- * engine's client, with the per-request key resolution the gateway already has.
+ * The credential travels only to an allowlisted origin: the engine's client
+ * has no gate of its own, and the gateway promises a misconfigured
+ * DEPIX_API_BASE can never receive a key (config.ts). Off the allowlist the
+ * function answers undefined, and the engine applies no $DEPIX_API_KEY
+ * fallback to a function source — so no key, stored or from the environment,
+ * reaches a non-allowlisted host.
  */
 export function createWalletOpener(deps: {
   resolveApiKey: () => string | undefined;
@@ -248,7 +246,11 @@ export function createWalletOpener(deps: {
   return async () => {
     const { DepixWallet } = await load();
     return DepixWallet.open({
-      apiKey: credentialAllowed ? deps.resolveApiKey() : undefined,
+      // A function, read by the engine on EVERY request: a key that appears or
+      // changes mid-session (register_account, activate_key) is used on the
+      // next call, with no re-open. Off the allowlist it answers undefined —
+      // and a function source has no $DEPIX_API_KEY fallback behind it.
+      apiKey: () => (credentialAllowed ? deps.resolveApiKey() : undefined),
       resumePendingWithdrawalsOnOpen: false,
       resumePendingConversionsOnOpen: false,
     });
@@ -256,55 +258,28 @@ export function createWalletOpener(deps: {
 }
 
 /**
- * The wallet's `open` thunk, with the resolved credential wired in.
- *
- * Extracted (rather than inlined at the call site) so the WIRING is testable:
- * `DepixWallet.open()` silently falls back to $DEPIX_API_KEY alone, so an agent
- * that self-registered — its sk_ living ENCRYPTED in the credential store and
- * never in the environment — used to get API_KEY_REQUIRED on deposit()/
- * withdraw() while every gateway tool worked, because only the gateway half
- * consulted the resolver.
- *
- * `resolveApiKey` is called at OPEN time, not at boot: `account use` can change
- * the active persona mid-session.
+ * Opens the wallet ONCE per process and serializes concurrent first calls. The
+ * credential is a function the engine reads on every request
+ * (createWalletOpener), so a key that appears or changes mid-session needs no
+ * re-open. Crash-resume runs at that single open: a "requested" withdrawal
+ * held for another key (or for lack of one) is re-driven by `wallet_recover`
+ * or by the next boot under its own key.
  */
 export function createWalletRuntime(deps: {
   open: () => Promise<OpenedWallet>;
-  /**
-   * The credential the wallet authenticates with. The engine binds its API
-   * client at open, so when this answer changes — register_account minting a
-   * key after the wallet was already opened for the payout address is the
-   * everyday case — the cached wallet is closed and reopened: the only way the
-   * very next deposit()/withdraw() authenticates as the new identity.
-   */
-  credential?: () => string | undefined;
   onError?: (event: string, err: unknown) => void;
 }): WalletRuntime {
-  // A caller that already holds the previous instance runs to completion on it;
-  // once closed, its next call fails with the engine's WALLET_CLOSED, which is
-  // retryable — the retry lands on the reopened wallet.
   let opened: OpenedWallet | null = null;
-  let openedWith: string | undefined;
   let facts: WalletBootFacts = { bootResume: EMPTY_RESUME, bootConversions: EMPTY_CONVERSIONS };
   // One open at a time: concurrent first calls must not race two engines onto
   // one dataDir (the dir lock would refuse the second, as a confusing error).
   let inFlight: Promise<OpenedWallet | null> | null = null;
 
-  async function openOrReuse(): Promise<OpenedWallet | null> {
-    const credential = deps.credential?.();
-    if (opened !== null) {
-      if (credential === openedWith) return opened;
-      const stale = opened;
-      opened = null;
-      try {
-        await stale.close();
-      } catch (err) {
-        // Reopening still has to happen: a wallet bound to the wrong credential
-        // is the bug this exists to fix. The engine's close() swallows its own
-        // failures today, so this is the contract, not an expected path.
-        deps.onError?.("wallet_close_failed", err);
-      }
-    }
+  // The wallet is opened ONCE per process. Its credential is a function the
+  // engine reads on every request (createWalletOpener), so a key that changes
+  // mid-session needs no re-open and never strands a caller on a closed instance.
+  async function openOnce(): Promise<OpenedWallet | null> {
+    if (opened !== null) return opened;
     let wallet: OpenedWallet;
     try {
       wallet = await deps.open();
@@ -329,14 +304,13 @@ export function createWalletRuntime(deps: {
       deps.onError?.("boot_conversion_resume_failed", err);
     }
     opened = wallet;
-    openedWith = credential;
     return wallet;
   }
 
   return {
     getWallet() {
       if (inFlight === null) {
-        inFlight = openOrReuse().finally(() => {
+        inFlight = openOnce().finally(() => {
           inFlight = null;
         });
       }

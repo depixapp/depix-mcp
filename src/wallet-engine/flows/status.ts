@@ -70,7 +70,11 @@ export function waitForDeposit(
   id: string,
   options: WaitOptions = {}
 ): Promise<StatusReadResponse> {
-  return pollUntilTerminal(() => api.getDeposit(id), isDepositTerminal, `deposit ${id}`, options);
+  // One identity for the whole wait: the resource belongs to the account the
+  // wait began under; a key switched meanwhile must not turn a healthy wait
+  // into a "not found" from another account.
+  const key = api.credential();
+  return pollUntilTerminal(() => api.getDeposit(id, { key }), isDepositTerminal, `deposit ${id}`, options);
 }
 
 export function waitForWithdrawal(
@@ -78,8 +82,9 @@ export function waitForWithdrawal(
   id: string,
   options: WaitOptions = {}
 ): Promise<StatusReadResponse> {
+  const key = api.credential();
   return pollUntilTerminal(
-    () => api.getWithdrawal(id),
+    () => api.getWithdrawal(id, { key }),
     isWithdrawTerminal,
     `withdrawal ${id}`,
     options

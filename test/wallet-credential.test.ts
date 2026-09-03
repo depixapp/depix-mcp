@@ -1,12 +1,13 @@
 // The wallet half must authenticate with the SAME credential as the gateway half.
 //
-// The bug this pins: `DepixWallet.open()` falls back to $DEPIX_API_KEY alone, so
+// The bug this pins: `DepixWallet.open()` used to be called without apiKey, so
 // an agent that self-registered — its sk_ living ENCRYPTED in the credential
 // store and never in the environment — got API_KEY_REQUIRED on
-// deposit()/withdraw() while every gateway tool worked, because only the gateway
-// half consulted the CredentialResolver. A resolver unit test cannot see it (the
-// resolver resolves fine): what breaks is the WIRING, and the cached-wallet
-// lifetime around it, so that is what these drive — with the real resolver.
+// deposit()/withdraw() while every gateway tool worked. Since 2.8.6 the wallet
+// receives a FUNCTION the engine reads on every request, so a key that appears
+// or changes mid-session is in force on the next call — no re-open. These tests
+// drive the real CredentialResolver through the real opener and runtime; only
+// the engine is a fake that records what it was opened with.
 
 import { describe, expect, it } from "vitest";
 import { CredentialResolver } from "../src/credentials.js";
@@ -48,18 +49,23 @@ function spyEngine() {
   return { opens, load, closedCount: () => closed };
 }
 
+/** What the engine would see if it read the credential right now. */
+function keyInForce(options: WalletOpenOptions | undefined): string | undefined {
+  const source = options?.apiKey;
+  return typeof source === "function" ? source() : source;
+}
+
 function runtimeFor(credentials: CredentialResolver, apiBase = API) {
   const engine = spyEngine();
   const credential = () => walletApiKey(credentials.resolveCredential());
   const runtime = createWalletRuntime({
     open: createWalletOpener({ resolveApiKey: credential, apiBase, load: engine.load }),
-    credential,
   });
   return { runtime, ...engine };
 }
 
-describe("the wallet opens with the resolved credential", () => {
-  it("passes the STORED agent key when the environment has none (the self-onboarding path)", async () => {
+describe("the wallet is handed the resolved credential as a function", () => {
+  it("the STORED agent key is in force when the environment has none (the self-onboarding path)", async () => {
     const credentials = new CredentialResolver({ envKey: undefined });
     credentials.setActiveKey("sk_live_from_store");
     const { runtime, opens } = runtimeFor(credentials);
@@ -67,84 +73,72 @@ describe("the wallet opens with the resolved credential", () => {
     await runtime.getWallet();
 
     expect(opens).toHaveLength(1);
-    expect(opens[0]?.apiKey).toBe("sk_live_from_store");
+    expect(typeof opens[0]?.apiKey).toBe("function");
+    expect(keyInForce(opens[0])).toBe("sk_live_from_store");
     // The auto-resume flags are the engine bin's contract and must survive.
     expect(opens[0]?.resumePendingWithdrawalsOnOpen).toBe(false);
     expect(opens[0]?.resumePendingConversionsOnOpen).toBe(false);
   });
 
-  it("prefers the environment key over the store, matching the gateway's precedence", async () => {
+  it("the environment key wins over the store, matching the gateway's precedence", async () => {
     const credentials = new CredentialResolver({ envKey: "sk_live_from_env" });
     credentials.setActiveKey("sk_live_from_store");
     const { runtime, opens } = runtimeFor(credentials);
-
     await runtime.getWallet();
-
-    expect(opens[0]?.apiKey).toBe("sk_live_from_env");
+    expect(keyInForce(opens[0])).toBe("sk_live_from_env");
   });
 
   it("keeps the wallet keyless under the owner login — an access token is not an API key", () => {
     const credentials = new CredentialResolver({ envKey: undefined });
     credentials.setOwnerToken("eyJhbGciOi.owner-access-token.sig");
-    // Fixture sanity: the resolver really did pick the owner persona.
     expect(credentials.resolveCredential()).toEqual({ token: "eyJhbGciOi.owner-access-token.sig", kind: "oauth" });
-
     expect(walletApiKey(credentials.resolveCredential())).toBeUndefined();
   });
 
-  it("withholds the STORED credential from a non-allowlisted DEPIX_API_BASE (an env key follows the engine's own fallback)", async () => {
+  it("answers undefined for a non-allowlisted DEPIX_API_BASE, even with an env key — no fallback behind it", async () => {
     const credentials = new CredentialResolver({ envKey: "sk_live_from_env" });
-
     const attacker = runtimeFor(credentials, "https://attacker.example");
     await attacker.runtime.getWallet();
-    expect(attacker.opens[0]).toHaveProperty("apiKey", undefined);
+    expect(keyInForce(attacker.opens[0])).toBeUndefined();
 
-    // A path or trailing slash on the real origin is still the real origin.
     const real = runtimeFor(credentials, `${API}/`);
     await real.runtime.getWallet();
-    expect(real.opens[0]?.apiKey).toBe("sk_live_from_env");
+    expect(keyInForce(real.opens[0])).toBe("sk_live_from_env");
   });
 });
 
-describe("the runtime follows the credential across the wallet's lifetime", () => {
-  it("reopens the cached wallet when register_account mints a key after it was opened keyless", async () => {
+describe("a credential that changes mid-session needs no re-open", () => {
+  it("register_account: opened keyless for the payout address, the key minted afterwards is in force on the next read", async () => {
     const credentials = new CredentialResolver({ envKey: undefined });
     const { runtime, opens, closedCount } = runtimeFor(credentials);
 
-    // register_account: wallet opened for the payout address, no key yet…
     await runtime.getWallet();
-    expect(opens[0]).toHaveProperty("apiKey", undefined);
-    // …then the minted key is activated in-session.
+    expect(keyInForce(opens[0])).toBeUndefined();
+
     credentials.setActiveKey("sk_test_minted_by_register_account");
-
-    // The next wallet call must authenticate — without a restart.
     await runtime.getWallet();
-    expect(opens).toHaveLength(2);
-    expect(opens[1]?.apiKey).toBe("sk_test_minted_by_register_account");
-    expect(closedCount()).toBe(1);
 
-    // Unchanged credential: no churn.
-    await runtime.getWallet();
-    expect(opens).toHaveLength(2);
+    expect(opens).toHaveLength(1);
+    expect(closedCount()).toBe(0);
+    expect(keyInForce(opens[0])).toBe("sk_test_minted_by_register_account");
   });
 
-  it("follows a key-to-key switch too — activate_key's case (sk_A → sk_B)", async () => {
+  it("activate_key: sk_A → sk_B is seen by the same instance", async () => {
     const credentials = new CredentialResolver({ envKey: undefined });
-    const { runtime, opens, closedCount } = runtimeFor(credentials);
     credentials.setActiveKey("sk_test_A");
+    const { runtime, opens, closedCount } = runtimeFor(credentials);
     await runtime.getWallet();
     credentials.setActiveKey("sk_live_B");
     await runtime.getWallet();
-    expect(opens.map((o) => o?.apiKey)).toEqual(["sk_test_A", "sk_live_B"]);
-    expect(closedCount()).toBe(1);
+    expect(opens).toHaveLength(1);
+    expect(closedCount()).toBe(0);
+    expect(keyInForce(opens[0])).toBe("sk_live_B");
   });
 
   it("opens once for concurrent first calls", async () => {
     const credentials = new CredentialResolver({ envKey: "sk_test_env" });
     const { runtime, opens } = runtimeFor(credentials);
-
     const [a, b, c] = await Promise.all([runtime.getWallet(), runtime.getWallet(), runtime.getWallet()]);
-
     expect(opens).toHaveLength(1);
     expect(a).toBe(b);
     expect(b).toBe(c);

@@ -46,6 +46,12 @@ export interface PendingWithdrawalRecord {
    * records written before this field existed — those resume as before.
    */
   keyMode?: "live" | "test";
+  /**
+   * Fingerprint of the exact key that created the request (api/client.ts
+   * keyFingerprint). Resume replays a "requested" record only under that same
+   * key — the mode alone cannot tell two live accounts apart.
+   */
+  keyFingerprint?: string;
 }
 
 interface Envelope {
@@ -165,6 +171,7 @@ export class PendingWithdrawals {
     idempotencyKey: string;
     request: WithdrawRequestBody;
     keyMode?: "live" | "test";
+    keyFingerprint?: string;
   }): Promise<void> {
     await this.mutex.runExclusive(async () => {
       const record: PendingWithdrawalRecord = {
@@ -172,7 +179,8 @@ export class PendingWithdrawals {
         createdAt: this.now(),
         state: "requested",
         request: input.request,
-        ...(input.keyMode !== undefined ? { keyMode: input.keyMode } : {})
+        ...(input.keyMode !== undefined ? { keyMode: input.keyMode } : {}),
+        ...(input.keyFingerprint !== undefined ? { keyFingerprint: input.keyFingerprint } : {})
       };
       const envelopes = (await this.readEnvelopes()).filter((e) => e.id !== input.idempotencyKey);
       envelopes.push(await this.encrypt(record));

@@ -126,20 +126,19 @@ async function serve(): Promise<void> {
   // their summaries through wallet_status, exactly as the engine's own bin does.
   // The wallet authenticates with the SAME ladder as the gateway half (env >
   // `account use` > the agent's own stored key), minus the owner login — see
-  // walletApiKey. The runtime reads the credential too: when it changes, the
-  // cached wallet is reopened with the new one.
+  // walletApiKey. The engine reads it on every request, so a key created or
+  // switched mid-session is in force on the next call — no re-open.
   const apiBase = resolveApiBase();
   if (!isAllowedApiOrigin(apiBase)) {
     stderr(
       "depix-mcp: DEPIX_API_BASE points to an origin that is not allowlisted. The API-backed tools refuse every " +
-        "request before any network call, and the wallet is not given the stored credential (a DEPIX_API_KEY in " +
-        "the environment still follows the engine's own fallback).\n",
+        "request before any network call, and the wallet is given no credential at all — stored or from the " +
+        "environment.\n",
     );
   }
   const walletCredential = () => walletApiKey(credentials.resolveCredential());
   const runtime = createWalletRuntime({
     open: createWalletOpener({ resolveApiKey: walletCredential, apiBase }),
-    credential: walletCredential,
     onError: (event, err) => logger.error(event, { name: err instanceof Error ? err.name : "unknown" }),
   });
 

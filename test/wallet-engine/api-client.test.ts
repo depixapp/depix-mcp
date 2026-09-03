@@ -2,6 +2,7 @@
 // Fully offline — a mock fetch and a fake clock that advances on sleep.
 import { describe, expect, it } from "vitest";
 import { DepixApiClient } from "../../src/wallet-engine/api/client.js";
+import { waitForDeposit } from "../../src/wallet-engine/flows/status.js";
 import { Throttle } from "../../src/wallet-engine/api/throttle.js";
 import { DepixApiError, isDepixSdkError } from "../../src/wallet-engine/errors.js";
 import { fakeClock, mockFetch } from "./support/mock.js";
@@ -208,5 +209,87 @@ describe("throttle (§3.4)", () => {
     expect(clock.now()).toBe(0);
     await throttle.acquire("deposit-status:key");
     expect(clock.now()).toBeGreaterThanOrEqual(60_000);
+  });
+});
+
+describe("a function credential is read on every request", () => {
+  it("uses the key in force at call time — a key that changes mid-session is used on the next call", async () => {
+    const mock = mockFetch([
+      { json: { async: false, response: { qrCopyPaste: "QR", qrImageUrl: null, id: "dep_1" } } },
+      { json: { async: false, response: { qrCopyPaste: "QR", qrImageUrl: null, id: "dep_2" } } },
+    ]);
+    let current: string | undefined = "sk_test_first";
+    const clock = fakeClock();
+    const client = new DepixApiClient({ apiKey: () => current, fetch: mock.fetch, now: clock.now, sleep: clock.sleep, random: () => 0 });
+    await client.createDeposit(DEPOSIT_BODY, { idempotencyKey: "k1" });
+    current = "sk_live_second";
+    await client.createDeposit(DEPOSIT_BODY, { idempotencyKey: "k2" });
+    expect(mock.calls.map((c) => c.headers["Authorization"])).toEqual(["Bearer sk_test_first", "Bearer sk_live_second"]);
+    expect(client.keyMode).toBe("live");
+  });
+
+  it("pins ONE identity per operation: a key that changes during a retry backoff does not change the in-flight request", async () => {
+    const mock = mockFetch([
+      { status: 503, json: { error: "flaky" } },
+      { json: { async: false, response: { qrCopyPaste: "QR", qrImageUrl: null, id: "dep_1" } } },
+      { json: { async: false, response: { qrCopyPaste: "QR", qrImageUrl: null, id: "dep_2" } } },
+    ]);
+    let current: string | undefined = "sk_test_A";
+    const clock = fakeClock();
+    const client = new DepixApiClient({ apiKey: () => current, fetch: mock.fetch, now: clock.now, sleep: clock.sleep, random: () => 0 });
+    const inFlight = client.createDeposit(DEPOSIT_BODY, { idempotencyKey: "idem-race" });
+    current = "sk_live_B"; // activate_key lands while the first attempt is in flight
+    await inFlight;
+    expect(mock.calls.map((c) => c.headers["Authorization"])).toEqual(["Bearer sk_test_A", "Bearer sk_test_A"]);
+    expect(mock.calls.map((c) => c.headers["Idempotency-Key"])).toEqual(["idem-race", "idem-race"]);
+    // The NEXT operation is the one that sees the new key.
+    await client.createDeposit(DEPOSIT_BODY, { idempotencyKey: "idem-next" });
+    expect(mock.calls[2]!.headers["Authorization"]).toBe("Bearer sk_live_B");
+  });
+
+  it("a waiter keeps the identity it began under across polls, even if the resolver flips mid-wait", async () => {
+    const status = (s: string) => ({ json: { id: "dep_1", type: "deposit", amount_cents: 1000, status: s, created_at: "x", updated_at: "x", rejection_reasons: [] } });
+    const mock = mockFetch([status("pending"), status("pending"), status("depix_sent")]);
+    let current: string | undefined = "sk_test_A";
+    const client = new DepixApiClient({ apiKey: () => current, fetch: mock.fetch });
+    const wait = waitForDeposit(client, "dep_1", { intervalMs: 1, sleep: async () => undefined });
+    current = "sk_live_B"; // activate_key lands during the wait
+    const final = await wait;
+    expect(final.status).toBe("depix_sent");
+    expect(mock.calls.map((c) => c.headers["Authorization"])).toEqual(["Bearer sk_test_A", "Bearer sk_test_A", "Bearer sk_test_A"]);
+  });
+
+  it("a caller may pin the key it already committed to (`key`), and credential() throws when there is none", async () => {
+    const mock = mockFetch([{ json: { async: false, response: { qrCopyPaste: "QR", qrImageUrl: null, id: "dep_1" } } }]);
+    let current: string | undefined = "sk_test_A";
+    const client = new DepixApiClient({ apiKey: () => current, fetch: mock.fetch });
+    const pinned = client.credential();
+    current = "sk_live_B";
+    await client.createDeposit(DEPOSIT_BODY, { idempotencyKey: "k", key: pinned });
+    expect(mock.calls[0]!.headers["Authorization"]).toBe("Bearer sk_test_A");
+    current = undefined;
+    expect(() => client.credential()).toThrow(/API_KEY_REQUIRED|apiKey/);
+  });
+
+  it("with no key in force it fails with API_KEY_REQUIRED before any network I/O", async () => {
+    const mock = mockFetch([]);
+    let current: string | undefined = undefined;
+    const client = new DepixApiClient({ apiKey: () => current, fetch: mock.fetch });
+    expect(client.hasCredential()).toBe(false);
+    expect(client.keyFingerprint).toBeUndefined();
+    await expect(client.createDeposit(DEPOSIT_BODY, { idempotencyKey: "k" })).rejects.toSatisfy((err: unknown) =>
+      isDepixSdkError(err, "API_KEY_REQUIRED")
+    );
+    expect(mock.calls).toHaveLength(0);
+    current = "sk_test_now";
+    expect(client.hasCredential()).toBe(true);
+    expect(client.keyFingerprint).toHaveLength(16);
+  });
+
+  it("a string key still behaves as before (constant), and an empty one is refused at construction", () => {
+    expect(() => new DepixApiClient({ apiKey: "", fetch: mockFetch([]).fetch })).toThrow(TypeError);
+    const client = new DepixApiClient({ apiKey: "sk_live_x", fetch: mockFetch([]).fetch });
+    expect(client.hasCredential()).toBe(true);
+    expect(client.keyMode).toBe("live");
   });
 });
