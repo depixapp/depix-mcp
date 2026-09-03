@@ -175,6 +175,23 @@ describe("open() (spec §2.4)", () => {
     expect(reopened.getDescriptor()).toBe(wallet.getDescriptor());
   });
 
+  it("a closed instance fails with WALLET_CLOSED (retryable), never WALLET_NOT_FOUND", async () => {
+    const { wallet } = await DepixWallet.create({
+      dataDir,
+      passphrase: PASSPHRASE,
+      mnemonicSecured: true
+    });
+    track(wallet);
+    await wallet.close();
+    // The unified server closes an instance under a caller to reopen it with a
+    // new credential: the caller must be told to retry, not to re-init.
+    await expect(wallet.getBalances()).rejects.toSatisfy(
+      (err: unknown) =>
+        isDepixSdkError(err, "WALLET_CLOSED") &&
+        (err as { details?: { retryable?: boolean } }).details?.retryable === true
+    );
+  });
+
   it("reads passphrase and dataDir from the environment", async () => {
     const { wallet } = await DepixWallet.create({
       dataDir,

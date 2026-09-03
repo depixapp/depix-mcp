@@ -25,6 +25,15 @@ export const MAX_WAIT_CEILING_SECONDS = 790;
 // to widen it. To enable a staging origin, add it here in a reviewed change.
 export const ALLOWED_API_ORIGINS: readonly string[] = ["https://api.depixapp.com"];
 
+/** Whether a configured API base may ever receive a credential (see ALLOWED_API_ORIGINS). */
+export function isAllowedApiOrigin(apiBase: string): boolean {
+  try {
+    return ALLOWED_API_ORIGINS.includes(new URL(apiBase).origin);
+  } catch {
+    return false;
+  }
+}
+
 // The canonical, GitHub-verified MCP Registry namespace (io.github.<org>/*) — the
 // SAME identity as package.json `mcpName` and registry/server.json `name`. It is
 // surfaced as the handshake serverInfo.name AND in /.well-known/mcp.json, so a
@@ -78,7 +87,7 @@ export function resolveMaxWaitSeconds(env: NodeJS.ProcessEnv = process.env): num
  * /.well-known descriptor stale.
  */
 export function resolveServerVersion(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MCP_SERVER_VERSION?.trim() || "2.8.3";
+  return env.MCP_SERVER_VERSION?.trim() || "2.8.4";
 }
 
 // ── OAuth Resource Server (F4 §2.9 caminho B) — both values are PUBLIC ────

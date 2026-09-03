@@ -14,6 +14,10 @@
 // serves. Shutdown closes the wallet, which cancels in-flight Boltz watches and
 // releases the dataDir lock (§2.4/§5.3) — no hang.
 
+//
+// Credential: $DEPIX_API_KEY only. This standalone bin has no credential store
+// and no resolver — acting as a registered agent account is the unified bin's
+// job (src/stdio.ts), which is the one `@depixapp/mcp` actually exposes.
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DepixWallet, type ConversionResumeSummary, type ResumeSummary } from "../wallet.js";
 import { defaultLogger, redactSecrets } from "../logger.js";

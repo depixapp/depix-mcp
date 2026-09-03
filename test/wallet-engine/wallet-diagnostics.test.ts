@@ -191,11 +191,11 @@ describe("wallet.diagnostics() — the support snapshot", () => {
     });
   });
 
-  it("fails fast with WALLET_NOT_FOUND on a closed wallet", async () => {
+  it("fails fast with WALLET_CLOSED on a closed wallet", async () => {
     wallet = await restore();
     await wallet.close();
     await expect(wallet.diagnostics()).rejects.toSatisfy((err: unknown) =>
-      isDepixSdkError(err, "WALLET_NOT_FOUND")
+      isDepixSdkError(err, "WALLET_CLOSED")
     );
   });
 

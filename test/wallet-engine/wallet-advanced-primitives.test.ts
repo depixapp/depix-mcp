@@ -124,11 +124,11 @@ describe("advanced.listUtxos() — read-only", () => {
     await expect(readFile(join(dataDir, GUARDRAILS_STATE_FILE))).rejects.toThrow();
   });
 
-  it("fails fast on a closed wallet with WALLET_NOT_FOUND", async () => {
+  it("fails fast on a closed wallet with WALLET_CLOSED", async () => {
     wallet = await restore();
     await wallet.close();
     await expect(wallet.advanced.listUtxos()).rejects.toSatisfy((err: unknown) =>
-      isDepixSdkError(err, "WALLET_NOT_FOUND")
+      isDepixSdkError(err, "WALLET_CLOSED")
     );
   });
 
@@ -477,14 +477,14 @@ describe("advanced.sendMany() — validation and funds", () => {
     await expect(readFile(join(dataDir, GUARDRAILS_STATE_FILE))).rejects.toThrow();
   });
 
-  it("fails fast on a closed wallet with WALLET_NOT_FOUND", async () => {
+  it("fails fast on a closed wallet with WALLET_CLOSED", async () => {
     wallet = await restore();
     await wallet.close();
     await expect(
       wallet.advanced.sendMany({
         recipients: [{ asset: "DEPIX", amountSats: 1n, address: VALID_ADDRESS }]
       })
-    ).rejects.toSatisfy((err: unknown) => isDepixSdkError(err, "WALLET_NOT_FOUND"));
+    ).rejects.toSatisfy((err: unknown) => isDepixSdkError(err, "WALLET_CLOSED"));
   });
 
   it("parallel sendMany calls are serialized under the op mutex and each releases on error", async () => {

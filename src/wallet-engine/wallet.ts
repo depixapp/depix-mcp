@@ -2899,7 +2899,15 @@ export class DepixWallet {
 
   private assertOpen(): void {
     if (!this.lock) {
-      throw new WalletError("WALLET_NOT_FOUND", "Wallet is closed — open() it again");
+      // Its own code, not WALLET_NOT_FOUND: the wallet exists on disk — this
+      // instance was closed under a caller (the unified server reopens the
+      // wallet when its credential changes), and the same call succeeds on the
+      // reopened one. Marked retryable so a host retries instead of re-init.
+      throw new WalletError(
+        "WALLET_CLOSED",
+        "This wallet instance is closed (the server reopened the wallet with a new credential) — retry the call.",
+        { details: { retryable: true } }
+      );
     }
   }
 

@@ -114,6 +114,10 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
       // The wallet keyed tools (deposit/withdraw) hit this locally — the account
       // tool mints the key without a restart.
       return { kind: "call_tool", tool: "register_account" };
+    case "WALLET_CLOSED":
+      // The unified server closed this wallet instance under the caller to
+      // reopen it with a new credential; the same call succeeds on the new one.
+      return { kind: "wait", retry_after_seconds: 0 };
 
     // ── wallet / init ──
     case "wallet_not_configured":

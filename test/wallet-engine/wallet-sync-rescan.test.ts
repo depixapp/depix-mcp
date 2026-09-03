@@ -125,12 +125,12 @@ describe("wallet.sync({ rescan: true }) — deep re-scan from zero", () => {
     expect(scans[scans.length - 1]!.wollet).toBe(scans[0]!.wollet);
   });
 
-  it("rescan on a closed wallet fails fast with WALLET_NOT_FOUND", async () => {
+  it("rescan on a closed wallet fails fast with WALLET_CLOSED", async () => {
     const { factory } = scanRecorder();
     wallet = await openWallet(factory);
     await wallet.close();
     await expect(wallet.sync({ rescan: true })).rejects.toSatisfy((err: unknown) =>
-      isDepixSdkError(err, "WALLET_NOT_FOUND")
+      isDepixSdkError(err, "WALLET_CLOSED")
     );
   });
 });

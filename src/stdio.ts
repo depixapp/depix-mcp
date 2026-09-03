@@ -23,7 +23,7 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { runCli } from "./cli.js";
-import { resolveApiBase, resolveMaxWaitSeconds, resolveServerVersion } from "./config.js";
+import { isAllowedApiOrigin, resolveApiBase, resolveMaxWaitSeconds, resolveServerVersion } from "./config.js";
 import { UNIFIED_INIT_COMMAND } from "./instructions.js";
 import { logger, redact } from "./log.js";
 import { sanitizeOutgoingSchemas } from "./schemaDialect.js";
@@ -42,9 +42,11 @@ import {
   UNIFIED_PACKAGE_NAME,
   UNIFIED_TOOL_COUNT,
   createUnifiedServer,
+  createWalletOpener,
   createWalletRuntime,
   isWalletConfigured,
   resolveWalletDir,
+  walletApiKey,
 } from "./unified.js";
 import {
   createShutdownHandler,
@@ -122,19 +124,26 @@ async function serve(): Promise<void> {
   // resolver, so a gateway-only operator pays nothing for the wallet half. Both
   // auto-resumes are disabled so the runtime runs them explicitly and can surface
   // their summaries through wallet_status, exactly as the engine's own bin does.
+  // The wallet authenticates with the SAME ladder as the gateway half (env >
+  // `account use` > the agent's own stored key), minus the owner login — see
+  // walletApiKey. The runtime reads the credential too: when it changes, the
+  // cached wallet is reopened with the new one.
+  const apiBase = resolveApiBase();
+  if (!isAllowedApiOrigin(apiBase)) {
+    stderr(
+      "depix-mcp: DEPIX_API_BASE points to an origin that is not allowlisted. The API-backed tools refuse every " +
+        "request before any network call, and the wallet is not given the stored credential (a DEPIX_API_KEY in " +
+        "the environment still follows the engine's own fallback).\n",
+    );
+  }
+  const walletCredential = () => walletApiKey(credentials.resolveCredential());
   const runtime = createWalletRuntime({
-    open: async () => {
-      const { DepixWallet } = await import("./wallet-engine/wallet.js");
-      return DepixWallet.open({
-        resumePendingWithdrawalsOnOpen: false,
-        resumePendingConversionsOnOpen: false,
-      });
-    },
+    open: createWalletOpener({ resolveApiKey: walletCredential, apiBase }),
+    credential: walletCredential,
     onError: (event, err) => logger.error(event, { name: err instanceof Error ? err.name : "unknown" }),
   });
 
   const version = resolveServerVersion();
-  const apiBase = resolveApiBase();
   const { server } = createUnifiedServer({
     // A resolver, not a value: register_account can write a key mid-session and it
     // takes effect on the very next request (§3.1) — no restart.
@@ -153,7 +162,11 @@ async function serve(): Promise<void> {
       // frozen here would make wallet_status lie for the whole session. They read
       // the RESOLVER so a key created mid-session is reflected too.
       keyMode: () => resolveKeyMode(credentials.resolve()),
-      apiKeyConfigured: () => credentials.resolveCredential() !== undefined,
+      // The WALLET's credential, not the resolver's: under the owner login the
+      // resolver has a token the wallet does not take, and reporting it as
+      // configured would route wallet_create_deposit past the didactic
+      // api_key_required into the engine's generic message.
+      apiKeyConfigured: () => walletCredential() !== undefined,
       bootResume: () => runtime.bootResume(),
       bootConversions: () => runtime.bootConversions(),
       maxWaitSeconds: resolveWalletMaxWaitSeconds(),

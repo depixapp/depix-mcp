@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.8.4 — the wallet authenticates as whoever the server is acting as
+
+An agent that registered its own account could not fund it. `register_account`
+writes the minted `sk_` to the ENCRYPTED credential store and never to the
+environment — by design, so the key never passes through model context — and
+every gateway tool resolved it correctly. The wallet half did not:
+`DepixWallet.open()` was called without `apiKey`, so it fell back to
+`$DEPIX_API_KEY` alone and answered `API_KEY_REQUIRED` on `wallet_create_deposit`
+and `wallet_create_withdrawal` while `list_products` worked on the same server.
+
+- **One credential ladder for both halves.** The wallet now opens with the
+  resolver's answer — env key > an explicit `account use` > the agent's own
+  stored key. The owner login is the one rung it does not take: that credential
+  is a short-lived access token whose renewal lives in the gateway client, so
+  under the owner persona the wallet stays keyless and says so.
+- **The wallet is reopened when the credential changes.** `register_account`
+  opens the wallet for the payout address BEFORE it mints the key; a wallet
+  cached from that moment would keep answering `API_KEY_REQUIRED` until a
+  restart — which an agent cannot give itself. The runtime now closes and
+  reopens it, so the very next wallet call authenticates as the new account.
+- **The stored credential travels only to an allowlisted origin.** The engine's
+  API client has no gate of its own, so the server withholds the stored key from
+  a non-allowlisted `DEPIX_API_BASE` and says so at boot. A `DEPIX_API_KEY` in the
+  environment still follows the engine's own fallback, as before.
+- Also shipped from main: `agent_status` no longer declares
+  `settled_personal_deposits`, a field the API removed in 0.23.0 — the tool had
+  been failing output validation (-32602) on every call; `register_account`
+  reports the server's pacing instead of a null `limits`, and follows API
+  0.46.0's rename of the verified withdraw cap (`…_send_max_cents`) so the
+  ceiling is no longer silently dropped; dependency bumps
+  (lwk_node 0.19.0, boltz-swaps 0.0.9, @noble/curves + @noble/hashes 2.3.0).
+
 ## 2.8.3 — the agent's vaults learn the wallet's unlock chain
 
 Field-found on the flagship setup: a machine configured the way `init` v2
