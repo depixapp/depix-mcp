@@ -182,7 +182,7 @@ export function assertWithdrawPsetOutputs(pset: PsetLike, expect: WithdrawOutput
   if (!paysDeposit) {
     throw new WithdrawContractError(
       "WITHDRAW_SPLIT_MISMATCH",
-      "built PSET does not pay the Eulen depositAddress (output A script not found)"
+      "built PSET does not pay the provider's depositAddress (output A script not found)"
     );
   }
 

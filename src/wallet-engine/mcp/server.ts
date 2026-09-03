@@ -570,7 +570,7 @@ export function registerWalletTools(
     {
       title: "Create Pix withdrawal",
       description:
-        "Withdraw to a Pix key: build ONE Liquid transaction (Eulen output + explicit fee output), sign and broadcast. " +
+        "Withdraw to a Pix key: build ONE Liquid transaction (provider output + explicit fee output), sign and broadcast. " +
         "amount_cents is BRL cents; mode `send` = the DePix you send, `payout` = the BRL the recipient receives; " +
         "recipient_tax_number is the DESTINATION Pix key holder's CPF/CNPJ. A fresh receive address of THIS wallet is " +
         "sent as the refund address, so a Pix the provider cannot complete comes back here — no parameter to pass. " +

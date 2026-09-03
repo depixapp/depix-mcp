@@ -27,7 +27,7 @@ not. That is physics, not a product tier.
 **Both levels:**
 
 - **A pure client of the public DePix API** (`https://api.depixapp.com/api/*`) for
-  the 26 gateway tools. It holds **zero critical credentials** — no Eulen token,
+  the 26 gateway tools. It holds **zero critical credentials** — no provider token,
   no database, no webhook HMAC. Your `sk_` key is passed **verbatim** to the API
   on each call and lives only in memory for that request.
 - **Same door as everyone.** No privileged path: the same auth, scopes and rate
@@ -401,7 +401,7 @@ Local (`npx`) level only — the wallet half:
 | `DEPIX_GUARDRAIL_*` | Per-transaction / rolling-24h BRL caps and allowlist. Immutable at runtime: set here + restart | R$100/tx, R$500/day |
 | `DEPIX_MCP_MAX_WAIT_SECONDS` | Ceiling for the wallet wait tools | `900` |
 
-There is deliberately **no** env for an API key, Eulen token, HMAC or DB
+There is deliberately **no** env for an API key, provider token, HMAC or DB
 credential in the remote server. In HTTP mode the key arrives per-request in the
 `Authorization` header. The wallet passphrase and seed exist **only** on the
 operator's machine — the hosted deployment reads neither and has no code that
