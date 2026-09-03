@@ -127,7 +127,7 @@ const PACING_NUMBER_FIELDS = [
   "unverified_per_tx_max_cents",
   "inter_deposit_delay_hours",
   "verified_per_tx_deposit_max_cents",
-  "verified_per_tx_withdraw_max_cents",
+  "verified_per_tx_withdraw_send_max_cents",
 ] as const;
 const PAYER_VELOCITY_FIELDS = ["max_per_window", "window_minutes"] as const;
 
@@ -417,8 +417,19 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
               .object({ max_per_window: z.number().optional(), window_minutes: z.number().optional() })
               .optional()
               .describe("How often one payer may pay this account: max_per_window payments per window_minutes."),
-            verified_per_tx_deposit_max_cents: z.number().optional(),
-            verified_per_tx_withdraw_max_cents: z.number().optional(),
+            verified_per_tx_deposit_max_cents: z
+              .number()
+              .optional()
+              .describe("Cap on `amountInCents` — what the payer sends on a deposit."),
+            verified_per_tx_withdraw_send_max_cents: z
+              .number()
+              .optional()
+              .describe(
+                "Cap on `depositAmountInCents` — the DePix the wallet sends. Withdrawing by `payoutAmountInCents` " +
+                  "instead has no published ceiling: the payout is grossed back up by fees quoted per request and " +
+                  "checked against this same number, so a payout near it is refused. Send-mode when you need a " +
+                  "precise maximum.",
+              ),
           })
           .nullable()
           .describe(

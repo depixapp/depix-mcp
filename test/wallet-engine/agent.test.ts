@@ -58,7 +58,7 @@ const REGISTER_RESPONSE = {
       inter_deposit_delay_hours: 24,
       payer_velocity: { max_per_window: 2, window_minutes: 30 },
       verified_per_tx_deposit_max_cents: 600000,
-      verified_per_tx_withdraw_max_cents: 600000,
+      verified_per_tx_withdraw_send_max_cents: 600000,
     },
   },
 };
