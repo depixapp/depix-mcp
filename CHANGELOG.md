@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.8.5 — the agent can go live by itself
+
+An agent that registered its own account was stuck on the sandbox key: the
+vault holds both keys, but the only way to point it at the live one was
+`register_account`'s `activate` argument — at registration, never after — or a
+human editing the vault's pointer by hand.
+
+- **`activate_key`** (`{ "mode": "test" | "live" }`) re-points the vault at one
+  of the two already-minted keys and activates it in-session: the choice is
+  written and read back before the tool reports success, survives restarts, and
+  the wallet reopens with the new key on its next call. Nothing is minted, no
+  secret is shown. A vault with no live key answers `live_key_missing`; no vault
+  answers `agent_not_initialized`. As with `register_account`, a `DEPIX_API_KEY`
+  in the environment still overrides the choice, and the response says so.
+- **A pending withdrawal remembers which key mode created it.** Switching keys
+  is the first agent-reachable way to change the wallet's mode mid-life, so a
+  "requested" withdrawal is now stamped `test` or `live` and resume replays it
+  only under that same mode — a sandbox exercise can never be re-POSTed as a
+  live, signed payout after `activate_key`. Records written before this field
+  existed resume as before.
+- A vault this process cannot unlock answers `activate_key` with the typed
+  `credentials_locked` (and its next step) instead of an opaque internal error;
+  `register_account` and `activate_key` never write the vault concurrently.
+- The catalog is 60 tools: 26 gateway + 29 `wallet_*` + 5 account tools — every
+  served count follows, including `/.well-known/mcp.json` and the hosted
+  signpost, both now under tripwire tests.
+
 ## 2.8.4 — the wallet authenticates as whoever the server is acting as
 
 An agent that registered its own account could not fund it. `register_account`

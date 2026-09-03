@@ -94,7 +94,7 @@ describe("schema dialect on the wire", () => {
     expect(res.isError ?? false).toBe(false);
   });
 
-  it("sanitized: the UNIFIED 59-tool catalog is clean too — the wallet half is where the bug was reported", async () => {
+  it("sanitized: the UNIFIED 60-tool catalog is clean too — the wallet half is where the bug was reported", async () => {
     const { createUnifiedServer, createWalletRuntime } = await import("../src/unified.js");
     const runtime = createWalletRuntime({
       open: () => Promise.reject(Object.assign(new Error("no wallet"), { code: "WALLET_NOT_FOUND" })),
@@ -120,10 +120,11 @@ describe("schema dialect on the wire", () => {
           throw new Error("not used");
         },
         persistKeys: async () => ({ activeMode: "test" as const, source: "store" as const, envOverride: false }),
+        activateKey: async (mode) => ({ activeMode: mode, source: "store" as const, envOverride: false }),
       },
     });
     const { tools } = await (await connect(server, true)).listTools();
-    expect(tools.length).toBe(59);
+    expect(tools.length).toBe(60);
     expect(tools.filter((t) => t.name.startsWith("wallet_")).length).toBe(29);
     expect(collectDialects(tools)).toEqual([]);
   });

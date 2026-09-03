@@ -63,6 +63,7 @@ describe("wallet_pending", () => {
       created_at: 1_720_000_000_000,
       withdrawal_id: "wd_1",
       txid: "cc".repeat(32),
+      key_mode: null,
     });
     expect(pending[1]).toEqual({
       rail: "boltz",

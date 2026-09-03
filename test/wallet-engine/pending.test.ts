@@ -223,3 +223,17 @@ describe("resumePendingWithdrawals — anti-double-pay (§3.2.9)", () => {
     }
   });
 });
+
+describe("PendingWithdrawals store — the key mode travels with a requested record", () => {
+  it("round-trips keyMode, and leaves it absent when the caller gave none", async () => {
+    const store = new PendingWithdrawals({ dataDir, passphrase: PASSPHRASE, saltB64: SALT_B64 });
+    await store.putRequested({
+      idempotencyKey: "idem-test",
+      request: { pixKey: "k", taxNumber: "t", depositAmountInCents: 500 },
+      keyMode: "test"
+    });
+    await store.putRequested({ idempotencyKey: "idem-legacy", request: { pixKey: "k", taxNumber: "t", depositAmountInCents: 500 } });
+    expect((await store.get("idem-test"))?.keyMode).toBe("test");
+    expect(await store.get("idem-legacy")).not.toHaveProperty("keyMode");
+  });
+});

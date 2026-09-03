@@ -235,7 +235,10 @@ const withdrawalsResumeSummary = () =>
     rebroadcast: z.number().int(),
     reposted: z.number().int(),
     discarded: z.number().int(),
-    failed: z.number().int(),
+    failed: z
+      .number()
+      .int()
+      .describe("Not resumed now — kept for the next resume (no API key, created under another key mode, or a transient failure)."),
   });
 
 /** Boltz conversion-resume counters (§5.3) — nullable: a view-only wallet has no Boltz rail. */
@@ -948,6 +951,11 @@ export const pendingOutput = {
           .enum(["submarine", "reverse", "stablecoin"])
           .optional()
           .describe("boltz only: which swap kind is in flight."),
+        key_mode: z
+          .enum(["live", "test"])
+          .nullable()
+          .optional()
+          .describe("withdrawal only: the key mode that created it. A requested record is resumed only while that same mode is active — under the other mode it is held, not lost."),
         peg_addr: z.string().optional().describe("pegin only: the BTC address the owner funds externally."),
         recv_addr: z.string().optional().describe("pegin only: OUR Liquid address SideSwap pays L-BTC to."),
         shift_type: z.enum(["send", "receive"]).optional().describe("sideshift only: shift direction."),

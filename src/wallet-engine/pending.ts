@@ -39,6 +39,13 @@ export interface PendingWithdrawalRecord {
   txid?: string;
   /** The wire body, so resume-of-"requested" re-POSTs with the same key. */
   request: WithdrawRequestBody;
+  /**
+   * Which key mode (sandbox or live) created the request. A "requested" record
+   * is only ever resumed under the same mode: replaying a sandbox exercise
+   * under the live key would turn it into a real, signed payout. Absent on
+   * records written before this field existed — those resume as before.
+   */
+  keyMode?: "live" | "test";
 }
 
 interface Envelope {
@@ -154,13 +161,18 @@ export class PendingWithdrawals {
   }
 
   /** Write the pre-request record (state "requested") BEFORE the POST (§3.2.9). */
-  async putRequested(input: { idempotencyKey: string; request: WithdrawRequestBody }): Promise<void> {
+  async putRequested(input: {
+    idempotencyKey: string;
+    request: WithdrawRequestBody;
+    keyMode?: "live" | "test";
+  }): Promise<void> {
     await this.mutex.runExclusive(async () => {
       const record: PendingWithdrawalRecord = {
         idempotencyKey: input.idempotencyKey,
         createdAt: this.now(),
         state: "requested",
-        request: input.request
+        request: input.request,
+        ...(input.keyMode !== undefined ? { keyMode: input.keyMode } : {})
       };
       const envelopes = (await this.readEnvelopes()).filter((e) => e.id !== input.idempotencyKey);
       envelopes.push(await this.encrypt(record));

@@ -6,7 +6,9 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolDeps, AgentWalletLike, KeyActivation } from "./agent-tools.js";
+import { agentNotInitialized, type AgentToolDeps, type AgentWalletLike, type KeyActivation } from "./agent-tools.js";
+import { ToolError } from "./wallet-engine/mcp/errors.js";
+import { withNextAction } from "./next-action.js";
 import type { CredentialResolver } from "./credentials.js";
 import type { UnlockStoreDeps } from "./wallet-engine/store/unlock-store.js";
 
@@ -91,6 +93,16 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
     };
   };
 
+  // The two vault mutators run one at a time: activate_key is load→save, and
+  // a register_account landing between the two would be written back over
+  // with the keys it had just replaced.
+  let vaultOp: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = vaultOp.then(fn, fn);
+    vaultOp = next.catch(() => undefined);
+    return next;
+  };
+
   return {
     getWallet,
     openAgent: async () => {
@@ -108,7 +120,7 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
       const { DepixAgent } = await import("./wallet-engine/agent.js");
       return DepixAgent.create(await agentOptions());
     },
-    persistKeys: async ({ testKey, liveKey, prefer }): Promise<KeyActivation> => {
+    persistKeys: ({ testKey, liveKey, prefer }): Promise<KeyActivation> => serial(async () => {
       const passphrase = await resolveAgentPassphrase(vault);
       if (passphrase === undefined) {
         throw new Error(`No passphrase to seal the API credentials: ${CHAIN_DESCRIPTION}.`);
@@ -132,7 +144,50 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
         source: source === "none" ? "store" : source,
         envOverride: resolver.hasEnvOverride(),
       };
-    },
+    }),
+    activateKey: (mode): Promise<KeyActivation> => serial(async () => {
+      // Existence before unlock: on a machine with no vault at all the locked
+      // relay would tell the agent "the account already here is the right one".
+      if (!(await agentCredentialsExist(vault?.env))) throw agentNotInitialized();
+      const passphrase = await resolveAgentPassphrase(vault);
+      if (passphrase === undefined) {
+        // Typed, like every other surface that names this state (the boot line,
+        // the tools' credentials_locked relay): a bare Error would reach the
+        // agent as an opaque internal_error with nowhere to go.
+        throw new ToolError(
+          `The API credentials vault on this machine could not be opened: ${CHAIN_DESCRIPTION}.`,
+          "credentials_locked",
+          { data: withNextAction({}, "credentials_locked", { deployment: "local" }) },
+        );
+      }
+      const { AgentCredentialStore } = await import("./wallet-engine/agent/credential-store.js");
+      const store = new AgentCredentialStore({ dataDir: resolveAgentDir(vault?.env), passphrase });
+      const current = await store.load();
+      if (!current) throw agentNotInitialized();
+      if (mode === "live" && !current.liveKey) {
+        throw new ToolError(
+          "This account's local vault holds no live key (registration normally issues a starter one). " +
+            "Keep using the sandbox key, or register a new account.",
+          "live_key_missing",
+        );
+      }
+      // Same write+read-back discipline as persistKeys: the pointer is what the
+      // next boot reads, so it must be on disk before this reports success.
+      await store.save({ ...current, active: mode });
+      const readBack = await store.load();
+      if (!readBack || readBack.active !== mode) {
+        throw new Error("The active-key pointer did not survive a write+read verification.");
+      }
+      // In-session: the resolver serves the new key on the very next request,
+      // and the wallet runtime reopens the wallet with it (a credential change).
+      resolver.setActiveKey(AgentCredentialStore.activeKey(readBack));
+      const source = resolver.source();
+      return {
+        activeMode: mode,
+        source: source === "none" ? "store" : source,
+        envOverride: resolver.hasEnvOverride(),
+      };
+    }),
   };
 }
 

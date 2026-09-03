@@ -386,3 +386,88 @@ describe("wallet.getPending() unifies the four pending stores", () => {
     expect(await wallet.getPending()).toEqual([]);
   });
 });
+
+// ─── key-mode gate on resume: a sandbox exercise never becomes a live payout ──
+
+describe("resumePendingWithdrawals() only replays a requested record under the key mode that created it", () => {
+  function recordingFetch(): { fetchImpl: FetchLike; calls: string[] } {
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      calls.push(String(url));
+      // 400, not 500: a 5xx is retried with backoff and would make the control
+      // cases take a minute; the gate under test decides BEFORE any request.
+      return new Response(JSON.stringify({ error: "not today" }), {
+        status: 400,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    return { fetchImpl, calls };
+  }
+
+  async function seeded(keyMode: "test" | "live" | undefined): Promise<string> {
+    const salt = await seedWalletFile();
+    const withdrawals = new PendingWithdrawals({ dataDir, passphrase: PASSPHRASE, saltB64: salt });
+    await withdrawals.putRequested({
+      idempotencyKey: "idem-mode",
+      request: { pixKey: "k", taxNumber: "t", depositAmountInCents: 500 },
+      ...(keyMode !== undefined ? { keyMode } : {})
+    });
+    return salt;
+  }
+
+  it("a record created under the sandbox key is left untouched when the live key is active — no POST", async () => {
+    await seeded("test");
+    const { fetchImpl, calls } = recordingFetch();
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: "sk_live_RESUME",
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    const summary = await wallet.resumePendingWithdrawals();
+    expect(summary).toEqual({ resumed: 0, rebroadcast: 0, reposted: 0, discarded: 0, failed: 1 });
+    expect(calls.filter((u) => u.includes("/withdraw"))).toEqual([]);
+    // Still pending: it resumes once the sandbox key is active again.
+    const held = (await wallet.getPending()).find((i) => i.rail === "withdrawal" && i.id === "idem-mode");
+    // Visible to the agent: WHY it is held is the key mode on the item itself.
+    expect(held).toMatchObject({ state: "requested", keyMode: "test" });
+  });
+
+  it("control: a record created under the SAME mode is replayed (the POST is attempted)", async () => {
+    await seeded("live");
+    const { fetchImpl, calls } = recordingFetch();
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: "sk_live_RESUME",
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    await wallet.resumePendingWithdrawals();
+    expect(calls.some((u) => u.includes("/withdraw"))).toBe(true);
+  });
+
+  it("a legacy record with no key mode resumes as before", async () => {
+    await seeded(undefined);
+    const { fetchImpl, calls } = recordingFetch();
+    const wallet = track(
+      await DepixWallet.open({
+        dataDir,
+        passphrase: PASSPHRASE,
+        apiKey: "sk_live_RESUME",
+        fetch: fetchImpl,
+        resumePendingWithdrawalsOnOpen: false,
+        resumePendingConversionsOnOpen: false
+      })
+    );
+    await wallet.resumePendingWithdrawals();
+    expect(calls.some((u) => u.includes("/withdraw"))).toBe(true);
+  });
+});

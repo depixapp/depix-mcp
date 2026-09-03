@@ -1,5 +1,5 @@
-// The four AGENT-LOCAL tools (§3.1/§3.2/§3.3): register_account, agent_status,
-// verify_domain, configure_depix_rail. Thin wrappers over DepixAgent (which already exists) — no new
+// The five AGENT-LOCAL tools (§3.1/§3.2/§3.3): register_account, agent_status,
+// verify_domain, configure_depix_rail, activate_key. Thin wrappers over DepixAgent (which already exists) — no new
 // protocol. They live in their OWN module, NOT src/server.ts, because §3.6's
 // tool-count classifier counts every registerTool in server.ts as a gateway tool,
 // and these are neither hosted nor gateway (D4: the hosted catalog NEVER offers a
@@ -28,7 +28,7 @@ import type { DepixPayCredential } from "./wallet-engine/wallet.js";
 import type { ActiveKeyMode } from "./wallet-engine/agent/credential-store.js";
 
 /** The agent-local catalog (§3.6). Exported for the count invariant + tests. */
-export const AGENT_TOOL_NAMES = ["register_account", "agent_status", "verify_domain", "configure_depix_rail"] as const;
+export const AGENT_TOOL_NAMES = ["register_account", "agent_status", "verify_domain", "configure_depix_rail", "activate_key"] as const;
 
 /** The DepixAgent surface these tools use (a subset; a fake satisfies it in tests). */
 export interface AgentLike {
@@ -74,6 +74,12 @@ export interface AgentToolDeps {
   createAgent: () => Promise<AgentLike>;
   /** Persist the minted keys encrypted + choose the active one; reports what won. */
   persistKeys: (input: { testKey: string; liveKey?: string; prefer: ActiveKeyMode }) => Promise<KeyActivation>;
+  /**
+   * Re-point the vault's active key at one of the two ALREADY-minted keys and
+   * activate it in-session. Throws agent_not_initialized (no vault) or
+   * live_key_missing (the vault holds no live key).
+   */
+  activateKey: (mode: ActiveKeyMode) => Promise<KeyActivation>;
 }
 
 function ok(out: unknown): CallToolResult {
@@ -104,7 +110,7 @@ function run(fn: () => Promise<unknown>): Promise<CallToolResult> {
 }
 
 /** No agent identity yet → a typed error that points at register_account. */
-function agentNotInitialized(): ToolError {
+export function agentNotInitialized(): ToolError {
   return new ToolError(
     "No agent account exists on this machine yet. Create one with register_account (it needs the operator's op_ code).",
     "agent_not_initialized",
@@ -222,16 +228,7 @@ async function registerAccount(
   // own login with `account use owner`. Reporting only the first left the second
   // silent — the agent would go on believing it was operating the account it
   // had just created.
-  const warning =
-    activation.source === "env"
-      ? "A DEPIX_API_KEY environment variable is set and OVERRIDES the key just created — every request keeps using " +
-        "the env key's account, NOT this new account. Unset DEPIX_API_KEY (and restart) to operate the account you " +
-        "just registered."
-      : activation.source === "owner"
-        ? "The key was saved but is IDLE: this server is set to act as the operator's own DePix login " +
-          "(`npx -y @depixapp/mcp account use owner`), so requests keep using THEIR account, not this new one. Ask " +
-          "the operator to run `npx -y @depixapp/mcp account use agent` to operate the account you just registered."
-        : null;
+  const warning = activationWarning(activation);
 
   // PUBLIC facts only — never the sk_, the webhook secret, or the keypair.
   return {
@@ -340,7 +337,44 @@ const write: ToolAnnotations = { readOnlyHint: false, openWorldHint: true };
 const read: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
 
 /**
- * Mount register_account / agent_status / verify_domain on the unified server.
+ * The one sentence an agent cannot infer from the codes alone: whether the
+ * key it just chose is the one this server ACTUALLY authenticates with.
+ * register_account's wording is relayed to humans and pinned by tests; the
+ * switch only changes the verbs, never the meaning.
+ */
+export function activationWarning(activation: KeyActivation, subject: "created" | "activated" = "created"): string | null {
+  const justDid = subject === "created" ? "just created" : "just activated";
+  const thisNew = subject === "created" ? "this new account" : "this account";
+  const thisNewOne = subject === "created" ? "this new one" : "this one";
+  const account = subject === "created" ? "the account you just registered" : "this account";
+  if (activation.source === "env") {
+    return (
+      `A DEPIX_API_KEY environment variable is set and OVERRIDES the key ${justDid} — every request keeps using ` +
+      `the env key's account, NOT ${thisNew}. Unset DEPIX_API_KEY (and restart) to operate ${account}.`
+    );
+  }
+  if (activation.source === "owner") {
+    return (
+      "The key was saved but is IDLE: this server is set to act as the operator's own DePix login " +
+      `(\`npx -y @depixapp/mcp account use owner\`), so requests keep using THEIR account, not ${thisNewOne}. Ask ` +
+      `the operator to run \`npx -y @depixapp/mcp account use agent\` to operate ${account}.`
+    );
+  }
+  return null;
+}
+
+export async function activateKey(deps: AgentToolDeps, mode: ActiveKeyMode) {
+  const activation = await deps.activateKey(mode);
+  return {
+    active_key_mode: activation.activeMode,
+    active_key_source: activation.source,
+    env_override: activation.envOverride,
+    warning: activationWarning(activation, "activated"),
+  };
+}
+
+/**
+ * Mount the five agent-local tools on the unified server.
  * Called ONLY from unified.ts (the local bin) — never from the hosted path.
  */
 export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { toolNames: readonly string[] } {
@@ -554,6 +588,37 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       annotations: write,
     },
     (args) => run(() => configureDepixRail(deps, args as { enabled: boolean; derivation_index?: number })),
+  );
+
+  server.registerTool(
+    "activate_key",
+    {
+      title: "Activate the sandbox or live key",
+      description:
+        "Choose which of this account's two API keys the server authenticates with from now on: test (sandbox — " +
+        "no real money) or live (the production starter: wallet_read + wallet_write, i.e. the wallet tools). Both " +
+        "keys already belong to the account register_account created on this machine — nothing is minted and no " +
+        "secret is shown; the choice is saved and survives restarts, and the wallet picks it up on its next call. " +
+        "Under live, wallet_create_deposit produces REAL Pix charges and wallet_create_withdrawal moves real money: " +
+        "confirm with the operator before switching. If DEPIX_API_KEY is set in the environment it still OVERRIDES " +
+        "the choice, and the response says so.",
+      inputSchema: {
+        mode: z.enum(["test", "live"]).describe("Which key to activate: test (sandbox) or live (production starter)."),
+      },
+      outputSchema: {
+        active_key_mode: z.enum(["test", "live"]).describe("Which key is active now."),
+        active_key_source: z
+          .enum(["env", "store", "owner"])
+          .describe(
+            "Which credential the server actually authenticates with now: \"store\" = the key just activated, " +
+              "\"env\" = DEPIX_API_KEY, \"owner\" = the operator's own login (selected with `account use owner`).",
+          ),
+        env_override: z.boolean().describe("true when DEPIX_API_KEY shadows the activated key."),
+        warning: z.string().nullable().describe("A loud note when the activated key is not the one in use, else null."),
+      },
+      annotations: write,
+    },
+    (args) => run(() => activateKey(deps, (args as { mode: ActiveKeyMode }).mode)),
   );
 
   return { toolNames: AGENT_TOOL_NAMES };

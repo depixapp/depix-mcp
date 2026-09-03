@@ -128,6 +128,17 @@ describe("the runtime follows the credential across the wallet's lifetime", () =
     expect(opens).toHaveLength(2);
   });
 
+  it("follows a key-to-key switch too — activate_key's case (sk_A → sk_B)", async () => {
+    const credentials = new CredentialResolver({ envKey: undefined });
+    const { runtime, opens, closedCount } = runtimeFor(credentials);
+    credentials.setActiveKey("sk_test_A");
+    await runtime.getWallet();
+    credentials.setActiveKey("sk_live_B");
+    await runtime.getWallet();
+    expect(opens.map((o) => o?.apiKey)).toEqual(["sk_test_A", "sk_live_B"]);
+    expect(closedCount()).toBe(1);
+  });
+
   it("opens once for concurrent first calls", async () => {
     const credentials = new CredentialResolver({ envKey: "sk_test_env" });
     const { runtime, opens } = runtimeFor(credentials);

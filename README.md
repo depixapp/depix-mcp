@@ -13,7 +13,7 @@ depends only on whether the running instance has a seed:
 |---|---|---|
 | How | `https://mcp.depixapp.com/mcp` (Streamable HTTP) | `npx -y @depixapp/mcp` (stdio) |
 | Runs on | DePix App's servers | **your** machine |
-| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **59** — the 26 **plus** 29 `wallet_*` and 4 account tools |
+| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **60** — the 26 **plus** 29 `wallet_*` and 5 account tools |
 | Seed | none, ever | yours, never leaves the machine |
 | Install | zero (claude.ai, ChatGPT) | Node.js ≥ 22.4 |
 
@@ -98,7 +98,7 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=depix&config=<base64 from th
 > surface is feature-flagged (`AUTHKIT_DOMAIN`): with it unset, only the `sk_`
 > header/stdio paths above are active. Terminal clients keep using `sk_` keys.
 
-## Quickstart 2 — Local stdio, 59 tools (Claude Desktop / Claude Code / Cursor)
+## Quickstart 2 — Local stdio, 60 tools (Claude Desktop / Claude Code / Cursor)
 
 Requires **Node.js ≥ 22.4**. The only official npm package is `@depixapp/mcp` —
 the `@depixapp` scope is organization-owned; do not install any similarly-named
@@ -120,7 +120,7 @@ Exactly the 26 tools of level 1, running locally:
 }
 ```
 
-All 59 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
+All 60 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
 `wallet_not_configured` error telling the agent to ask you to run `init`. That is
 deliberate: MCP hosts snapshot the tool list when they connect, so a catalog that
 grew later would mean "restart your client".
@@ -242,6 +242,12 @@ authenticates each call, and the order is fixed:
 ```
 DEPIX_API_KEY  >  an explicit `account use`  >  the agent's own account  >  your login
 ```
+
+The agent's own account carries two keys — sandbox (`sk_test_`) and the
+production starter (`sk_live_`) — and starts on the sandbox one. The agent
+switches with **`activate_key`** (`{ "mode": "live" }`): the choice is saved in
+the encrypted vault, survives restarts, and the wallet picks it up on its next
+call. Under `live`, deposits are real Pix charges.
 
 ```bash
 npx -y @depixapp/mcp account status       # who is acting, and why

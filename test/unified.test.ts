@@ -1,4 +1,4 @@
-// The UNIFIED deployment (unified-MCP spec §1, §1.6): 59 tools on ONE server, the
+// The UNIFIED deployment (unified-MCP spec §1, §1.6): 60 tools on ONE server, the
 // three-state seedless behaviour, and per-deployment `instructions`.
 //
 // The load-bearing assertions here are the ones a reviewer cannot check by reading:
@@ -15,8 +15,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ApiClient } from "../src/apiClient.js";
 import { UNIFIED_SERVER_TITLE, SERVER_TITLE } from "../src/config.js";
-import { HOSTED_ONLY_CUSTODY_SENTENCE, hostedInstructions } from "../src/instructions.js";
-import { createServer } from "../src/server.js";
+import { HOSTED_ONLY_CUSTODY_SENTENCE, LEVEL_TWO_SIGNPOST, hostedInstructions } from "../src/instructions.js";
+import { GATEWAY_TOOL_COUNT, createServer } from "../src/server.js";
 import { UNIFIED_TOOL_COUNT, createUnifiedServer, createWalletRuntime, unifiedInstructions } from "../src/unified.js";
 import { WALLET_TOOL_NAMES } from "../src/wallet-engine/mcp/server.js";
 import { AGENT_TOOL_NAMES, type AgentToolDeps } from "../src/agent-tools.js";
@@ -30,6 +30,7 @@ const fakeAgentTools: AgentToolDeps = {
     throw new Error("not used in catalog tests");
   },
   persistKeys: async () => ({ activeMode: "test", source: "store", envOverride: false }),
+  activateKey: async (mode) => ({ activeMode: mode, source: "store" as const, envOverride: false }),
 };
 
 const BASE = "https://api.depixapp.com";
@@ -73,11 +74,11 @@ async function seedlessUnified() {
   return connect(server);
 }
 
-describe("unified catalog — 26 gateway + 29 wallet + 4 agent-local = 59", () => {
-  it("mounts exactly 59 tools", async () => {
+describe("unified catalog — 26 gateway + 29 wallet + 5 agent-local = 60", () => {
+  it("mounts exactly 60 tools", async () => {
     const client = await seedlessUnified();
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(59);
+    expect(tools.length).toBe(60);
     expect(tools.length).toBe(UNIFIED_TOOL_COUNT);
   });
 
@@ -89,7 +90,7 @@ describe("unified catalog — 26 gateway + 29 wallet + 4 agent-local = 59", () =
     const unified = await seedlessUnified();
     const unifiedNames = (await unified.listTools()).tools.map((t) => t.name).sort();
     // The gateway half = everything that is neither a wallet_* tool nor one of the
-    // 4 agent-local tools. It must be byte-identical to the hosted catalog.
+    // 5 agent-local tools. It must be byte-identical to the hosted catalog.
     const agentSet = new Set<string>(AGENT_TOOL_NAMES);
     const gatewayHalf = unifiedNames.filter((n) => !n.startsWith("wallet_") && !agentSet.has(n));
     expect(gatewayHalf).toEqual(hostedNames);
@@ -103,11 +104,11 @@ describe("unified catalog — 26 gateway + 29 wallet + 4 agent-local = 59", () =
     expect(wallet.length).toBe(29);
   });
 
-  it("adds the 4 agent-local tools, mounted only on the unified server", async () => {
+  it("adds the 5 agent-local tools, mounted only on the unified server", async () => {
     const client = await seedlessUnified();
     const names = new Set((await client.listTools()).tools.map((t) => t.name));
     for (const name of AGENT_TOOL_NAMES) expect(names.has(name)).toBe(true);
-    expect(AGENT_TOOL_NAMES.length).toBe(4);
+    expect(AGENT_TOOL_NAMES.length).toBe(5);
   });
 
   it("the HOSTED catalog offers NO registration tool (D4)", async () => {
@@ -198,7 +199,7 @@ describe("per-deployment instructions (§1.6)", () => {
 
   it("hosted: does NOT describe wallet tools it does not have", () => {
     const text = hostedInstructions();
-    expect(text).not.toContain("59 tools");
+    expect(text).not.toContain("60 tools");
     expect(text).not.toMatch(/\bwallet_[a-z_]+\b/);
   });
 
@@ -211,9 +212,9 @@ describe("per-deployment instructions (§1.6)", () => {
     }
   });
 
-  it("unified: describes 59 tools and local signing", () => {
+  it("unified: describes 60 tools and local signing", () => {
     const text = unifiedInstructions({ walletConfigured: true });
-    expect(text).toContain("59 tools total");
+    expect(text).toContain("60 tools total");
     expect(text).toMatch(/signs (locally|in this process)/i);
     expect(text).toContain("wallet_send");
   });
@@ -308,5 +309,11 @@ describe("lazy wallet runtime", () => {
   it("close() is safe when the wallet was never opened", async () => {
     const runtime = createWalletRuntime({ open: () => Promise.reject(Object.assign(new Error("x"), { code: "WALLET_NOT_FOUND" })) });
     await expect(runtime.close()).resolves.toBeUndefined();
+  });
+});
+
+describe("served counts follow the catalog", () => {
+  it("the hosted signpost's 'N more tools' is full minus hosted", () => {
+    expect(LEVEL_TWO_SIGNPOST).toContain(`${UNIFIED_TOOL_COUNT - GATEWAY_TOOL_COUNT} more tools`);
   });
 });

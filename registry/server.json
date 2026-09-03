@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.depixapp/depix-mcp",
   "title": "DePix App MCP",
-  "description": "One MCP: hosted Pix receive + dated charges (26 tools), or local npx non-custodial wallet (59).",
-  "version": "2.8.4",
+  "description": "One MCP: hosted Pix receive + dated charges (26 tools), or local npx non-custodial wallet (60).",
+  "version": "2.8.5",
   "websiteUrl": "https://depixapp.com",
   "repository": {
     "url": "https://github.com/depixapp/depix-mcp",
@@ -27,7 +27,7 @@
     {
       "registryType": "npm",
       "identifier": "@depixapp/mcp",
-      "version": "2.8.4",
+      "version": "2.8.5",
       "transport": {
         "type": "stdio"
       },

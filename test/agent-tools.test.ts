@@ -1,4 +1,4 @@
-// The 4 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
+// The 5 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
 // client. The load-bearing proofs (smoke S3.1–S3.5):
 //   - register_account returns PUBLIC facts only — NO sk_, keypair or webhook
 //     secret ever reaches the transcript;
@@ -86,6 +86,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     openAgent: async () => new FakeAgent(),
     createAgent: async () => new FakeAgent(),
     persistKeys: async () => activation,
+    activateKey: async (mode) => ({ ...activation, activeMode: mode }),
     ...over,
   };
 }
@@ -294,9 +295,10 @@ describe("agent_status / verify_domain (§3.2/§3.3)", () => {
 });
 
 describe("configure_depix_rail (§3.9)", () => {
-  it("S3.9a: the tool is one of the agent-local catalog (now 4)", () => {
+  it("S3.9a: the tool is one of the agent-local catalog (now 5)", () => {
     expect(AGENT_TOOL_NAMES).toContain("configure_depix_rail");
-    expect(AGENT_TOOL_NAMES.length).toBe(4);
+    expect(AGENT_TOOL_NAMES).toContain("activate_key");
+    expect(AGENT_TOOL_NAMES.length).toBe(5);
   });
 
   it("S3.9b: enable returns PUBLIC facts only — the blinding key NEVER reaches the transcript", async () => {
@@ -355,5 +357,88 @@ describe("configure_depix_rail (§3.9)", () => {
     const text = payloadText(result);
     expect(text).toContain("agent_not_initialized");
     expect(text).toContain("register_account");
+  });
+});
+
+describe("activate_key", () => {
+  it("A1: switches to the live key and reports it as the one in use", async () => {
+    const seen: string[] = [];
+    const client = await connect(
+      baseDeps({
+        activateKey: async (mode) => {
+          seen.push(mode);
+          return { activeMode: mode, source: "store", envOverride: false };
+        },
+      }),
+    );
+    const result = await client.callTool({ name: "activate_key", arguments: { mode: "live" } });
+    expect(result.isError).toBeFalsy();
+    expect(seen).toEqual(["live"]);
+    const out = structured(result);
+    expect(out.active_key_mode).toBe("live");
+    expect(out.active_key_source).toBe("store");
+    expect(out.env_override).toBe(false);
+    expect(out.warning).toBeNull();
+    // Never a secret in the transcript — the tool only moves a pointer.
+    expect(payloadText(result)).not.toMatch(/sk_(test|live)_/);
+  });
+
+  it("A2: an env key still OVERRIDES the choice, and the tool says so LOUDLY", async () => {
+    const client = await connect(
+      baseDeps({ activateKey: async (mode) => ({ activeMode: mode, source: "env", envOverride: true }) }),
+    );
+    const out = structured(await client.callTool({ name: "activate_key", arguments: { mode: "live" } }));
+    expect(out.env_override).toBe(true);
+    expect(out.active_key_source).toBe("env");
+    expect(String(out.warning)).toMatch(/OVERRIDES/);
+  });
+
+  it("A3: the owner login selected on this machine leaves the activated key IDLE, and says so", async () => {
+    const client = await connect(
+      baseDeps({ activateKey: async (mode) => ({ activeMode: mode, source: "owner", envOverride: false }) }),
+    );
+    const out = structured(await client.callTool({ name: "activate_key", arguments: { mode: "live" } }));
+    expect(out.active_key_source).toBe("owner");
+    expect(String(out.warning)).toMatch(/IDLE/);
+    expect(String(out.warning)).toContain("account use agent");
+  });
+
+  it("A4: a vault without a live key is a typed live_key_missing, not a silent sandbox", async () => {
+    const { ToolError } = await import("../src/wallet-engine/mcp/errors.js");
+    const client = await connect(
+      baseDeps({
+        activateKey: async () => {
+          throw new ToolError("no live key", "live_key_missing");
+        },
+      }),
+    );
+    const result = await client.callTool({ name: "activate_key", arguments: { mode: "live" } });
+    expect(result.isError).toBe(true);
+    expect(payloadText(result)).toContain("live_key_missing");
+  });
+
+  it("A5: rejects anything but test|live at the schema — the deps are never reached", async () => {
+    let invoked = 0;
+    const client = await connect(
+      baseDeps({
+        activateKey: async (mode) => {
+          invoked += 1;
+          return { activeMode: mode, source: "store", envOverride: false };
+        },
+      }),
+    );
+    const result = await client.callTool({ name: "activate_key", arguments: { mode: "prod" } });
+    expect(result.isError).toBe(true);
+    expect(payloadText(result)).toMatch(/Input validation error/);
+    expect(invoked).toBe(0);
+  });
+
+  it("A6: the env-override warning speaks of the key just ACTIVATED, not one just created", async () => {
+    const client = await connect(
+      baseDeps({ activateKey: async (mode) => ({ activeMode: mode, source: "env", envOverride: true }) }),
+    );
+    const out = structured(await client.callTool({ name: "activate_key", arguments: { mode: "live" } }));
+    expect(String(out.warning)).toContain("just activated");
+    expect(String(out.warning)).not.toContain("just registered");
   });
 });

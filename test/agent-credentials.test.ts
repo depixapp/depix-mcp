@@ -88,3 +88,99 @@ describe("hot-swap via the default deps (§3.1 — S3.2/S3.3)", () => {
     expect(resolver.resolve()).toBe("sk_test_ENV");
   });
 });
+
+describe("activateKey (the post-registration test↔live switch)", () => {
+  it("re-points the vault AND the in-session resolver at the live key — persisted for the next boot", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const resolver = new CredentialResolver({ envKey: undefined });
+    const deps = buildAgentToolDeps({ resolver, apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env } });
+    await deps.persistKeys({ testKey: "sk_test_A", liveKey: "sk_live_B", prefer: "test" });
+    expect(resolver.resolve()).toBe("sk_test_A");
+
+    const activation = await deps.activateKey("live");
+
+    expect(activation).toEqual({ activeMode: "live", source: "store", envOverride: false });
+    expect(resolver.resolve()).toBe("sk_live_B");
+    const onDisk = await new AgentCredentialStore({ dataDir: dir, passphrase: PASS }).load();
+    expect(onDisk?.active).toBe("live");
+    expect(AgentCredentialStore.activeKey(onDisk!)).toBe("sk_live_B");
+  });
+
+  it("refuses live when the vault holds no live key, leaving the pointer untouched", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const resolver = new CredentialResolver({ envKey: undefined });
+    const deps = buildAgentToolDeps({ resolver, apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env } });
+    await deps.persistKeys({ testKey: "sk_test_A", prefer: "test" });
+
+    await expect(deps.activateKey("live")).rejects.toMatchObject({ code: "live_key_missing" });
+    expect(resolver.resolve()).toBe("sk_test_A");
+    const onDisk = await new AgentCredentialStore({ dataDir: dir, passphrase: PASS }).load();
+    expect(onDisk?.active).toBe("test");
+  });
+
+  it("with no vault at all it is agent_not_initialized — pointing at register_account", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const resolver = new CredentialResolver({ envKey: undefined });
+    const deps = buildAgentToolDeps({ resolver, apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env } });
+    await expect(deps.activateKey("live")).rejects.toMatchObject({ code: "agent_not_initialized" });
+  });
+
+  it("switches back to test, and reports an env key as the override it is", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const resolver = new CredentialResolver({ envKey: undefined });
+    const deps = buildAgentToolDeps({ resolver, apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env } });
+    await deps.persistKeys({ testKey: "sk_test_A", liveKey: "sk_live_B", prefer: "live" });
+    expect(resolver.resolve()).toBe("sk_live_B");
+
+    expect(await deps.activateKey("test")).toEqual({ activeMode: "test", source: "store", envOverride: false });
+    expect(resolver.resolve()).toBe("sk_test_A");
+
+    const shadowed = new CredentialResolver({ envKey: "sk_live_ENV" });
+    const shadowedDeps = buildAgentToolDeps({ resolver: shadowed, apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env } });
+    expect(await shadowedDeps.activateKey("live")).toEqual({ activeMode: "live", source: "env", envOverride: true });
+    expect(shadowed.resolve()).toBe("sk_live_ENV");
+  });
+
+  it("no vault AND an empty unlock chain is agent_not_initialized — never the locked relay", async () => {
+    const deps = buildAgentToolDeps({
+      resolver: new CredentialResolver({}),
+      apiBase: "https://api.depixapp.com",
+      getWallet: async () => null,
+      vault: {
+        env: { DEPIX_AGENT_DIR: dir, DEPIX_WALLET_DIR: dir } as NodeJS.ProcessEnv,
+        unlock: {
+          platform: "darwin",
+          home: "/nonexistent",
+          files: { read: () => Promise.resolve(undefined), write: () => Promise.resolve(), remove: () => Promise.resolve() },
+          run: () => Promise.resolve({ code: 44, stdout: "", stderr: "" }),
+        },
+      },
+    });
+    await expect(deps.activateKey("live")).rejects.toMatchObject({ code: "agent_not_initialized" });
+  });
+
+  it("a vault this server cannot unlock is a typed credentials_locked, not an internal_error", async () => {
+    // A vault exists (sealed with PASS), but the passphrase chain is EMPTY for
+    // this process: no env passphrase, an empty keychain, no fallback file.
+    const sealedEnv = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const seeded = buildAgentToolDeps({ resolver: new CredentialResolver({}), apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env: sealedEnv } });
+    await seeded.persistKeys({ testKey: "sk_test_A", liveKey: "sk_live_B", prefer: "test" });
+
+    const lockedEnv = { DEPIX_AGENT_DIR: dir, DEPIX_WALLET_DIR: dir } as NodeJS.ProcessEnv;
+    const deps = buildAgentToolDeps({
+      resolver: new CredentialResolver({}),
+      apiBase: "https://api.depixapp.com",
+      getWallet: async () => null,
+      vault: {
+        env: lockedEnv,
+        unlock: {
+          platform: "darwin",
+          home: "/nonexistent",
+          files: { read: () => Promise.resolve(undefined), write: () => Promise.resolve(), remove: () => Promise.resolve() },
+          run: () => Promise.resolve({ code: 44, stdout: "", stderr: "" }),
+        },
+      },
+    });
+    await expect(deps.activateKey("live")).rejects.toMatchObject({ code: "credentials_locked" });
+  });
+});

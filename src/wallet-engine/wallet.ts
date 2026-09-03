@@ -474,6 +474,8 @@ export interface PendingWithdrawalItem extends PendingItemBase {
   rail: "withdrawal";
   withdrawalId: string | null;
   txid: string | null;
+  /** The key mode that created it; a "requested" record is only resumed under that same mode. */
+  keyMode?: "live" | "test" | null;
 }
 
 export interface PendingBoltzSwapItem extends PendingItemBase {
@@ -2114,7 +2116,7 @@ export class DepixWallet {
     const idempotencyKey = DepixApiClient.newIdempotencyKey();
     // Persist BEFORE the POST so a crash mid-request resumes with the SAME
     // Idempotency-Key (§3.2.9). Nothing is signed yet — no double-pay window.
-    await pending.putRequested({ idempotencyKey, request });
+    await pending.putRequested({ idempotencyKey, request, keyMode: api.keyMode });
     let wire;
     try {
       wire = await api.createWithdraw(request, { idempotencyKey });
@@ -2198,6 +2200,18 @@ export class DepixWallet {
           // "requested": re-POST same key (authenticated replay) + re-validate.
           if (!this.api) {
             summary.failed++;
+            continue;
+          }
+          if (record.keyMode !== undefined && record.keyMode !== this.api.keyMode) {
+            // A sandbox exercise must never be replayed as a live payout (nor a
+            // live request under the sandbox key). The record stays: it resumes
+            // once the key it was created under is active again.
+            summary.failed++;
+            this.logger.warn("pending withdrawal belongs to another key mode — not resumed", {
+              idempotencyKey: record.idempotencyKey,
+              recordKeyMode: record.keyMode,
+              activeKeyMode: this.api.keyMode
+            });
             continue;
           }
           const wire = await this.api.createWithdraw(record.request, {
@@ -2371,7 +2385,8 @@ export class DepixWallet {
           state: record.state,
           createdAt: record.createdAt ?? null,
           withdrawalId: record.withdrawalId ?? null,
-          txid: record.txid ?? null
+          txid: record.txid ?? null,
+          keyMode: record.keyMode ?? null
         });
       }
     }

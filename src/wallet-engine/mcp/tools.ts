@@ -693,6 +693,7 @@ function pendingItemToOutput(item: PendingItem) {
     case "withdrawal":
       out.withdrawal_id = item.withdrawalId;
       out.txid = item.txid;
+      out.key_mode = item.keyMode ?? null;
       break;
     case "boltz":
       out.swap_type = item.swapType;

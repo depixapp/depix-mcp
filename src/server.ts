@@ -129,7 +129,7 @@ export interface CreateServerOptions {
   /**
    * PER-DEPLOYMENT handshake `title` (spec §8/P2, moved from P4). Default
    * "DePix App Gateway", correct for the hosted receive-only deployment; the
-   * unified build passes UNIFIED_SERVER_TITLE so a 59-tool local server does not
+   * unified build passes UNIFIED_SERVER_TITLE so a 60-tool local server does not
    * introduce itself as a gateway. `name` is NOT per-deployment: it is the one
    * registry identity (io.github.depixapp/depix-mcp) both deployments answer to.
    */
