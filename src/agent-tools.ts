@@ -227,7 +227,6 @@ async function agentStatus(deps: AgentToolDeps) {
   const status = await agent.status();
   return {
     account_status: status.accountStatus,
-    settled_personal_deposits: status.settledPersonalDeposits,
     graduated: status.graduated,
     graduation_blocked_on: status.graduationBlockedOn,
     keys: status.keys.map((k) => ({
@@ -395,15 +394,16 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
     {
       title: "Agent account status",
       description:
-        "Read the agent account's onboarding progress: whether it is active/suspended, how many personal deposits " +
-        "have settled, whether it has graduated to live keys (and what is still blocking), and its keys (id/prefix/" +
-        "scopes/revoked — never the secret). Read-only; narrates what the server reports, never recomputes the rule. " +
-        "Requires an account already registered here — if there is none, call `register_account` first. Whatever " +
-        "`graduation_blocked_on` names is a HUMAN step: relay it to the operator rather than retrying.",
+        "Read the agent account's onboarding progress: whether it is active/suspended, whether it has graduated to " +
+        "live keys and what is still blocking that, and its keys (id/prefix/scopes/revoked — never the secret). " +
+        "Read-only; narrates what the server reports, never recomputes the rule. " +
+        "Requires an account already registered here — if there is none, call `register_account` first. " +
+        "`graduation_blocked_on` says whose move it is: \"domain_proof\" is yours — call `verify_domain`, then relay " +
+        "its DNS record to the operator, who alone can add it; \"gate_review\" is ours — poll, there is nothing to " +
+        "do; null once graduated. Deposits do not graduate an account.",
       inputSchema: {},
       outputSchema: {
         account_status: z.enum(["active", "suspended"]),
-        settled_personal_deposits: z.number().int(),
         graduated: z.boolean(),
         graduation_blocked_on: z.string().nullable(),
         keys: z.array(

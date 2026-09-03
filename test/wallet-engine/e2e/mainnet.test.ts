@@ -15,7 +15,7 @@
 // ── REAL prerequisites (corrected 2026-07-10) ────────────────────────────────
 //   • An sk_live_ key. Live keys require the account to have `merchant.api_access`
 //     — an ADMIN approval flag granted via /grantapi (api-keys.js:84). They do
-//     NOT require account verification / deposit maturation (that is the F4
+//     NOT require account verification / domain proof (that is the F4
 //     self-issuance path, not this human-run flow).
 //   • WhatsApp verified on the OWNER account IF the global toggle
 //     `whatsapp:enforcement` is ON (withdraw.js:43-52 / deposit.js:186-190) —

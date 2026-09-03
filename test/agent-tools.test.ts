@@ -20,24 +20,26 @@ const REGISTER_RESULT: RegisterResult = {
     test: { id: "key_test_1", key: "sk_test_SECRETVALUE", scopes: "merchant_read merchant_write wallet_read" },
     liveStarter: { id: "key_live_1", key: "sk_live_SECRETVALUE", scopes: "wallet_read", starter: true },
   },
-  graduation: { blocked_on: "deposits", settled: 0 },
+  graduation: { requires: "domain_proof", verify_domain_endpoint: "POST /api/agents/verify-domain", allowed_tlds_endpoint: "GET /api/agents/domain-tlds" },
   limits: { per_tx_cents: 10000, daily_cents: 50000 },
 };
 
 class FakeAgent implements AgentLike {
   readonly publicKeyHex = "aa".repeat(32);
   registered?: unknown;
+  /** Non-empty makes status() report a suspended account carrying this reason. */
+  constructor(private readonly suspension?: string) {}
   async register(input: unknown): Promise<RegisterResult> {
     this.registered = input;
     return REGISTER_RESULT;
   }
   async status() {
     return {
-      accountStatus: "active" as const,
-      settledPersonalDeposits: 3,
+      accountStatus: (this.suspension ? "suspended" : "active") as "active" | "suspended",
       graduated: false,
-      graduationBlockedOn: "deposits",
+      graduationBlockedOn: "domain_proof",
       keys: [{ id: "key_test_1", prefix: "sk_test_ab", isLive: false, starter: false, scopes: "merchant_read", revokedAt: null }],
+      ...(this.suspension ? { reason: this.suspension } : {}),
     };
   }
   verifyDomain(domain: string): Promise<{ recordName: string; recordValue: string }>;
@@ -217,10 +219,26 @@ describe("register_account (§3.1)", () => {
 describe("agent_status / verify_domain (§3.2/§3.3)", () => {
   it("agent_status narrates the server's report", async () => {
     const client = await connect(baseDeps());
-    const out = structured(await client.callTool({ name: "agent_status", arguments: {} }));
+    const result = await client.callTool({ name: "agent_status", arguments: {} });
+    // A schema mismatch returns isError with NO structuredContent, and every
+    // assertion below would then read an empty object and pass on nothing.
+    expect(result.isError).toBeFalsy();
+    const out = structured(result);
     expect(out.account_status).toBe("active");
-    expect(out.settled_personal_deposits).toBe(3);
     expect(out.graduated).toBe(false);
+    expect(out.graduation_blocked_on).toBe("domain_proof");
+    // A required field the server stopped sending fails output validation on
+    // every call, so the deposit counter API 0.23.0 dropped must stay gone.
+    expect(out).not.toHaveProperty("settled_personal_deposits");
+  });
+
+  it("agent_status carries a suspension reason", async () => {
+    const client = await connect(baseDeps({ openAgent: async () => new FakeAgent("Paused by the platform.") }));
+    const result = await client.callTool({ name: "agent_status", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    const out = structured(result);
+    expect(out.account_status).toBe("suspended");
+    expect(out.reason).toBe("Paused by the platform.");
   });
 
   it("agent_status without an identity points at register_account", async () => {

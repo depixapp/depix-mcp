@@ -135,9 +135,9 @@ interface RegisterWire {
 
 export interface AgentStatus {
   accountStatus: "active" | "suspended";
-  settledPersonalDeposits: number;
   graduated: boolean;
-  /** Coarse blocker when the deposit count is reached but graduation hasn't fired. */
+  /** What the account is waiting on while ungraduated: "domain_proof" (it acts) or
+   * "gate_review" (we do). Null once graduated. */
   graduationBlockedOn: string | null;
   keys: Array<{
     id: string;
@@ -153,7 +153,6 @@ export interface AgentStatus {
 
 interface StatusWire {
   account_status: "active" | "suspended";
-  settled_personal_deposits: number;
   graduated: boolean;
   graduation: { blocked_on: string | null };
   keys: Array<{
@@ -385,7 +384,6 @@ export class DepixAgent {
     const wire = await this.client.request<StatusWire>({ method: "GET", path: "/api/agents/status" });
     return {
       accountStatus: wire.account_status,
-      settledPersonalDeposits: wire.settled_personal_deposits,
       graduated: wire.graduated,
       graduationBlockedOn: wire.graduation?.blocked_on ?? null,
       keys: (wire.keys ?? []).map((k) => ({

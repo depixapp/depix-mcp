@@ -51,7 +51,7 @@ const REGISTER_RESPONSE = {
         starter: true,
       },
     },
-    graduation: { required_settled_deposits: 5, maturation_days: 15 },
+    graduation: { requires: "domain_proof", verify_domain_endpoint: "POST /api/agents/verify-domain", allowed_tlds_endpoint: "GET /api/agents/domain-tlds" },
     limits: { first_deposit_max_cents: 10000 },
   },
 };
@@ -139,9 +139,8 @@ describe("DepixAgent key + status operations", () => {
         json: {
           response: {
             account_status: "active",
-            settled_personal_deposits: 3,
             graduated: false,
-            graduation: { blocked_on: null },
+            graduation: { blocked_on: "domain_proof" },
             keys: [{ id: "k1", prefix: "sk_test_", is_live: false, starter: false, scopes: "wallet_read", revoked_at: null }],
           },
         },
@@ -152,7 +151,8 @@ describe("DepixAgent key + status operations", () => {
     expect(calls[0]!.url).toBe("https://api.test/api/agents/status");
     assertSigned(calls[0]!);
     expect(calls[0]!.body).toBeUndefined(); // no body on GET
-    expect(s).toMatchObject({ accountStatus: "active", settledPersonalDeposits: 3, graduated: false, graduationBlockedOn: null });
+    expect(s).toMatchObject({ accountStatus: "active", graduated: false, graduationBlockedOn: "domain_proof" });
+    expect(s).not.toHaveProperty("settledPersonalDeposits");
     expect(s.keys[0]).toMatchObject({ id: "k1", isLive: false, revokedAt: null });
   });
 
