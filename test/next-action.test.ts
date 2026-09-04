@@ -22,7 +22,6 @@ const MAPPED_CODES = [
   "merchant_required",
   "verification_required",
   "verification_requirements_not_met",
-  "verification_under_review",
   "verification_tax_number_in_use",
   "verification_unavailable",
   "insufficient_scope",

@@ -176,7 +176,7 @@ export async function getOnboardingStatus(client: ApiClient) {
       selfHealed = true;
       verified = true;
     } catch (err) {
-      // under_review / tax_number_in_use / requirements_not_met / unavailable:
+      // tax_number_in_use / requirements_not_met / unavailable / account_blocked:
       // surface as a step, never fail the whole read.
       if (err instanceof ToolError) verificationStuck = true;
       else throw err;

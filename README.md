@@ -13,7 +13,7 @@ depends only on whether the running instance has a seed:
 |---|---|---|
 | How | `https://mcp.depixapp.com/mcp` (Streamable HTTP) | `npx -y @depixapp/mcp` (stdio) |
 | Runs on | DePix App's servers | **your** machine |
-| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **60** — the 26 **plus** 29 `wallet_*` and 5 account tools |
+| Tools | **26** — receive Pix, status reads, onboarding/vault/webhook reads, support | **62** — the 26 **plus** 29 `wallet_*` and 7 account tools |
 | Seed | none, ever | yours, never leaves the machine |
 | Install | zero (claude.ai, ChatGPT) | Node.js ≥ 22.4 |
 
@@ -98,7 +98,7 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=depix&config=<base64 from th
 > surface is feature-flagged (`AUTHKIT_DOMAIN`): with it unset, only the `sk_`
 > header/stdio paths above are active. Terminal clients keep using `sk_` keys.
 
-## Quickstart 2 — Local stdio, 60 tools (Claude Desktop / Claude Code / Cursor)
+## Quickstart 2 — Local stdio, 62 tools (Claude Desktop / Claude Code / Cursor)
 
 Requires **Node.js ≥ 22.4**. The only official npm package is `@depixapp/mcp` —
 the `@depixapp` scope is organization-owned; do not install any similarly-named
@@ -120,7 +120,7 @@ Exactly the 26 tools of level 1, running locally:
 }
 ```
 
-All 60 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
+All 62 tools are still *listed* — the 29 `wallet_*` ones answer with a typed
 `wallet_not_configured` error telling the agent to ask you to run `init`. That is
 deliberate: MCP hosts snapshot the tool list when they connect, so a catalog that
 grew later would mean "restart your client".

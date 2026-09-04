@@ -1,4 +1,4 @@
-// The 5 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
+// The 7 agent-local tools (§3.1/§3.2/§3.3), driven through a real McpServer +
 // client. The load-bearing proofs (smoke S3.1–S3.5):
 //   - register_account returns PUBLIC facts only — NO sk_, keypair or webhook
 //     secret ever reaches the transcript;
@@ -46,15 +46,43 @@ class FakeAgent implements AgentLike {
       accountStatus: (this.suspension ? "suspended" : "active") as "active" | "suspended",
       graduated: false,
       graduationBlockedOn: "domain_proof",
-      keys: [{ id: "key_test_1", prefix: "sk_test_ab", isLive: false, starter: false, scopes: "merchant_read", revokedAt: null }],
+      keys: this.statusKeys ?? [{ id: "key_test_1", prefix: "sk_test_ab", isLive: false, starter: false, scopes: "merchant_read", revokedAt: null }],
       ...(this.suspension ? { reason: this.suspension } : {}),
     };
   }
+  /** Flip to false to exercise "proof recorded, account did not verify". */
+  domainVerifies = true;
+  /** Set to make the upgrade mint fail the way the backend refuses it. */
+  createKeyError: (Error & { code?: string }) | null = null;
+  /** Set to make the post-mint revoke fail (a stale key, never a lost account). */
+  revokeKeyError: Error | null = null;
+  statusKeys: Array<{ id: string; prefix: string; isLive: boolean; starter: boolean; scopes: string; revokedAt: string | null }> | null = null;
+  createdKeys: Array<Record<string, unknown>> = [];
+  revokedKeyIds: string[] = [];
   verifyDomain(domain: string): Promise<{ recordName: string; recordValue: string }>;
-  verifyDomain(domain: string, options: { confirm: true }): Promise<{ verifiedDomain: string }>;
-  async verifyDomain(domain: string, options?: { confirm?: boolean }): Promise<{ recordName: string; recordValue: string } | { verifiedDomain: string }> {
-    if (options?.confirm) return { verifiedDomain: domain };
+  verifyDomain(domain: string, options: { confirm: true }): Promise<{ verifiedDomain: string; verified: boolean }>;
+  async verifyDomain(domain: string, options?: { confirm?: boolean }): Promise<{ recordName: string; recordValue: string } | { verifiedDomain: string; verified: boolean }> {
+    if (options?.confirm) return { verifiedDomain: domain, verified: this.domainVerifies };
     return { recordName: `_depix-verify.${domain}`, recordValue: "depix-verify=abc123" };
+  }
+  async createKey(input: { live?: boolean; scopes?: string[]; label?: string } = {}) {
+    if (this.createKeyError) throw this.createKeyError;
+    this.createdKeys.push(input as Record<string, unknown>);
+    const live = input.live === true;
+    return {
+      id: `key_new_${this.createdKeys.length}`,
+      key: `${live ? "sk_live_" : "sk_test_"}minted${this.createdKeys.length}`,
+      prefix: live ? "sk_live_" : "sk_test_",
+      isLive: live,
+      scopes: (input.scopes ?? ["wallet_read", "wallet_write"]).join(" "),
+      perTxLimitCents: null,
+      dailyLimitCents: null,
+    };
+  }
+  async revokeKey(id: string) {
+    if (this.revokeKeyError) throw this.revokeKeyError;
+    this.revokedKeyIds.push(id);
+    return { id, revoked: true };
   }
   configuredRail?: Record<string, unknown>;
   configureDepixRail(input: { enabled: true; address: string; blindingKey: string; derivationIndex?: number | null }): Promise<{ enabled: true; address: string; derivationIndex: number | null; discountPct: number }>;
@@ -84,6 +112,8 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
         derivationIndex: opts?.index ?? 12,
       }),
     }),
+    keyState: async () => ({ active: "test" as const, hasLive: false }),
+    replaceKey: async ({ mode }) => ({ activeMode: mode, source: "store" as const, envOverride: false }),
     openAgent: async () => new FakeAgent(),
     createAgent: async () => new FakeAgent(),
     persistKeys: async () => activation,
@@ -297,10 +327,12 @@ describe("agent_status / verify_domain (§3.2/§3.3)", () => {
 });
 
 describe("configure_depix_rail (§3.9)", () => {
-  it("S3.9a: the tool is one of the agent-local catalog (now 5)", () => {
+  it("S3.9a: the tool is one of the agent-local catalog (now 7)", () => {
     expect(AGENT_TOOL_NAMES).toContain("configure_depix_rail");
     expect(AGENT_TOOL_NAMES).toContain("activate_key");
-    expect(AGENT_TOOL_NAMES.length).toBe(5);
+    expect(AGENT_TOOL_NAMES).toContain("create_key");
+    expect(AGENT_TOOL_NAMES).toContain("revoke_key");
+    expect(AGENT_TOOL_NAMES.length).toBe(7);
   });
 
   it("S3.9b: enable returns PUBLIC facts only — the blinding key NEVER reaches the transcript", async () => {
@@ -442,5 +474,261 @@ describe("activate_key", () => {
     const out = structured(await client.callTool({ name: "activate_key", arguments: { mode: "live" } }));
     expect(String(out.warning)).toContain("just activated");
     expect(String(out.warning)).not.toContain("just registered");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// create_key / revoke_key (§3.10) and the verify_domain upgrade
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("create_key", () => {
+  it("returns PUBLIC facts only — the minted sk_ NEVER reaches the transcript", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const result = await client.callTool({ name: "create_key", arguments: {} });
+
+    expect(result.isError).toBeFalsy();
+    const out = structured(result);
+    expect(out.key_id).toBe("key_new_1");
+    expect(out.prefix).toBe("sk_test_");
+    expect(out.scopes).toBe("wallet_read wallet_write");
+    expect(JSON.stringify(result)).not.toContain("sk_test_minted1");
+  });
+
+  it("defaults to the scopes that need neither a domain nor graduation", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    await client.callTool({ name: "create_key", arguments: {} });
+    expect(agent.createdKeys[0]).toMatchObject({ live: false, scopes: ["wallet_read", "wallet_write"] });
+  });
+
+  it("seals the key in the requested slot and activates it unless told otherwise", async () => {
+    const agent = new FakeAgent();
+    const seen: Array<Record<string, unknown>> = [];
+    const client = await connect(
+      baseDeps({
+        openAgent: async () => agent,
+        replaceKey: async (input) => {
+          seen.push(input as unknown as Record<string, unknown>);
+          return { activeMode: input.mode, source: "store" as const, envOverride: false };
+        },
+      }),
+    );
+    await client.callTool({ name: "create_key", arguments: { live: true, activate: false } });
+    expect(seen[0]).toMatchObject({ key: "sk_live_minted1", mode: "live", activate: false });
+  });
+});
+
+describe("revoke_key", () => {
+  it("phase 1 writes NOTHING and describes what is about to die", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "revoke_key", arguments: { key_id: "key_test_1" } }));
+
+    expect(out.phase).toBe("confirm_required");
+    expect(out.revoked).toBe(false);
+    expect(out.found).toBe(true);
+    expect(out.scopes).toBe("merchant_read");
+    expect(agent.revokedKeyIds).toEqual([]);
+  });
+
+  it("phase 1 says so when the account owns no such key", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "revoke_key", arguments: { key_id: "nope" } }));
+    expect(out.found).toBe(false);
+    expect(agent.revokedKeyIds).toEqual([]);
+  });
+
+  it("phase 2 revokes only with confirm: true", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(
+      await client.callTool({ name: "revoke_key", arguments: { key_id: "key_test_1", confirm: true } }),
+    );
+    expect(out.phase).toBe("revoked");
+    expect(out.revoked).toBe(true);
+    expect(agent.revokedKeyIds).toEqual(["key_test_1"]);
+  });
+});
+
+describe("verify_domain phase 2 — the merchant-key upgrade", () => {
+  /**
+   * What registration actually leaves behind. `starter` is set on the sk_live_
+   * key ALONE (depix-backend routes/agents.js) — a sk_test_ key never carries
+   * it, so a fixture that fabricates one hides the default path.
+   */
+  function withStarter(agent: FakeAgent) {
+    agent.statusKeys = [
+      { id: "key_test_starter", prefix: "sk_test_", isLive: false, starter: false, scopes: "wallet_read wallet_write", revokedAt: null },
+      { id: "key_live_starter", prefix: "sk_live_", isLive: true, starter: true, scopes: "wallet_read wallet_write", revokedAt: null },
+    ];
+    return agent;
+  }
+
+  it("mints the merchant scopes, activates them, and only THEN revokes the starter", async () => {
+    const agent = withStarter(new FakeAgent());
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect(out.verified).toBe(true);
+    expect((out.merchant_key as Record<string, unknown>).scopes).toBe(
+      "merchant_read merchant_write wallet_read wallet_write",
+    );
+    expect(out.previous_key_id).toBe("key_test_starter");
+    expect(out.previous_key_revoked).toBe(true);
+    expect(out.upgrade_note).toBeNull();
+    // The order IS the safety property: a revoke that ran first would leave an
+    // account with no usable key whenever the mint is refused.
+    expect(agent.createdKeys.length).toBe(1);
+    expect(agent.revokedKeyIds).toEqual(["key_test_starter"]);
+    // And the secret never rides along.
+    expect(JSON.stringify(out)).not.toContain("sk_test_minted1");
+  });
+
+  it("a REFUSED mint costs nothing: the domain stands and the old key is untouched", async () => {
+    const agent = withStarter(new FakeAgent());
+    agent.createKeyError = Object.assign(new Error("no domain"), { code: "domain_required" });
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect(out.verified_domain).toBe("acme.com");
+    expect(out.merchant_key).toBeNull();
+    expect(out.previous_key_revoked).toBe(false);
+    expect(String(out.upgrade_note)).toContain("domain_required");
+    expect(agent.revokedKeyIds).toEqual([]);
+  });
+
+  it("never mints when the proof did not verify the account", async () => {
+    const agent = withStarter(new FakeAgent());
+    agent.domainVerifies = false;
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect(out.verified).toBe(false);
+    expect(out.merchant_key).toBeNull();
+    expect(agent.createdKeys).toEqual([]);
+    expect(agent.revokedKeyIds).toEqual([]);
+  });
+
+  it("a failed revoke leaves a stale key, not a broken account — and says so", async () => {
+    const agent = withStarter(new FakeAgent());
+    agent.revokeKeyError = new Error("network down");
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect((out.merchant_key as Record<string, unknown>).key_id).toBe("key_new_1");
+    expect(out.previous_key_revoked).toBe(false);
+  });
+});
+
+describe("the upgrade names the superseded key by census, not by the `starter` flag", () => {
+  it("retires the sk_test_ key even though the backend never flags it as starter", async () => {
+    const agent = new FakeAgent();
+    // Exactly the shape registration leaves: only the LIVE key is `starter`.
+    agent.statusKeys = [
+      { id: "key_test_1", prefix: "sk_test_", isLive: false, starter: false, scopes: "wallet_read wallet_write", revokedAt: null },
+      { id: "key_live_1", prefix: "sk_live_", isLive: true, starter: true, scopes: "wallet_read wallet_write", revokedAt: null },
+    ];
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect(out.previous_key_id).toBe("key_test_1");
+    expect(out.previous_key_revoked).toBe(true);
+    expect(out.previous_key_note).toBeNull();
+    // The LIVE key is a different mode and must survive untouched.
+    expect(agent.revokedKeyIds).toEqual(["key_test_1"]);
+  });
+
+  it("revokes NOTHING when several keys of the mode are live — it cannot tell which was in the vault", async () => {
+    const agent = new FakeAgent();
+    agent.statusKeys = [
+      { id: "key_test_1", prefix: "sk_test_", isLive: false, starter: false, scopes: "wallet_read wallet_write", revokedAt: null },
+      { id: "key_test_2", prefix: "sk_test_", isLive: false, starter: false, scopes: "merchant_read", revokedAt: null },
+    ];
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect(agent.revokedKeyIds).toEqual([]);
+    expect(out.previous_key_id).toBeNull();
+    expect(String(out.previous_key_note)).toMatch(/several live test keys/);
+  });
+
+  it("seals the key in the vault BEFORE revoking — a mint that is never sealed must not cost the old key", async () => {
+    const agent = new FakeAgent();
+    agent.statusKeys = [
+      { id: "key_test_1", prefix: "sk_test_", isLive: false, starter: false, scopes: "wallet_read wallet_write", revokedAt: null },
+    ];
+    const order: string[] = [];
+    const client = await connect(
+      baseDeps({
+        openAgent: async () => agent,
+        replaceKey: async ({ mode }) => {
+          order.push("seal");
+          return { activeMode: mode, source: "store" as const, envOverride: false };
+        },
+      }),
+    );
+    const originalRevoke = agent.revokeKey.bind(agent);
+    agent.revokeKey = async (id: string) => {
+      order.push("revoke");
+      return originalRevoke(id);
+    };
+    await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } });
+    expect(order).toEqual(["seal", "revoke"]);
+  });
+
+  it("a vault that will not seal the key revokes nothing", async () => {
+    const agent = new FakeAgent();
+    agent.statusKeys = [
+      { id: "key_test_1", prefix: "sk_test_", isLive: false, starter: false, scopes: "wallet_read wallet_write", revokedAt: null },
+    ];
+    const client = await connect(
+      baseDeps({
+        openAgent: async () => agent,
+        replaceKey: async () => {
+          throw new Error("disk full");
+        },
+      }),
+    );
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+    expect(out.merchant_key).toBeNull();
+    expect(agent.revokedKeyIds).toEqual([]);
+  });
+});
+
+describe("the upgrade never claims a fact the census did not establish", () => {
+  it("a census that FAILED says so, instead of 'no earlier key was live'", async () => {
+    const agent = new FakeAgent();
+    let calls = 0;
+    agent.status = async () => {
+      calls += 1;
+      throw new Error("network down");
+    };
+    const client = await connect(baseDeps({ openAgent: async () => agent }));
+    const out = structured(await client.callTool({ name: "verify_domain", arguments: { domain: "acme.com", confirm: true } }));
+
+    expect(calls).toBeGreaterThan(0);
+    expect(out.previous_key_revoked).toBe(false);
+    // The superseded key may well be alive — the note must send the agent to look.
+    expect(String(out.previous_key_note)).toMatch(/census failed/i);
+    expect(String(out.previous_key_note)).not.toMatch(/no earlier/i);
+  });
+});
+
+describe("create_key opens the vault before it mints", () => {
+  it("a vault that will not open costs no key and no slot", async () => {
+    const agent = new FakeAgent();
+    const client = await connect(
+      baseDeps({
+        openAgent: async () => agent,
+        keyState: async () => {
+          throw Object.assign(new Error("locked"), { code: "credentials_locked" });
+        },
+      }),
+    );
+    const result = await client.callTool({ name: "create_key", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(agent.createdKeys).toEqual([]);
   });
 });

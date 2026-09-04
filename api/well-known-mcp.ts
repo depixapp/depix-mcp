@@ -13,10 +13,10 @@ export default function handler(_req: VercelRequest, res: VercelResponse): void 
     title: SERVER_TITLE,
     // TWO-LEVEL description (spec §1.6). This endpoint is level 1 and serves 26
     // tools; the SAME MCP has a level 2 that runs on the operator's own machine
-    // with 34 more (29 wallet_* + 5 agent-local). A descriptor that only said "26
+    // with 36 more (29 wallet_* + 7 agent-local). A descriptor that only said "26
     // tools" left every reader of this document unable to discover the wallet.
     description:
-      "The DePix App MCP — one MCP, two levels of access. THIS hosted endpoint is level 1: receive Pix (checkouts, products and dated charges), read transaction status, onboarding/vault/webhook reads, and support tickets — 26 tools, no seed, holds nothing. Level 2 runs locally (`npx -y @depixapp/mcp`, first run `npx -y @depixapp/mcp init`) and adds 29 wallet_* tools — a non-custodial Liquid wallet that signs on the operator's own machine — plus 5 agent-local account tools, for 60 in total.",
+      "The DePix App MCP — one MCP, two levels of access. THIS hosted endpoint is level 1: receive Pix (checkouts, products and dated charges), read transaction status, onboarding/vault/webhook reads, and support tickets — 26 tools, no seed, holds nothing. Level 2 runs locally (`npx -y @depixapp/mcp`, first run `npx -y @depixapp/mcp init`) and adds 29 wallet_* tools — a non-custodial Liquid wallet that signs on the operator's own machine — plus 7 agent-local account tools, for 62 in total.",
     version: resolveServerVersion(),
     transports: [{ type: "streamable-http", url: "https://mcp.depixapp.com/mcp" }],
     levels: {
@@ -26,11 +26,11 @@ export default function handler(_req: VercelRequest, res: VercelResponse): void 
         package: "@depixapp/mcp",
         command: "npx -y @depixapp/mcp",
         first_run: "npx -y @depixapp/mcp init",
-        tool_count: 60,
+        tool_count: 62,
         // The closed-sum breakdown (§3.6): full = gateway + wallet + agent_local.
         tool_count_gateway: 26,
         tool_count_wallet: 29,
-        tool_count_local: 5,
+        tool_count_local: 7,
         custody: "operator holds the seed; signing is in-process",
       },
     },

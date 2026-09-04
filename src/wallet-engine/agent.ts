@@ -213,6 +213,13 @@ export interface DomainChallenge {
 export interface DomainVerification {
   /** The registrable domain (eTLD+1) now stored as the agent's verified domain. */
   verifiedDomain: string;
+  /**
+   * Did the proof also VERIFY the account? For an agent the domain stands in for
+   * the human round trip, so this is normally true — but the proof is recorded
+   * even when the promotion does not land (a suspended account, verification
+   * switched off), and then the domain is stored and this is false.
+   */
+  verified: boolean;
 }
 
 // ─── depix-rail I/O (§3.9) ─────────────────────────────────────────────────
@@ -467,12 +474,12 @@ export class DepixAgent {
   ): Promise<DomainChallenge | DomainVerification> {
     const path = "/api/agents/verify-domain";
     if (options?.confirm === true) {
-      const wire = await this.client.request<{ verified_domain: string }>({
+      const wire = await this.client.request<{ verified_domain: string; verified?: boolean }>({
         method: "POST",
         path,
         body: { domain, confirm: true },
       });
-      return { verifiedDomain: wire.verified_domain };
+      return { verifiedDomain: wire.verified_domain, verified: wire.verified === true };
     }
     const wire = await this.client.request<{ record_name: string; record_value: string }>({
       method: "POST",

@@ -26,6 +26,8 @@ const deps: AgentToolDeps = {
   createAgent: () => Promise.reject(new Error("not used")),
   persistKeys: () => Promise.reject(new Error("not used")),
   activateKey: async (mode) => ({ activeMode: mode, source: "store" as const, envOverride: false }),
+  keyState: async () => ({ active: "test" as const, hasLive: false }),
+  replaceKey: async ({ mode }) => ({ activeMode: mode, source: "store" as const, envOverride: false }),
 };
 
 async function toolCatalog(): Promise<Map<string, { description: string; schema: Record<string, unknown> }>> {

@@ -3,15 +3,15 @@
 // must never import this module, and scripts/check-hosted-isolation.mjs fails CI if
 // it ever does, because everything below drags the wallet engine in.
 //
-// THREE-STATE, not binary (§1(b)). All 60 tools are mounted unconditionally:
-//   - api key + seed   -> all 60 work;
+// THREE-STATE, not binary (§1(b)). All 62 tools are mounted unconditionally:
+//   - api key + seed   -> all 62 work;
 //   - api key, no seed -> the 26 gateway tools work; each wallet_* answers with the
 //                         typed `wallet_not_configured` error naming `init`;
 //   - seed, no api key -> the wallet works; the API-backed tools answer with the
 //                         typed `missing_api_key` error.
 // Boot NEVER fails on a missing seed or a missing key. A catalog that grew after
 // `init` would mean "restart your client": MCP hosts snapshot tools/list at connect
-// and `list_changed` support is uneven, so a static 60 + typed errors is the design.
+// and `list_changed` support is uneven, so a static 62 + typed errors is the design.
 //
 // The wallet is opened LAZILY, on the first wallet tool call, and the engine's
 // registration single-flights concurrent resolutions so two parallel calls cannot
@@ -42,7 +42,7 @@ import type { McpWalletFacade } from "./wallet-engine/mcp/tools.js";
 export const UNIFIED_PACKAGE_NAME = "@depixapp/mcp";
 
 /**
- * The full unified catalog (§3.6): 26 gateway + 29 wallet + 5 agent-local = 60.
+ * The full unified catalog (§3.6): 26 gateway + 29 wallet + 7 agent-local = 62.
  * The closed-sum invariant: full = gateway + wallet + agent_local. Derived from
  * the three source-of-truth counts, never a bare literal, so adding a tool in one
  * place updates it here.
@@ -51,7 +51,7 @@ export const UNIFIED_TOOL_COUNT = GATEWAY_TOOL_COUNT + WALLET_TOOL_NAMES.length 
 
 /**
  * The unified `instructions` (§1.6). Two things it must do that the hosted text
- * must not: describe 60 tools, and NEVER carry the hosted-only sentence "it never
+ * must not: describe 62 tools, and NEVER carry the hosted-only sentence "it never
  * signs, never holds funds, and never stores your key" — false the moment a
  * wallet_* tool exists on this server, and actively misleading to the model.
  *
@@ -119,7 +119,7 @@ export interface CreateUnifiedServerOptions extends CreateServerOptions {
   wallet: Omit<RegisterWalletToolsContext, "initCommand">;
   /** Whether a wallet exists on this machine — decides which `instructions` ship. */
   walletConfigured: boolean;
-  /** Dependencies for the 5 agent-local tools (register_account/agent_status/verify_domain/configure_depix_rail/activate_key). */
+  /** Dependencies for the 7 agent-local tools (register_account/agent_status/verify_domain/configure_depix_rail/activate_key/create_key/revoke_key). */
   agentTools: AgentToolDeps;
 }
 
@@ -143,7 +143,7 @@ export function createUnifiedServer(opts: CreateUnifiedServerOptions): UnifiedSe
     instructions: unifiedInstructions({ walletConfigured }),
   });
   const registration = registerWalletTools(server, { ...wallet, initCommand: UNIFIED_INIT_COMMAND });
-  // The 5 agent-local tools are mounted HERE, never in createServer — the hosted
+  // The 7 agent-local tools are mounted HERE, never in createServer — the hosted
   // catalog must never offer a registration tool (D4).
   registerAgentTools(server, agentTools);
   return { server, wallet: registration };

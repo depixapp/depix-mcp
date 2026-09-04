@@ -40,7 +40,7 @@ export interface CliDeps {
 export const USAGE = `depix-mcp — the DePix App MCP server (one MCP, two levels of access)
 
 USAGE
-  npx -y @depixapp/mcp              serve the MCP over stdio (60 tools)
+  npx -y @depixapp/mcp              serve the MCP over stdio (62 tools)
   npx -y @depixapp/mcp init         first run: create or restore the local wallet
   npx -y @depixapp/mcp init --restore
                                     import an existing 12-word mnemonic
@@ -71,7 +71,7 @@ WHICH ACCOUNT ACTS
   \`account status\` always prints the winner and the reason. \`login\` says so too.
 
 NOTES
-  All 60 tools are always listed. Without a wallet, wallet_* tools return the typed
+  All 62 tools are always listed. Without a wallet, wallet_* tools return the typed
   wallet_not_configured error naming \`init\`; without an API key, the API-backed
   tools return missing_api_key. Neither is a startup failure.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The UNIFIED local bin — `npx -y @depixapp/mcp` (unified-MCP spec §1).
 //
-// One process, one server, 60 tools: the 26 gateway tools (a pure client of the
+// One process, one server, 62 tools: the 26 gateway tools (a pure client of the
 // public DePix App API) plus the 29 `wallet_*` tools of the non-custodial Liquid
 // wallet, which signs HERE, in the operator's own environment. Custody is decided
 // by who holds the seed, not by the transport — so this deployment is the one that
@@ -14,8 +14,8 @@
 //     wallet tools over a credential they do not need.)
 //   - no wallet on the machine: every wallet_* tool returns the typed
 //     `wallet_not_configured` naming `npx -y @depixapp/mcp init`.
-//   - both present: all 60 work.
-// The catalog is ALWAYS 60 — MCP hosts snapshot tools/list at connect and
+//   - both present: all 62 work.
+// The catalog is ALWAYS 62 — MCP hosts snapshot tools/list at connect and
 // `list_changed` support is uneven, so a catalog that grew after `init` would mean
 // "restart your client".
 //

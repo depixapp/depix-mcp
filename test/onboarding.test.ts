@@ -114,7 +114,7 @@ describe("get_onboarding_status (§4.3)", () => {
           status: 200,
           json: { verified: false, enabled: true, method: "round_trip", eligible: true, steps: [step("deposit", "done")] },
         },
-        { status: 409, json: { error: { code: "verification_under_review" } } }, // POST rejected
+        { status: 409, json: { error: { code: "verification_requirements_not_met" } } }, // POST rejected
         { status: 404, json: { error: { code: "not_found" } } },
       ]),
     );

@@ -1,5 +1,39 @@
 # Changelog
 
+## 2.8.7 — the agent mints and revokes its own keys
+
+An agent that registered itself got a starter key with `wallet_read
+wallet_write` and no way to widen it. Proving a domain lifts
+`domain_required` on the merchant scopes, but nothing then existed to mint a
+key that carried them, so the account could receive from third parties on
+paper and not in practice. Two tools close that, and `verify_domain` now
+does it on its own.
+
+- **`create_key`** mints a key for the account on this machine, seals it in
+  the local encrypted vault and starts using it. Only public facts come back
+  — id, prefix, scopes, limits — never the `sk_`. Defaults to a sandbox key
+  with the wallet scopes, the only set that needs neither a domain nor
+  graduation. It replaces the vault's key for that mode and leaves the old
+  one working at the server, so nothing is lost if a mint is refused.
+- **`revoke_key`** kills a key in two phases. Phase 1 writes nothing and
+  reports what that key IS (prefix, scopes, whether it is the starter) so the
+  agent can tell the operator exactly what is about to die; phase 2 needs
+  `confirm: true`. Revocation is immediate and cannot be undone, and the
+  operator never sees the call — hence the deliberate stop.
+- **`verify_domain` phase 2 trades the starter key for a merchant one.** It
+  mints `merchant_read merchant_write wallet_read wallet_write` in whichever
+  mode is active, activates it, and only THEN revokes the starter. Minting
+  first is the whole point of the order: a refused mint costs nothing, the
+  domain proof still stands and the old key still works. Every failure in the
+  upgrade is reported in `upgrade_note` — the proof is never lost to it. A
+  failed revoke leaves a stale key, not a broken account, and
+  `previous_key_revoked: false` says so.
+
+The catalog is 62 (26 gateway + 29 wallet + 7 agent-local). Also drops the
+`verification_under_review` branch: the backend deleted that code with its
+manual-review queue, and a `case` for something the server never sends is
+just a lie about what happens next.
+
 ## 2.8.6 — the wallet reads its credential on every call
 
 Two follow-ups from the 2.8.4/2.8.5 reviews, both in the engine.

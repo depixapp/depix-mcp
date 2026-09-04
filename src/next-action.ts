@@ -202,7 +202,6 @@ export function nextActionFor(code: string, ctx: NextActionContext = {}): NextAc
     case "verification_requirements_not_met":
     case "verification_tax_number_in_use":
       return { kind: "call_tool", tool: "get_onboarding_status" };
-    case "verification_under_review":
     case "verification_unavailable":
       return { kind: "wait", ...(ctx.retryAfterSeconds !== undefined ? { retry_after_seconds: ctx.retryAfterSeconds } : {}) };
 

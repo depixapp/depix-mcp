@@ -17,6 +17,8 @@ import { OPERATOR_START_URL, withNextAction } from "./next-action.js";
 import { UNIFIED_INIT_COMMAND } from "./instructions.js";
 import type {
   AgentStatus,
+  CreatedKey,
+  CreateKeyInput,
   DepixRailDisabledResult,
   DepixRailEnabledResult,
   DomainChallenge,
@@ -28,7 +30,7 @@ import type { DepixPayCredential } from "./wallet-engine/wallet.js";
 import type { ActiveKeyMode } from "./wallet-engine/agent/credential-store.js";
 
 /** The agent-local catalog (§3.6). Exported for the count invariant + tests. */
-export const AGENT_TOOL_NAMES = ["register_account", "agent_status", "verify_domain", "configure_depix_rail", "activate_key"] as const;
+export const AGENT_TOOL_NAMES = ["register_account", "agent_status", "verify_domain", "configure_depix_rail", "activate_key", "create_key", "revoke_key"] as const;
 
 /** The DepixAgent surface these tools use (a subset; a fake satisfies it in tests). */
 export interface AgentLike {
@@ -39,6 +41,8 @@ export interface AgentLike {
   verifyDomain(domain: string, options: { confirm: true }): Promise<DomainVerification>;
   configureDepixRail(input: { enabled: true; address: string; blindingKey: string; derivationIndex?: number | null }): Promise<DepixRailEnabledResult>;
   configureDepixRail(input: { enabled: false }): Promise<DepixRailDisabledResult>;
+  createKey(input?: CreateKeyInput): Promise<CreatedKey>;
+  revokeKey(id: string): Promise<{ id: string; revoked: boolean }>;
 }
 
 /** What persisting the minted keys reports back (§3.1 precedence "achado m4"). */
@@ -80,6 +84,13 @@ export interface AgentToolDeps {
    * live_key_missing (the vault holds no live key).
    */
   activateKey: (mode: ActiveKeyMode) => Promise<KeyActivation>;
+  /** Which key the vault currently serves, and whether a live one exists at all. */
+  keyState: () => Promise<{ active: ActiveKeyMode; hasLive: boolean }>;
+  /**
+   * Seal a freshly minted key into ONE slot of the vault, keeping the other
+   * mode's key, and optionally point the resolver at it.
+   */
+  replaceKey: (input: { key: string; mode: ActiveKeyMode; activate: boolean }) => Promise<KeyActivation>;
 }
 
 function ok(out: unknown): CallToolResult {
@@ -270,12 +281,141 @@ async function agentStatus(deps: AgentToolDeps) {
   };
 }
 
+/** What a proven domain unlocks: receiving from third parties, plus the wallet. */
+const UPGRADE_SCOPES = ["merchant_read", "merchant_write", "wallet_read", "wallet_write"];
+/** The only set that needs no domain and no graduation — safe as a default. */
+const STARTER_SCOPES = ["wallet_read", "wallet_write"];
+
+/** PUBLIC facts about a minted key. The sk_ itself never appears in a result. */
+function keyFacts(k: CreatedKey) {
+  return {
+    key_id: k.id,
+    prefix: k.prefix,
+    is_live: k.isLive,
+    scopes: k.scopes,
+    per_tx_limit_cents: k.perTxLimitCents ?? null,
+    daily_limit_cents: k.dailyLimitCents ?? null,
+  };
+}
+
+/**
+ * A backend refusal carries a code; a local failure (a locked vault, a disk
+ * that would not take the write) carries only a message. Falling back to
+ * "unknown_error" would make the most likely failure the least actionable one.
+ */
+function errCode(err: unknown): string {
+  const e = err as { code?: string; message?: string } | undefined;
+  return e?.code ?? e?.message ?? "unknown_error";
+}
+
+/**
+ * Trade the starter key for one that can also receive from third parties.
+ *
+ * Mint FIRST, revoke second: the reverse order would leave an account with no
+ * usable key whenever the mint is refused. A refused mint costs nothing — the
+ * domain proof stands and the old key keeps working — so every failure here is
+ * REPORTED, never thrown.
+ */
+async function upgradeToMerchantKey(deps: AgentToolDeps, agent: AgentLike) {
+  const state = await deps.keyState();
+  const mode = state.active;
+  const isLive = mode === "live";
+
+  // The key being superseded is whatever the vault held for this mode, and the
+  // vault stores the SECRET, not the id — so it can only be named by taking the
+  // census BEFORE minting. `starter` cannot stand in for it: the backend sets
+  // that column on the sk_live_ key alone, so in test mode (the default after
+  // register_account) nothing would ever match.
+  let priorIds: string[] = [];
+  let censusOk = false;
+  try {
+    const before = await agent.status();
+    priorIds = before.keys.filter((k) => k.isLive === isLive && k.revokedAt === null).map((k) => k.id);
+    censusOk = true;
+  } catch {
+    // A failed census is NOT "there was nothing there" — saying so would send
+    // the agent away from a live full-scope key. Reported as its own case.
+  }
+
+  const minted = await agent.createKey({ live: isLive, scopes: [...UPGRADE_SCOPES] });
+  const activation = await deps.replaceKey({ key: minted.key, mode, activate: true });
+
+  // Only now is the old key redundant. Losing this step costs a stale key, not
+  // access, so it is reported rather than unwound.
+  const superseded = priorIds.filter((id) => id !== minted.id);
+  let previousKeyId: string | null = null;
+  let previousKeyRevoked = false;
+  let ambiguous = false;
+  if (superseded.length === 1) {
+    previousKeyId = superseded[0]!;
+    try {
+      previousKeyRevoked = (await agent.revokeKey(previousKeyId)).revoked;
+    } catch {
+      // previousKeyRevoked stays false — the caller says so out loud.
+    }
+  } else if (superseded.length > 1) {
+    // Several keys of this mode were live. Only one of them was in the vault
+    // and there is no way to tell which, so killing one would be a coin flip on
+    // a key the operator minted on purpose.
+    ambiguous = true;
+  }
+  return {
+    merchant_key: keyFacts(minted),
+    previous_key_id: previousKeyId,
+    previous_key_revoked: previousKeyRevoked,
+    previous_key_note: previousKeyRevoked
+      ? null
+      : ambiguous
+        ? `This account had several live ${mode} keys, so none was revoked — the superseded one cannot be told apart. Read agent_status and revoke it with revoke_key.`
+        : !censusOk
+          ? `The key census failed, so none was revoked — the superseded ${mode} key may still be live. Read agent_status and revoke it with revoke_key.`
+          : superseded.length === 0
+            ? `No earlier ${mode} key was live, so none was revoked.`
+            : `The superseded key ${previousKeyId} is STILL VALID — revoking it failed. Retry with revoke_key.`,
+    active_key_mode: activation.activeMode,
+    active_key_source: activation.source,
+    env_override: activation.envOverride,
+    warning: activationWarning(activation, "activated"),
+  };
+}
+
+const NO_UPGRADE = {
+  merchant_key: null,
+  previous_key_id: null,
+  previous_key_revoked: false,
+  previous_key_note: null,
+  active_key_mode: null,
+  active_key_source: null,
+  env_override: false,
+  warning: null,
+};
+
 async function verifyDomain(deps: AgentToolDeps, args: { domain: string; confirm?: boolean }) {
   const agent = await deps.openAgent();
   if (!agent) throw agentNotInitialized();
   if (args.confirm === true) {
     const r = await agent.verifyDomain(args.domain, { confirm: true });
-    return { phase: "confirm" as const, verified_domain: r.verifiedDomain };
+    const base = { phase: "confirm" as const, verified_domain: r.verifiedDomain, verified: r.verified };
+    if (!r.verified) {
+      return {
+        ...base,
+        ...NO_UPGRADE,
+        upgrade_note:
+          "The domain is proven and stored, but the account did not verify, so no merchant key was minted. " +
+          "Read agent_status for the reason (a suspended account never verifies).",
+      };
+    }
+    try {
+      return { ...base, ...(await upgradeToMerchantKey(deps, agent)), upgrade_note: null };
+    } catch (err) {
+      return {
+        ...base,
+        ...NO_UPGRADE,
+        upgrade_note:
+          `The domain is proven and the account is verified, but minting the merchant key failed (${errCode(err)}). ` +
+          "The existing key still works; call create_key to retry.",
+      };
+    }
   }
   const c = await agent.verifyDomain(args.domain);
   return {
@@ -364,6 +504,85 @@ export function activationWarning(activation: KeyActivation, subject: "created" 
   return null;
 }
 
+async function createKey(
+  deps: AgentToolDeps,
+  args: {
+    live?: boolean;
+    scopes?: string[];
+    label?: string;
+    per_tx_limit_cents?: number;
+    daily_limit_cents?: number;
+    activate?: boolean;
+  },
+) {
+  const agent = await deps.openAgent();
+  if (!agent) throw agentNotInitialized();
+  const mode: ActiveKeyMode = args.live === true ? "live" : "test";
+  // Open the vault BEFORE minting. A key minted into a vault that will not take
+  // it is lost — the plaintext is returned once — and it still burns one of the
+  // five slots that mode allows.
+  await deps.keyState();
+  const minted = await agent.createKey({
+    live: args.live === true,
+    scopes: args.scopes ?? [...STARTER_SCOPES],
+    ...(args.label !== undefined ? { label: args.label } : {}),
+    ...(args.per_tx_limit_cents !== undefined ? { perTxLimitCents: args.per_tx_limit_cents } : {}),
+    ...(args.daily_limit_cents !== undefined ? { dailyLimitCents: args.daily_limit_cents } : {}),
+  });
+  const activate = args.activate !== false;
+  const activation = await deps.replaceKey({ key: minted.key, mode, activate });
+  return {
+    ...keyFacts(minted),
+    active_key_mode: activation.activeMode,
+    active_key_source: activation.source,
+    env_override: activation.envOverride,
+    warning: activationWarning(activation, "activated"),
+  };
+}
+
+async function revokeKey(deps: AgentToolDeps, args: { key_id: string; confirm?: boolean }) {
+  const agent = await deps.openAgent();
+  if (!agent) throw agentNotInitialized();
+  if (args.confirm !== true) {
+    // Dry run. Revoking is instant and irreversible, and the operator cannot see
+    // this call, so the agent has to state WHAT it is about to kill first.
+    const status = await agent.status();
+    const target = status.keys.find((k) => k.id === args.key_id) ?? null;
+    return {
+      phase: "confirm_required" as const,
+      key_id: args.key_id,
+      revoked: false,
+      found: target !== null,
+      prefix: target?.prefix ?? null,
+      is_live: target?.isLive ?? null,
+      starter: target?.starter ?? null,
+      scopes: target?.scopes ?? null,
+      already_revoked: target ? target.revokedAt !== null : null,
+      instruction: {
+        pt: target
+          ? `Confirme com o operador humano que a chave ${args.key_id} (${target.prefix}, escopos: ${target.scopes}) deve ser revogada, e então chame revoke_key de novo com confirm: true. A revogação é imediata e não tem volta.`
+          : `Esta conta não tem chave com id ${args.key_id}. Leia agent_status para ver os ids reais.`,
+        en: target
+          ? `Confirm with the human operator that key ${args.key_id} (${target.prefix}, scopes: ${target.scopes}) should be revoked, then call revoke_key again with confirm: true. Revocation is immediate and cannot be undone.`
+          : `This account has no key with id ${args.key_id}. Read agent_status for the real ids.`,
+      },
+    };
+  }
+  const r = await agent.revokeKey(args.key_id);
+  return {
+    phase: "revoked" as const,
+    key_id: r.id,
+    revoked: r.revoked,
+    found: true,
+    prefix: null,
+    is_live: null,
+    starter: null,
+    scopes: null,
+    already_revoked: null,
+    instruction: null,
+  };
+}
+
 export async function activateKey(deps: AgentToolDeps, mode: ActiveKeyMode) {
   const activation = await deps.activateKey(mode);
   return {
@@ -375,7 +594,7 @@ export async function activateKey(deps: AgentToolDeps, mode: ActiveKeyMode) {
 }
 
 /**
- * Mount the five agent-local tools on the unified server.
+ * Mount the seven agent-local tools on the unified server.
  * Called ONLY from unified.ts (the local bin) — never from the hosted path.
  */
 export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { toolNames: readonly string[] } {
@@ -535,7 +754,10 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
         "record NAME and VALUE to create — relay it to the human to add at their DNS provider (only they can: it is " +
         "their DNS panel, and propagation takes minutes). Phase 2 (confirm: true, after propagation): the server " +
         "resolves the record and, on a match, records the domain as verified. A verified domain lifts " +
-        "domain_required on the merchant scopes.",
+        "domain_required on the merchant scopes, so phase 2 ALSO trades this account's starter key for one that " +
+        "carries them (merchant_read + merchant_write + the wallet scopes), activates it, and revokes the starter. " +
+        "That upgrade is minted BEFORE the old key is revoked, so a refused mint costs nothing: the domain still " +
+        "counts, the old key still works, and `upgrade_note` says what happened. No secret is ever shown.",
       inputSchema: {
         domain: z.string().min(1).describe("The domain to verify (e.g. acme.com)."),
         confirm: z
@@ -552,6 +774,34 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
           .optional()
           .describe("Phase 1: plain PT+EN steps to relay to the human."),
         verified_domain: z.string().optional().describe("Phase 2: the registrable domain now recorded as verified."),
+        verified: z.boolean().optional().describe("Phase 2: did the proof also verify the ACCOUNT (unlocking the merchant tools)?"),
+        merchant_key: z
+          .object({
+            key_id: z.string(),
+            prefix: z.string(),
+            is_live: z.boolean(),
+            scopes: z.string(),
+            per_tx_limit_cents: z.number().nullable(),
+            daily_limit_cents: z.number().nullable(),
+          })
+          .nullable()
+          .optional()
+          .describe("Phase 2: PUBLIC facts about the upgraded key, or null when none was minted. Never the key itself."),
+        previous_key_id: z.string().nullable().optional().describe("Phase 2: the starter key the upgrade superseded."),
+        previous_key_revoked: z
+          .boolean()
+          .optional()
+          .describe("Phase 2: false means the OLD key is still live — say so; it is a stale credential, not a broken account."),
+        previous_key_note: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("Phase 2: why the superseded key was not revoked, or null when it was. Relay it — a live stray key is the operator's business."),
+        active_key_mode: z.enum(["test", "live"]).nullable().optional().describe("Phase 2: which key the server authenticates with now."),
+        active_key_source: z.enum(["env", "store", "owner"]).nullable().optional().describe("Phase 2: which credential actually wins."),
+        env_override: z.boolean().optional().describe("Phase 2: true when DEPIX_API_KEY shadows the upgraded key."),
+        warning: z.string().nullable().optional().describe("Phase 2: a loud note when the upgraded key is not the one in use."),
+        upgrade_note: z.string().nullable().optional().describe("Phase 2: why no merchant key was minted, or null when one was."),
       },
       annotations: write,
     },
@@ -622,6 +872,100 @@ export function registerAgentTools(server: McpServer, deps: AgentToolDeps): { to
       annotations: write,
     },
     (args) => run(() => activateKey(deps, (args as { mode: ActiveKeyMode }).mode)),
+  );
+
+  server.registerTool(
+    "create_key",
+    {
+      title: "Mint an API key for this account",
+      description:
+        "Mint a NEW API key for the account registered on this machine and start using it. The key is sealed in the " +
+        "local encrypted vault and NEVER shown — the response carries only public facts (id, prefix, scopes, limits). " +
+        "Defaults to a sandbox key with the wallet scopes, the only set that always works. `merchant_read`/" +
+        "`merchant_write` (being paid by third parties) need a VERIFIED DOMAIN — call `verify_domain` first, which " +
+        "mints that key for you; asking for them without one is refused with domain_required. `live: true` needs the " +
+        "account to be graduated, else graduation_pending. Minting replaces the vault's key for that mode, so the " +
+        "OLD one keeps working at the server until you revoke it with revoke_key — and its local copy is gone, so revoke it or " +
+        "note the id from agent_status. Five keys per mode is the ceiling.",
+      inputSchema: {
+        live: z.boolean().optional().describe("true = production sk_live_ (requires graduation); omitted/false = sandbox sk_test_."),
+        scopes: z
+          .array(z.enum(["merchant_read", "merchant_write", "wallet_read", "wallet_write"]))
+          .min(1)
+          .optional()
+          .describe("Scope set. Omitted = wallet_read + wallet_write. merchant_* requires a verified domain."),
+        label: z.string().max(100).optional().describe("Human-readable label, for the operator's own key list."),
+        per_tx_limit_cents: z.number().int().min(100).optional().describe("Per-transaction ceiling in cents. wallet_write keys get a default if unset."),
+        daily_limit_cents: z.number().int().min(100).optional().describe("Daily ceiling in cents. wallet_write keys get a default if unset."),
+        activate: z
+          .boolean()
+          .optional()
+          .describe(
+            "Whether to make this MODE the active one. Omitted/true = yes. It cannot keep an older key of the SAME mode in use: " +
+              "the vault holds one key per mode, so minting into a mode always supersedes what was there. Use false only to mint " +
+              "for the other mode without leaving the one you are on.",
+          ),
+      },
+      outputSchema: {
+        key_id: z.string().describe("The new key's id — what revoke_key takes."),
+        prefix: z.string().describe("sk_test_ or sk_live_."),
+        is_live: z.boolean(),
+        scopes: z.string().describe("Space-separated scopes actually granted."),
+        per_tx_limit_cents: z.number().nullable(),
+        daily_limit_cents: z.number().nullable(),
+        active_key_mode: z.enum(["test", "live"]).describe("Which key the server authenticates with now."),
+        active_key_source: z.enum(["env", "store", "owner"]).describe("Which credential actually wins."),
+        env_override: z.boolean().describe("true when DEPIX_API_KEY shadows the new key."),
+        warning: z.string().nullable().describe("A loud note when the new key is not the one in use, else null."),
+      },
+      annotations: write,
+    },
+    (args) =>
+      run(() =>
+        createKey(
+          deps,
+          args as {
+            live?: boolean;
+            scopes?: string[];
+            label?: string;
+            per_tx_limit_cents?: number;
+            daily_limit_cents?: number;
+            activate?: boolean;
+          },
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "revoke_key",
+    {
+      title: "Revoke one of this account's API keys",
+      description:
+        "Kill an API key, in two phases. Phase 1 (omit confirm): nothing is written — it returns what that key IS " +
+        "(prefix, scopes, whether it is the starter) so you can tell the human exactly what is about to die. " +
+        "Phase 2 (confirm: true): the key stops working immediately and cannot be restored. ASK THE OPERATOR " +
+        "between the two phases. If you revoke the key this server is authenticating with, the next call fails " +
+        "until you mint another (create_key) or switch to the other mode (activate_key) — get the id from " +
+        "agent_status and be sure which one it is.",
+      inputSchema: {
+        key_id: z.string().min(1).describe("Id of the key to revoke, as listed by agent_status."),
+        confirm: z.boolean().optional().describe("false/omitted = phase 1 (describe it, write nothing); true = phase 2 (revoke it)."),
+      },
+      outputSchema: {
+        phase: z.enum(["confirm_required", "revoked"]),
+        key_id: z.string(),
+        revoked: z.boolean().describe("true only after phase 2 succeeded."),
+        found: z.boolean().describe("Phase 1: does the account own a key with this id?"),
+        prefix: z.string().nullable(),
+        is_live: z.boolean().nullable(),
+        starter: z.boolean().nullable().describe("Phase 1: is this the key registration issued?"),
+        scopes: z.string().nullable(),
+        already_revoked: z.boolean().nullable(),
+        instruction: z.object({ pt: z.string(), en: z.string() }).nullable().describe("Phase 1: what to relay to the human."),
+      },
+      annotations: write,
+    },
+    (args) => run(() => revokeKey(deps, args as { key_id: string; confirm?: boolean })),
   );
 
   return { toolNames: AGENT_TOOL_NAMES };

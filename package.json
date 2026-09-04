@@ -1,9 +1,9 @@
 {
   "name": "@depixapp/mcp",
-  "version": "2.8.6",
+  "version": "2.8.7",
   "mcpName": "io.github.depixapp/depix-mcp",
   "type": "module",
-  "description": "The DePix App MCP server: hosted receive-only Pix gateway (26 tools), or local via npx with a non-custodial Liquid wallet signing on your own machine (60 tools). Checkouts, products, charges, support tickets, send/convert, Lightning and gift cards.",
+  "description": "The DePix App MCP server: hosted receive-only Pix gateway (26 tools), or local via npx with a non-custodial Liquid wallet signing on your own machine (62 tools). Checkouts, products, charges, support tickets, send/convert, Lightning and gift cards.",
   "keywords": [
     "mcp",
     "model-context-protocol",

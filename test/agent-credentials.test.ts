@@ -184,3 +184,65 @@ describe("activateKey (the post-registration test↔live switch)", () => {
     await expect(deps.activateKey("live")).rejects.toMatchObject({ code: "credentials_locked" });
   });
 });
+
+describe("replaceKey (the slot a freshly minted key lands in)", () => {
+  const deps = (env: NodeJS.ProcessEnv, resolver: CredentialResolver) =>
+    buildAgentToolDeps({ resolver, apiBase: "https://api.depixapp.com", getWallet: async () => null, vault: { env } });
+
+  it("writes ONE slot — minting live must not erase the sandbox key, and vice versa", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const d = deps(env, new CredentialResolver({ envKey: undefined }));
+    await d.persistKeys({ testKey: "sk_test_A", liveKey: "sk_live_B", prefer: "test" });
+
+    await d.replaceKey({ key: "sk_live_UPGRADED", mode: "live", activate: false });
+
+    const store = new AgentCredentialStore({ dataDir: dir, passphrase: PASS });
+    const after = await store.load();
+    expect(after).toMatchObject({ testKey: "sk_test_A", liveKey: "sk_live_UPGRADED", active: "test" });
+  });
+
+  it("activate:false leaves the mode pointer where it was; activate:true moves it", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const resolver = new CredentialResolver({ envKey: undefined });
+    const d = deps(env, resolver);
+    await d.persistKeys({ testKey: "sk_test_A", liveKey: "sk_live_B", prefer: "test" });
+
+    expect((await d.replaceKey({ key: "sk_live_C", mode: "live", activate: false })).activeMode).toBe("test");
+    expect(resolver.resolve()).toBe("sk_test_A");
+
+    expect((await d.replaceKey({ key: "sk_live_D", mode: "live", activate: true })).activeMode).toBe("live");
+    expect(resolver.resolve()).toBe("sk_live_D");
+  });
+
+  it("REFUSES to report success when the write did not land", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const resolver = new CredentialResolver({ envKey: undefined });
+    const d = deps(env, resolver);
+    await d.persistKeys({ testKey: "sk_test_A", prefer: "test" });
+
+    // A save that silently keeps the old contents — the exact shape the
+    // read-back exists to catch. Without it, the upgrade would go on to revoke
+    // the superseded key while the new one lives nowhere.
+    const realSave = AgentCredentialStore.prototype.save;
+    AgentCredentialStore.prototype.save = async function () {};
+    try {
+      await expect(d.replaceKey({ key: "sk_test_NEW", mode: "test", activate: true })).rejects.toThrow(
+        /did not survive a write\+read verification/,
+      );
+    } finally {
+      AgentCredentialStore.prototype.save = realSave;
+    }
+    // And the resolver is still on the key that IS on disk.
+    expect(resolver.resolve()).toBe("sk_test_A");
+  });
+
+  it("keyState reads the live pointer without a write", async () => {
+    const env = { DEPIX_AGENT_DIR: dir, DEPIX_AGENT_PASSPHRASE: PASS } as NodeJS.ProcessEnv;
+    const d = deps(env, new CredentialResolver({ envKey: undefined }));
+    await d.persistKeys({ testKey: "sk_test_A", liveKey: "sk_live_B", prefer: "live" });
+    expect(await d.keyState()).toEqual({ active: "live", hasLive: true });
+
+    await d.persistKeys({ testKey: "sk_test_A", prefer: "test" });
+    expect(await d.keyState()).toEqual({ active: "test", hasLive: false });
+  });
+});

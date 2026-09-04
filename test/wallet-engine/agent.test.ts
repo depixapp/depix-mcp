@@ -228,7 +228,7 @@ describe("DepixAgent.verifyDomain", () => {
 
   it("phase 2: POSTs {domain, confirm: true} and maps the confirmation", async () => {
     const { agent, calls } = await makeAgent([
-      { status: 200, json: { verified_domain: "acme.com" } },
+      { status: 200, json: { verified_domain: "acme.com", verified: true } },
     ]);
     const result = await agent.verifyDomain("acme.com", { confirm: true });
 
@@ -236,7 +236,7 @@ describe("DepixAgent.verifyDomain", () => {
     expect(req.url).toBe("https://api.test/api/agents/verify-domain");
     assertSigned(req);
     expect(req.body).toBe(JSON.stringify({ domain: "acme.com", confirm: true }));
-    expect(result).toEqual({ verifiedDomain: "acme.com" });
+    expect(result).toEqual({ verifiedDomain: "acme.com", verified: true });
   });
 
   it("surfaces domain_txt_not_found (TXT not propagated yet) for the retry loop", async () => {

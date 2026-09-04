@@ -11,6 +11,7 @@ import { ToolError } from "./wallet-engine/mcp/errors.js";
 import { withNextAction } from "./next-action.js";
 import type { CredentialResolver } from "./credentials.js";
 import type { UnlockStoreDeps } from "./wallet-engine/store/unlock-store.js";
+import type { ActiveKeyMode } from "./wallet-engine/agent/credential-store.js";
 
 /** Mirrors DepixAgent.resolveDataDir — the agent identity + credentials live here. */
 export function resolveAgentDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -145,20 +146,53 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
         envOverride: resolver.hasEnvOverride(),
       };
     }),
+    keyState: (): Promise<{ active: ActiveKeyMode; hasLive: boolean }> => serial(async () => {
+      if (!(await agentCredentialsExist(vault?.env))) throw agentNotInitialized();
+      const passphrase = await resolveAgentPassphrase(vault);
+      if (passphrase === undefined) throw credentialsLocked();
+      const { AgentCredentialStore } = await import("./wallet-engine/agent/credential-store.js");
+      const store = new AgentCredentialStore({ dataDir: resolveAgentDir(vault?.env), passphrase });
+      const current = await store.load();
+      if (!current) throw agentNotInitialized();
+      return { active: current.active, hasLive: !!current.liveKey };
+    }),
+    replaceKey: ({ key, mode, activate }): Promise<KeyActivation> => serial(async () => {
+      if (!(await agentCredentialsExist(vault?.env))) throw agentNotInitialized();
+      const passphrase = await resolveAgentPassphrase(vault);
+      if (passphrase === undefined) throw credentialsLocked();
+      const { AgentCredentialStore } = await import("./wallet-engine/agent/credential-store.js");
+      const store = new AgentCredentialStore({ dataDir: resolveAgentDir(vault?.env), passphrase });
+      const current = await store.load();
+      if (!current) throw agentNotInitialized();
+      // One slot only: minting a live key must not erase the sandbox key the
+      // operator can fall back to, and vice versa.
+      const next = {
+        ...current,
+        ...(mode === "live" ? { liveKey: key } : { testKey: key }),
+        active: activate ? mode : current.active,
+      };
+      await store.save(next);
+      // Same write+read-back discipline as persistKeys: the vault is what the
+      // next boot reads, so it must be on disk before this reports success.
+      const readBack = await store.load();
+      if (!readBack || (mode === "live" ? readBack.liveKey : readBack.testKey) !== key) {
+        throw new Error("The minted key did not survive a write+read verification.");
+      }
+      resolver.setActiveKey(AgentCredentialStore.activeKey(readBack));
+      const source = resolver.source();
+      return {
+        activeMode: readBack.active,
+        source: source === "none" ? "store" : source,
+        envOverride: resolver.hasEnvOverride(),
+      };
+    }),
     activateKey: (mode): Promise<KeyActivation> => serial(async () => {
       // Existence before unlock: on a machine with no vault at all the locked
       // relay would tell the agent "the account already here is the right one".
       if (!(await agentCredentialsExist(vault?.env))) throw agentNotInitialized();
       const passphrase = await resolveAgentPassphrase(vault);
       if (passphrase === undefined) {
-        // Typed, like every other surface that names this state (the boot line,
-        // the tools' credentials_locked relay): a bare Error would reach the
-        // agent as an opaque internal_error with nowhere to go.
-        throw new ToolError(
-          `The API credentials vault on this machine could not be opened: ${CHAIN_DESCRIPTION}.`,
-          "credentials_locked",
-          { data: withNextAction({}, "credentials_locked", { deployment: "local" }) },
-        );
+        throw credentialsLocked();
       }
       const { AgentCredentialStore } = await import("./wallet-engine/agent/credential-store.js");
       const store = new AgentCredentialStore({ dataDir: resolveAgentDir(vault?.env), passphrase });
@@ -189,6 +223,19 @@ export function buildAgentToolDeps(opts: BuildAgentToolDepsOptions): AgentToolDe
       };
     }),
   };
+}
+
+/**
+ * Typed, like every other surface that names this state (the boot line, the
+ * tools' credentials_locked relay): a bare Error would reach the agent as an
+ * opaque internal_error with nowhere to go.
+ */
+function credentialsLocked(): ToolError {
+  return new ToolError(
+    `The API credentials vault on this machine could not be opened: ${CHAIN_DESCRIPTION}.`,
+    "credentials_locked",
+    { data: withNextAction({}, "credentials_locked", { deployment: "local" }) },
+  );
 }
 
 /** Is the sk_ vault on disk at all? Answers without a passphrase. */
