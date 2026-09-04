@@ -5,10 +5,10 @@
 // `status` prints ids and labels only. It must never print a token, and it must
 // always say WHY the active persona is active.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { runAccountCommand, type AccountDeps } from "../src/account-command.js";
 import { readAccountPreference, writeAccountPreference, clearAccountPreference } from "../src/account-preference.js";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -157,8 +157,15 @@ describe("account use", () => {
 });
 
 describe("the preference file", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "depix-pref-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("round-trips, and a cleared preference reads back as none", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "depix-pref-"));
     expect(await readAccountPreference(dir)).toBeUndefined();
     await writeAccountPreference(dir, "owner");
     expect(await readAccountPreference(dir)).toBe("owner");
@@ -169,7 +176,6 @@ describe("the preference file", () => {
   });
 
   it("is a preference, not a secret: the file holds no token-shaped value", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "depix-pref-"));
     await writeAccountPreference(dir, "owner");
     const raw = await readFile(join(dir, "account-preference.json"), "utf8");
     expect(raw).not.toMatch(/sk_|eyJ/);
@@ -177,7 +183,6 @@ describe("the preference file", () => {
   });
 
   it("a corrupt or unknown persona reads as no selection, never as a crash", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "depix-pref-"));
     await writeFile(join(dir, "account-preference.json"), "{not json");
     expect(await readAccountPreference(dir)).toBeUndefined();
     await writeFile(join(dir, "account-preference.json"), JSON.stringify({ persona: "root" }));
@@ -185,7 +190,6 @@ describe("the preference file", () => {
   });
 
   it("clearing a preference that was never written is a no-op", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "depix-pref-"));
     await expect(clearAccountPreference(dir)).resolves.toBeUndefined();
   });
 });
