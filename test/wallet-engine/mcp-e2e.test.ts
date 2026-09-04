@@ -1,5 +1,5 @@
 // End-to-end over the MCP facade with a REAL DepixWallet (empty LWK wallet +
-// injected sandbox fetch, offline): initialize → tools/list → wallet_create_deposit
+// injected sandbox fetch, and a FAKE Esplora client so it is genuinely offline): initialize → tools/list → wallet_create_deposit
 // and wallet_create_withdrawal + wallet_wait_withdrawal sandbox of one piece
 // (§8.3). Proves the key never leaks and the protocol survives a corrupted
 // guardrails-state.json.
@@ -7,10 +7,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DepixWallet } from "../../src/wallet-engine/wallet.js";
 import { mockFetch, type MockResponseSpec, type RecordedRequest } from "./support/mock.js";
 import { connectWallet } from "./support/mcp.js";
+import type { EsploraClientLike } from "../../src/wallet-engine/sync/sync.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 const PASSPHRASE = "correct-horse-battery-staple";
@@ -68,41 +69,50 @@ let dataDir: string;
 let wallet: DepixWallet;
 let client: Client;
 
-/** A restored wallet plus an MCP client speaking to it. */
-interface Fixture {
-  dataDir: string;
-  wallet: DepixWallet;
-  client: Client;
-}
+beforeEach(async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "depix-sdk-mcp-e2e-"));
+});
+afterEach(async () => {
+  await client?.close().catch(() => {});
+  await wallet?.close().catch(() => {});
+  await rm(dataDir, { recursive: true, force: true });
+});
 
-async function openReal(dir: string): Promise<Fixture> {
+/**
+ * The injected `fetch` above only covers the DePix API client. Chain sync goes
+ * out through the engine's own EsploraClient, and KNOWN_MNEMONIC is the
+ * canonical `abandon…about` seed — a wallet with real mainnet history, so a
+ * cold scan is ~380 live requests. `wallet_convert` and `wallet_create_withdrawal`
+ * are sync-wrapped (runSpend), so they paid that scan against mainnet: when the
+ * proxy's waterfalls index lagged the tip the engine rotated to a gap-limit walk
+ * under COLD_START_TIMEOUT_MS = 600_000, ten times the 60s an MCP client waits,
+ * and the release gate failed on an upstream hiccup. Nothing here is about the
+ * chain, so the scan is faked — the same seam 14 other engine tests use.
+ */
+const fakeEsplora = (): EsploraClientLike => ({
+  fullScan: async () => undefined,
+  broadcast: async () => {
+    throw new Error("not used");
+  },
+  free: () => {},
+});
+
+async function openReal(): Promise<void> {
   const { fetch } = mockFetch(sandboxFetch);
-  const w = await DepixWallet.restore({ dataDir: dir, passphrase: PASSPHRASE, mnemonic: KNOWN_MNEMONIC, apiKey: KEY, fetch });
-  const { client: c } = await connectWallet({ wallet: w, keyMode: "test", apiKeyConfigured: true });
-  return { dataDir: dir, wallet: w, client: c };
+  wallet = await DepixWallet.restore({
+    dataDir,
+    passphrase: PASSPHRASE,
+    mnemonic: KNOWN_MNEMONIC,
+    apiKey: KEY,
+    fetch,
+    sync: { clientFactory: fakeEsplora, providers: [{ name: "p0", url: "http://localhost:1", waterfalls: false }] },
+  });
+  ({ client } = await connectWallet({ wallet, keyMode: "test", apiKeyConfigured: true }));
 }
-
-async function closeReal(f: Fixture): Promise<void> {
-  await f.client?.close().catch(() => {});
-  await f.wallet?.close().catch(() => {});
-  await rm(f.dataDir, { recursive: true, force: true });
-}
-
-// Restore ONCE for the whole file. `DepixWallet.restore` runs the KDF that
-// unseals the store, which is expensive BY DESIGN; paying it per test made a
-// single tool call exceed the 60s the MCP client waits, so the release gate
-// failed on runner load rather than on a defect. Every test here reads through
-// the facade; the one that writes to the store on disk builds its own fixture.
-beforeAll(async () => {
-  const shared = await openReal(await mkdtemp(join(tmpdir(), "depix-sdk-mcp-e2e-")));
-  ({ dataDir, wallet, client } = shared);
-});
-afterAll(async () => {
-  await closeReal({ dataDir, wallet, client });
-});
 
 describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   it("handshakes and lists the 10 MVP + 2 intent + 8 fast-follow + 4 gift-card discovery + 2 recovery + 1 maintenance + 2 sync tools over a REAL wallet", async () => {
+    await openReal();
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names).toHaveLength(29);
     expect(names).toContain("wallet_create_deposit");
@@ -125,6 +135,7 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   });
 
   it("wallet_quote over the REAL wallet enumerates both DEPIX→USDT@ethereum candidates offline (estimates fail soft)", async () => {
+    await openReal();
     const res = await client.callTool({
       name: "wallet_quote",
       arguments: { from: "DEPIX", to: "USDT", network: "ethereum", amount_sats: "100000000" },
@@ -146,6 +157,7 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   });
 
   it("wallet_convert over the REAL wallet surfaces MULTIPLE_ROUTES_AVAILABLE with the candidates + next_step in data", async () => {
+    await openReal();
     const res = await client.callTool({
       name: "wallet_convert",
       arguments: { from: "DEPIX", to: "USDT", network: "ethereum", amount_sats: "100000000" },
@@ -164,6 +176,7 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   });
 
   it("wallet_create_deposit returns the sandbox QR", async () => {
+    await openReal();
     const res = await client.callTool({
       name: "wallet_create_deposit",
       arguments: { amount_cents: 1_000, payer_tax_number: "11144477735" },
@@ -176,6 +189,7 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   });
 
   it("wallet_create_withdrawal + wallet_wait_withdrawal sandbox of one piece", async () => {
+    await openReal();
     const created = await client.callTool({
       name: "wallet_create_withdrawal",
       arguments: {
@@ -202,6 +216,7 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   });
 
   it("wallet_diagnostics returns the REAL wallet's snapshot with no key material", async () => {
+    await openReal();
     const res = await client.callTool({ name: "wallet_diagnostics", arguments: {} });
     expect(res.isError).toBeFalsy();
     const out = res.structuredContent as Record<string, unknown>;
@@ -223,6 +238,7 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
       writes.push(String(c));
       return true;
     });
+    await openReal();
     await client.callTool({
       name: "wallet_create_deposit",
       arguments: { amount_cents: 1_000, payer_tax_number: "1" },
@@ -232,19 +248,13 @@ describe("MCP facade e2e over a real wallet (sandbox, offline)", () => {
   });
 
   it("survives a corrupted guardrails-state.json — protocol intact", async () => {
-    // Its OWN store: this is the one test that corrupts a file on disk, and the
-    // shared wallet must not inherit it.
-    const own = await openReal(await mkdtemp(join(tmpdir(), "depix-sdk-mcp-e2e-corrupt-")));
-    try {
-      await writeFile(join(own.dataDir, "guardrails-state.json"), "{not-json-at-all", "utf8");
-      // The read tool still returns a valid structured result (the corruption is
-      // logged to stderr; stdout/JSON-RPC framing is untouched — §6.1).
-      const res = await own.client.callTool({ name: "wallet_get_guardrails", arguments: {} });
-      expect(res.isError).toBeFalsy();
-      const out = res.structuredContent as Record<string, unknown>;
-      expect(out).toHaveProperty("daily_limit_cents", 50_000);
-    } finally {
-      await closeReal(own);
-    }
+    await openReal();
+    await writeFile(join(dataDir, "guardrails-state.json"), "{not-json-at-all", "utf8");
+    // The read tool still returns a valid structured result (the corruption is
+    // logged to stderr; stdout/JSON-RPC framing is untouched — §6.1).
+    const res = await client.callTool({ name: "wallet_get_guardrails", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    const out = res.structuredContent as Record<string, unknown>;
+    expect(out).toHaveProperty("daily_limit_cents", 50_000);
   });
 });
